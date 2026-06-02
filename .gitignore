@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# ROS 2 / colcon
+build/
+install/
+log/
+.colcon_install_layout
+.colcon_workspace
+
+# Bags — these are huge and don't belong in git
+# Store in object storage or DGX bag pipeline instead
+*.mcap
+*.bag
+*.db3
+bags/
+recordings/
+
+# Models — use git-lfs or external storage
+*.pt
+*.pth
+*.onnx
+*.engine
+*.trt
+*.tflite
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+docker-compose.override.yml
+.env
+
+# Secrets
+*.key
+*.pem
+*.crt
+credentials.json
+
+# Build artifacts
+*.o
+*.a
+*.lo
+*.la
+*.al
+.libs
+*.deb
+
+# Local development
+.local/
+local_config.yaml

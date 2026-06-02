@@ -1,0 +1,21 @@
+patrol-drone
+Copyright 2026 SentientSwarm
+
+This product includes software developed at SentientSwarm.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+------------------------------------------------------------------------------
+
+This project draws architectural inspiration from third-party works.
+Where third-party code is included verbatim or adapted substantially,
+attribution and original license terms are preserved in the relevant
+source files.
+
+Notable references (architectural inspiration, not bundled code):
+- Andrew Bernas, "GPS-Denied Drone with NVIDIA Jetson Orin Nano"
+  https://github.com/bandofpv/VSLAM-UAV (MIT License)
