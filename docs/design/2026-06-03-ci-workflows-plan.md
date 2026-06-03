@@ -614,7 +614,7 @@ jobs:
     timeout-minutes: 60
     # container: ghcr.io/sentientswarm/patrol-drone-sim:latest  # docker/sim image (M3+)
     steps:
-      - run: echo "TODO M3+: PX4 SITL + Gazebo Harmonic, run canonical mission, assert on bag"
+      - run: 'echo "TODO M3+: PX4 SITL + Gazebo Harmonic, run canonical mission, assert on bag"'
 ```
 
 - [ ] **Step 2: Lint the workflow**
