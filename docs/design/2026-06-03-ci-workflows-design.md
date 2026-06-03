@@ -205,20 +205,25 @@ jobs:
           cache-dependency-glob: "uv.lock"
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      # Source-aware coverage policy (so new mission-core code can't bypass the floor):
-      #   no mission-core source & no tests -> skip (green)
-      #   mission-core source exists & no tests -> fail (new code must be covered)
-      #   unit tests exist -> run pytest + the >= 85% coverage gate
+      # Source-aware coverage policy (4 states — the coverage `source` is the mission
+      # core, so the 85% gate only makes sense once that source exists):
+      #   no mission-core source & no tests  -> skip (green)
+      #   mission-core source, no tests      -> fail (new code must be covered)
+      #   tests, no mission-core source      -> run pytest WITHOUT the coverage gate
+      #   mission-core source & tests        -> run pytest + the >= 85% coverage gate
       - id: cov
         shell: bash
         run: |
           src=false; tests=false
           [ -n "$(find ros2_ws/src/patrol_mission/patrol_mission -name '*.py' 2>/dev/null | head -n1)" ] && src=true
           [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ] && tests=true
-          if [ "$tests" = true ]; then
-            echo "mode=run" >> "$GITHUB_OUTPUT"
+          if [ "$src" = true ] && [ "$tests" = true ]; then
+            echo "mode=cov" >> "$GITHUB_OUTPUT"
           elif [ "$src" = true ]; then
             echo "mode=fail" >> "$GITHUB_OUTPUT"
+          elif [ "$tests" = true ]; then
+            echo "mode=tests" >> "$GITHUB_OUTPUT"
+            echo "::notice::unit tests present but no mission-core source yet — running tests without the coverage gate"
           else
             echo "mode=skip" >> "$GITHUB_OUTPUT"
             echo "::notice::no mission-core source or unit tests yet — skipping tests and coverage"
@@ -227,7 +232,10 @@ jobs:
         run: |
           echo "::error::mission-core source exists but there are no unit tests; the >= 85% coverage floor cannot be met. Add unit tests."
           exit 1
-      - if: steps.cov.outputs.mode == 'run'
+      - if: steps.cov.outputs.mode == 'tests'
+        name: Unit tests (no coverage gate yet)
+        run: uv run pytest tests/unit
+      - if: steps.cov.outputs.mode == 'cov'
         name: Unit tests + coverage (>= 85%)
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=85 tests/unit
 
@@ -463,8 +471,10 @@ exclude_also = [
 ]
 ```
 
-The `test` job runs `pytest --cov --cov-report=term-missing --cov-report=xml
---cov-fail-under=85` once unit tests exist (§3). The floor measures only the
+The `test` job runs `pytest --cov … --cov-fail-under=85` only once **both** the
+mission-core source and unit tests exist (§3); with tests but no mission-core
+source yet it runs pytest without the gate (nothing to measure), and with source
+but no tests it fails. The floor measures only the
 ROS-free mission core (`source` above); `analysis/` notebooks and `scripts/` are
 deliberately excluded, since a hard floor on exploratory code is friction, not
 safety. `fail_under` lives in config **and** is passed on the CLI, so the gate is
@@ -627,9 +637,10 @@ state and activates incrementally:
 - **mypy** → bootstrap guard finds no first-party `.py`, skips with a notice
   (mypy errors on "no files," so we guard rather than run it on an empty tree).
 - **xenon** over the listed dirs → no functions found. Pass.
-- **tests + coverage** → source-aware guard: no mission-core source and no unit
-  tests → skip (green); mission-core source **without** tests → fail (new code
-  must be covered); unit tests present → run pytest + the 85% coverage gate.
+- **tests + coverage** → source-aware guard (4 states): no source & no tests →
+  skip (green); mission-core source **without** tests → fail; tests **without**
+  mission-core source → run pytest with no coverage gate (the gate has no source
+  to measure yet); source **and** tests → run pytest + the 85% coverage gate.
 - **shellcheck** → lints existing `scripts/*.sh`. Pass (assuming clean).
 - **Layer B** → bootstrap guard finds no `package.xml`, skips the build. Green.
 

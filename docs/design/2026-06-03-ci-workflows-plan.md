@@ -395,20 +395,26 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
+          cache-dependency-glob: "uv.lock"
           python-version: "3.12"
+      - run: uv sync --locked --group dev
       - name: Ruff lint
-        run: uvx ruff@0.15.15 check --output-format=github .
+        run: uv run ruff check --output-format=github .
       - name: Ruff format check
-        run: uvx ruff@0.15.15 format --check .
+        run: uv run ruff format --check .
 
   types:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
@@ -435,46 +441,72 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          enable-cache: true
-          python-version: "3.12"
-      # HARD GATE — fail if any single function exceeds rank B (CC > 10). No average gates.
-      - name: Complexity hard gate (xenon)
-        run: >
-          uvx --with radon==6.0.1 xenon@0.9.3
-          --max-absolute B
-          -i "external,build,install,log"
-          analysis scripts tests ros2_ws/src
-      - name: Complexity report (radon, non-gating)
-        if: always()
-        run: |
-          uvx radon@6.0.1 cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
-          uvx radon@6.0.1 mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
-
-  test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      # Bootstrap guard: skip until unit tests exist. Once they do, the coverage gate
-      # runs and the ROS-free mission core must be >= 85% covered (see Task 5 / pyproject).
-      - id: tests
+      # HARD GATE — fail if any single function exceeds rank B (CC > 10). No average gates.
+      # Run via the locked uv env (xenon==0.9.3, radon==6.0.1) for full reproducibility.
+      - name: Complexity hard gate (xenon)
+        run: >
+          uv run xenon
+          --max-absolute B
+          -i "external,build,install,log"
+          analysis scripts tests ros2_ws/src
+      - name: Complexity report (radon, non-gating)
+        if: always()
+        run: |
+          uv run radon cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+          uv run radon mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      # Source-aware coverage policy (4 states — the coverage `source` is the mission
+      # core, so the 85% gate only makes sense once that source exists):
+      #   no mission-core source & no tests  -> skip (green)
+      #   mission-core source, no tests      -> fail (new code must be covered)
+      #   tests, no mission-core source      -> run pytest WITHOUT the coverage gate
+      #   mission-core source & tests        -> run pytest + the >= 85% coverage gate
+      - id: cov
         shell: bash
         run: |
-          if [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
+          src=false; tests=false
+          [ -n "$(find ros2_ws/src/patrol_mission/patrol_mission -name '*.py' 2>/dev/null | head -n1)" ] && src=true
+          [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ] && tests=true
+          if [ "$src" = true ] && [ "$tests" = true ]; then
+            echo "mode=cov" >> "$GITHUB_OUTPUT"
+          elif [ "$src" = true ]; then
+            echo "mode=fail" >> "$GITHUB_OUTPUT"
+          elif [ "$tests" = true ]; then
+            echo "mode=tests" >> "$GITHUB_OUTPUT"
+            echo "::notice::unit tests present but no mission-core source yet — running tests without the coverage gate"
           else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no unit tests yet — skipping tests and coverage"
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "::notice::no mission-core source or unit tests yet — skipping tests and coverage"
           fi
-      - if: steps.tests.outputs.present == 'true'
+      - if: steps.cov.outputs.mode == 'fail'
+        run: |
+          echo "::error::mission-core source exists but there are no unit tests; the >= 85% coverage floor cannot be met. Add unit tests."
+          exit 1
+      - if: steps.cov.outputs.mode == 'tests'
+        name: Unit tests (no coverage gate yet)
+        run: uv run pytest tests/unit
+      - if: steps.cov.outputs.mode == 'cov'
         name: Unit tests + coverage (>= 85%)
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=85 tests/unit
 
@@ -483,6 +515,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
 ```
 
@@ -524,16 +558,18 @@ gh api repos/actions/upload-artifact/git/refs/tags/$(gh api repos/actions/upload
 ```
 Expected: prints the latest tag (e.g. `v4.x.y`) and an object. If `.object.type` is `"commit"`, use `.object.sha` directly. If it's `"tag"` (annotated), dereference: `gh api repos/actions/upload-artifact/git/tags/<that-sha> --jq '.object.sha'` to get the **commit** SHA. Record the commit SHA + tag for Step 2. (Same annotated-vs-lightweight trap that bit `actions/checkout` in the spec.)
 
-- [ ] **Step 2: Create the workflow file** (substitute the resolved `upload-artifact` SHA + tag comment for `<SHA>`/`<TAG>`)
+- [ ] **Step 2: Create the workflow file** (using the `upload-artifact` SHA resolved in Step 1 — `v7.0.1` resolved to the commit below)
 
 ```yaml
 name: ROS CI
+# No top-level `paths:` filter: the workflow must always run so the
+# `colcon_build_test` check always reports — a workflow skipped by `on.paths`
+# never creates its check and would block a required-status-check PR forever.
+# The per-job `pkgs` guard does the real (path-independent) gating.
 on:
   pull_request:
-    paths: ['ros2_ws/**', '.github/workflows/ros-ci.yml']
   push:
     branches: [main]
-    paths: ['ros2_ws/**', '.github/workflows/ros-ci.yml']
 permissions:
   contents: read
 concurrency:
@@ -544,10 +580,13 @@ jobs:
   colcon_build_test:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # Pinned by digest for reproducibility (ubuntu-noble = 24.04).
     container:
-      image: rostooling/setup-ros-docker:ubuntu-noble-latest   # Noble = 24.04
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       # Bootstrap guard: no ROS packages exist until M3. Skip cleanly so the job is
       # GREEN on the empty repo and auto-activates when the first package.xml lands.
       - id: pkgs
@@ -564,10 +603,11 @@ jobs:
         id: action_ros_ci
         with:
           target-ros2-distro: jazzy
-          package-name: patrol_interfaces patrol_mission patrol_perception patrol_bringup
+          # package-name omitted: action-ros-ci builds and tests ALL workspace packages,
+          # so incremental M3 package introduction can't fail on a not-yet-created name.
           # rosdep-skip-keys: px4_msgs   # uncomment ONLY if rosdep flags px4_msgs
       - if: ${{ always() && steps.pkgs.outputs.present == 'true' }}
-        uses: actions/upload-artifact@<SHA> # <TAG>
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: colcon-logs
           path: ${{ steps.action_ros_ci.outputs.ros-workspace-directory-name }}/log
@@ -601,11 +641,9 @@ git commit -m "Add Layer-B colcon ROS CI workflow"
 - [ ] **Step 1: Create the scaffold workflow**
 
 ```yaml
-name: SITL Nightly (scaffold)
+name: SITL (scaffold)
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: '17 4 * * *'   # avoid :00 (congested); runs from default branch only
+  workflow_dispatch:   # manual only; nightly schedule returns at M3 with a real job
 permissions:
   contents: read
 jobs:

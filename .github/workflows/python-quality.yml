@@ -96,20 +96,25 @@ jobs:
           cache-dependency-glob: "uv.lock"
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      # Source-aware coverage policy (so new mission-core code can't bypass the floor):
-      #   no mission-core source & no tests -> skip (green)
-      #   mission-core source exists & no tests -> fail (new code must be covered)
-      #   unit tests exist -> run pytest + the >= 85% coverage gate
+      # Source-aware coverage policy (4 states — the coverage `source` is the mission
+      # core, so the 85% gate only makes sense once that source exists):
+      #   no mission-core source & no tests  -> skip (green)
+      #   mission-core source, no tests      -> fail (new code must be covered)
+      #   tests, no mission-core source      -> run pytest WITHOUT the coverage gate
+      #   mission-core source & tests        -> run pytest + the >= 85% coverage gate
       - id: cov
         shell: bash
         run: |
           src=false; tests=false
           [ -n "$(find ros2_ws/src/patrol_mission/patrol_mission -name '*.py' 2>/dev/null | head -n1)" ] && src=true
           [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ] && tests=true
-          if [ "$tests" = true ]; then
-            echo "mode=run" >> "$GITHUB_OUTPUT"
+          if [ "$src" = true ] && [ "$tests" = true ]; then
+            echo "mode=cov" >> "$GITHUB_OUTPUT"
           elif [ "$src" = true ]; then
             echo "mode=fail" >> "$GITHUB_OUTPUT"
+          elif [ "$tests" = true ]; then
+            echo "mode=tests" >> "$GITHUB_OUTPUT"
+            echo "::notice::unit tests present but no mission-core source yet — running tests without the coverage gate"
           else
             echo "mode=skip" >> "$GITHUB_OUTPUT"
             echo "::notice::no mission-core source or unit tests yet — skipping tests and coverage"
@@ -118,7 +123,10 @@ jobs:
         run: |
           echo "::error::mission-core source exists but there are no unit tests; the >= 85% coverage floor cannot be met. Add unit tests."
           exit 1
-      - if: steps.cov.outputs.mode == 'run'
+      - if: steps.cov.outputs.mode == 'tests'
+        name: Unit tests (no coverage gate yet)
+        run: uv run pytest tests/unit
+      - if: steps.cov.outputs.mode == 'cov'
         name: Unit tests + coverage (>= 85%)
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=85 tests/unit
 
