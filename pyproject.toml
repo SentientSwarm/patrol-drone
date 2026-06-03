@@ -1,0 +1,17 @@
+[project]
+name = "patrol-drone-tooling"
+version = "0.0.0"
+description = "Root tooling project for Layer-A CI (lint/type/complexity/test config)."
+requires-python = ">=3.12"
+
+[tool.uv]
+package = false   # virtual root: install deps/groups, do not build this as a package
+
+[dependency-groups]
+dev = [
+    "ruff==0.15.15",
+    "mypy==2.1.0",
+    "pytest==9.0.3",
+    "xenon==0.9.3",
+    "radon==6.0.1",
+]
