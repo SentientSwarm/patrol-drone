@@ -33,9 +33,10 @@ type safety** — for a ROS 2 Jazzy + Python 3.12 monorepo that is currently a
 | Python tooling env | **uv** (`astral-sh/setup-uv`) |
 | Linter / formatter | **ruff** (lint + format check) |
 | Type checker | **mypy** |
+| Coverage floor | **pytest-cov**, ≥85% of the ROS-free mission core (Layer A) |
 | ROS layer | **`ros-tooling/action-ros-ci`** in a Jazzy (Noble) container |
 | Local hooks | **None** — CI-only (no `.pre-commit-config.yaml`) |
-| Layer-B coverage | Informational only (gate lives in Layer A) |
+| Layer-B coverage | Informational only (the ≥85% gate lives in Layer A) |
 | arm64 (Jetson) | Deferred to nightly; not per-PR in Phase 1 |
 | `ament_copyright` | Off |
 
@@ -46,11 +47,11 @@ type safety** — for a ROS 2 Jazzy + Python 3.12 monorepo that is currently a
 ```
 .github/
   workflows/
-    python-quality.yml   # Layer A — ruff, mypy, xenon, pytest, shellcheck (parallel jobs)
+    python-quality.yml   # Layer A — ruff, mypy, xenon, pytest+coverage, shellcheck (parallel jobs)
     ros-ci.yml           # Layer B — action-ros-ci colcon build+test in a Jazzy container
     sitl-nightly.yml     # Scaffold only — workflow_dispatch + nightly cron, NOT required
   dependabot.yml         # keep action SHA pins fresh (github-actions ecosystem)
-pyproject.toml           # root: ruff/mypy/pytest config + dev dependency-group pins
+pyproject.toml           # root: ruff/mypy/pytest/coverage config + dev dependency-group pins
 uv.lock                  # committed lockfile — identical tool versions in CI and local
 docs/design/2026-06-03-ci-workflows-design.md   # this document
 ```
@@ -196,9 +197,20 @@ jobs:
           cache-dependency-glob: "uv.lock"
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      # Exit code 5 = "no tests collected" — treated as pass until the first unit test exists.
-      - name: Unit tests
-        run: uv run pytest tests/unit || { code=$?; [ "$code" -eq 5 ] && echo "::notice::no unit tests yet" || exit "$code"; }
+      # Bootstrap guard: skip until unit tests exist. Once they do, the coverage gate
+      # runs and the ROS-free mission core must be >= 85% covered (see §4.6).
+      - id: tests
+        shell: bash
+        run: |
+          if [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no unit tests yet — skipping tests and coverage"
+          fi
+      - if: steps.tests.outputs.present == 'true'
+        name: Unit tests + coverage (>= 85%)
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=85 tests/unit
 
   shellcheck:
     runs-on: ubuntu-24.04
@@ -262,6 +274,7 @@ dev = [
     "ruff==0.15.15",
     "mypy==2.1.0",
     "pytest==9.0.3",
+    "pytest-cov==7.1.0",
     "xenon==0.9.3",
     "radon==6.0.1",
 ]
@@ -412,6 +425,34 @@ node imports it. A module is "fast-layer eligible" only if its import graph neve
 reaches rclpy or a generated message package — use dataclasses / `TypedDict` or
 `if TYPE_CHECKING:` guards for ROS message types in the ROS-free module.
 
+### 4.6 coverage — 85% floor on the mission core
+
+```toml
+[tool.coverage.run]
+branch = true
+# The 85% floor targets the ROS-free mission core only (not analysis/ or scripts/).
+source = ["ros2_ws/src/patrol_mission/patrol_mission"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+```
+
+The `test` job runs `pytest --cov --cov-report=term-missing --cov-report=xml
+--cov-fail-under=85` once unit tests exist (§3). The floor measures only the
+ROS-free mission core (`source` above); `analysis/` notebooks and `scripts/` are
+deliberately excluded, since a hard floor on exploratory code is friction, not
+safety. `fail_under` lives in config **and** is passed on the CLI, so the gate is
+enforced regardless of pytest-cov's config-reading behavior and is visible in the
+workflow. Coverage is measured with branch coverage; `exclude_also` keeps
+`if TYPE_CHECKING:` import guards and `raise NotImplementedError` stubs from
+counting against the floor. At M3 the `source` may switch to
+`source_pkgs = ["patrol_mission"]` once the import strategy (§9) is settled.
+
 ---
 
 ## 5. Layer B — `ros-ci.yml` (colcon / ament in a Jazzy container)
@@ -494,9 +535,9 @@ jobs:
     endif()
     ```
     Keep `ament_xmllint` (validates `package.xml`; no Layer-A overlap).
-- **Coverage** is informational. action-ros-ci produces coverage by default; the
-  hard coverage gate lives in Layer A (pytest on `tests/unit`, repo target
-  >80% of state transitions). If uploading, use a **current**
+- **Coverage** is informational at this layer. action-ros-ci produces coverage by
+  default; the **hard coverage gate lives in Layer A** (pytest on `tests/unit`,
+  ≥85% of the ROS-free mission core — see §4.6). If uploading, use a **current**
   `codecov/codecov-action` major — do **not** copy the README's stale `@v1.2.1`.
 
 ---
@@ -553,8 +594,8 @@ state and activates incrementally:
 - **mypy** → bootstrap guard finds no first-party `.py`, skips with a notice
   (mypy errors on "no files," so we guard rather than run it on an empty tree).
 - **xenon** over the listed dirs → no functions found. Pass.
-- **pytest** `tests/unit` → exit code 5 ("no tests collected"), explicitly
-  treated as pass until the first unit test exists.
+- **pytest + coverage** → bootstrap guard finds no unit tests, skips tests and
+  the 85% coverage gate with a notice. Both activate when the first unit test lands.
 - **shellcheck** → lints existing `scripts/*.sh`. Pass (assuming clean).
 - **Layer B** → bootstrap guard finds no `package.xml`, skips the build. Green.
 

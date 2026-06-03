@@ -12,6 +12,7 @@ dev = [
     "ruff==0.15.15",
     "mypy==2.1.0",
     "pytest==9.0.3",
+    "pytest-cov==7.1.0",
     "xenon==0.9.3",
     "radon==6.0.1",
 ]
@@ -89,4 +90,19 @@ addopts = "-ra --strict-markers --strict-config"
 # pythonpath = ["ros2_ws/src/patrol_mission"]   # enable at M3 so `import patrol_mission` works
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
+]
+
+[tool.coverage.run]
+branch = true
+# The 85% floor targets the ROS-free mission core only (not analysis/ or scripts/).
+# Path-based source aligns with the M3 pytest pythonpath above; may switch to
+# source_pkgs = ["patrol_mission"] once an editable install lands (M3 spike).
+source = ["ros2_ws/src/patrol_mission/patrol_mission"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
 ]

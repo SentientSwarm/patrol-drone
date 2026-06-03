@@ -63,6 +63,7 @@ dev = [
     "ruff==0.15.15",
     "mypy==2.1.0",
     "pytest==9.0.3",
+    "pytest-cov==7.1.0",
     "xenon==0.9.3",
     "radon==6.0.1",
 ]
@@ -295,9 +296,9 @@ No commit for this task — the xenon/radon invocations are codified in `python-
 ### Task 5: pytest config (testing)
 
 **Files:**
-- Modify: `pyproject.toml` (append pytest table)
+- Modify: `pyproject.toml` (append pytest + coverage tables)
 
-- [ ] **Step 1: Append the pytest config to `pyproject.toml`**
+- [ ] **Step 1: Append the pytest + coverage config to `pyproject.toml`**
 
 ```toml
 [tool.pytest.ini_options]
@@ -309,20 +310,52 @@ addopts = "-ra --strict-markers --strict-config"
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
 ]
+
+[tool.coverage.run]
+branch = true
+# The 85% floor targets the ROS-free mission core only (not analysis/ or scripts/).
+source = ["ros2_ws/src/patrol_mission/patrol_mission"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
 ```
 
 - [ ] **Step 2: Sync and verify the no-tests-yet exit code**
 
 Run: `uv sync --locked --group dev && (uv run pytest tests/unit; echo "exit=$?")`
-Expected: pytest prints `no tests ran` and `exit=5`. (Exit 5 = "no tests collected"; the workflow treats it as pass until the first test exists.)
+Expected: pytest prints `no tests ran` and `exit=5`. The `test` job guards on unit
+tests *existing* (not on exit 5), so on the empty repo it skips tests + coverage
+entirely with a notice and stays green.
 
-- [ ] **Step 3: Verify the workflow's exit-5 guard turns that into success**
+- [ ] **Step 3: Verify the coverage config parses and the 85% floor enforces**
 
-Run:
+Run: `uv run coverage debug config 2>/dev/null | grep -E "fail_under|^\s*source|branch"`
+Expected: shows `fail_under: 85.0`, `source: ros2_ws/src/patrol_mission/patrol_mission`, `branch: True`.
+
+Then prove the floor fails an under-covered module (isolated probe; data kept in
+the temp dir; precise cleanup — never `rm -rf`, which trips the security hook):
 ```bash
-uv run pytest tests/unit || { code=$?; [ "$code" -eq 5 ] && echo "::notice::no unit tests yet" || exit "$code"; } ; echo "guarded-exit=$?"
+PROBE="$(mktemp -d)" && cat > "$PROBE/mod.py" <<'PY'
+def covered():
+    return 1
+
+def uncovered(x):
+    if x > 0:
+        return 2
+    return 3
+PY
+printf 'import mod\nmod.covered()\n' > "$PROBE/run_it.py"
+COVERAGE_FILE="$PROBE/.coverage" uv run coverage run --source="$PROBE" --branch "$PROBE/run_it.py" >/dev/null 2>&1
+COVERAGE_FILE="$PROBE/.coverage" uv run coverage report --include="*mod.py" --fail-under=85 ; echo "exit=$?"
+rm -f "$PROBE/mod.py" "$PROBE/run_it.py" "$PROBE/.coverage" "$PROBE"/__pycache__/*.pyc 2>/dev/null
+rmdir "$PROBE/__pycache__" "$PROBE" 2>/dev/null || true
 ```
-Expected: prints the `::notice::` line and `guarded-exit=0`. (This is the exact shell the `test` job uses.)
+Expected: report shows ~38% and `Coverage failure: total of 38 is less than fail-under=85`, `exit=2`. Confirms the floor mechanism.
 
 - [ ] **Step 4: Verify `--strict-config` didn't reject the config**
 
@@ -332,7 +365,7 @@ The fact that Step 2 ran at all (rather than erroring with `INTERNALERROR`/`unkn
 
 ```bash
 git add pyproject.toml
-git commit -m "Configure pytest for the ROS-free unit suite"
+git commit -m "Configure pytest and coverage for the ROS-free unit suite"
 ```
 
 ---
@@ -430,8 +463,20 @@ jobs:
           cache-dependency-glob: "uv.lock"
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      - name: Unit tests
-        run: uv run pytest tests/unit || { code=$?; [ "$code" -eq 5 ] && echo "::notice::no unit tests yet" || exit "$code"; }
+      # Bootstrap guard: skip until unit tests exist. Once they do, the coverage gate
+      # runs and the ROS-free mission core must be >= 85% covered (see Task 5 / pyproject).
+      - id: tests
+        shell: bash
+        run: |
+          if [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no unit tests yet — skipping tests and coverage"
+          fi
+      - if: steps.tests.outputs.present == 'true'
+        name: Unit tests + coverage (>= 85%)
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=85 tests/unit
 
   shellcheck:
     runs-on: ubuntu-24.04
