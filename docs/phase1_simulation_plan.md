@@ -302,6 +302,26 @@ Foxglove is the visualizer. It opens MCAP files natively and renders the camera 
 
 ---
 
+## Phase 1 docsets (PRD/Design breakdown)
+
+This plan is the source of truth for *what* Phase 1 delivers. To take it through the prd-engine `/drive` lifecycle (PRD → Design), the eight milestones (M1–M8) are decomposed into **five PRD/Design docsets** under [`docs/phase1/`](docs/phase1/). Each docset begins with a formal Definition-of-Done brief (`dod.md`) — explicit acceptance criteria, named stakeholders, scope boundaries, and the open decisions handed to `/drive` — and then gains a `prd.md` and `design.md` as the lifecycle runs. The cross-docset traceability matrix (which docset owns which exit-checklist item, package, and interface) lives in [`docs/phase1/README.md`](docs/phase1/README.md).
+
+**Build / dependency order:** `01 → 02 → 03 → 04 → 05`, mirroring milestone order M1→M8. Docset 01 is the foundation (everything stands on it); 05 is the terminal consumer of the others' contracts.
+
+**Integrative exit-checklist items** are not owned solely by one docset: **item 1** (the single end-to-end patrol command) is primary to 02 but depends on 01/03/04/05; **item 10** (README setup-to-running-mission in <20 commands) is primary to 01 but spans all docsets.
+
+| Docset | Milestones | Owns (Phase 1 exit-checklist items) | Folder |
+|---|---|---|---|
+| **01 — Platform & Simulation Foundation** | M1, M2 | 9; 10 (integrative) | [`docs/phase1/01-platform/`](docs/phase1/01-platform/) — [dod](docs/phase1/01-platform/dod.md) · prd · design |
+| **02 — Mission Control** | M3, M4 | 2, 3, 4, 12; 1 (integrative) | [`docs/phase1/02-mission-control/`](docs/phase1/02-mission-control/) — [dod](docs/phase1/02-mission-control/dod.md) · prd · design |
+| **03 — Simulation Environment & Assets** | M5 | (none solo — enables 1, 8, 11) | [`docs/phase1/03-sim-environment/`](docs/phase1/03-sim-environment/) — [dod](docs/phase1/03-sim-environment/dod.md) · prd · design |
+| **04 — Perception & Checkpoint Capture** | M6 | 11 (`CheckpointCapture` message) | [`docs/phase1/04-perception/`](docs/phase1/04-perception/) — [dod](docs/phase1/04-perception/dod.md) · prd · design |
+| **05 — Logging & Replay Pipeline** | M7, M8 | 5, 6, 7, 8 | [`docs/phase1/05-logging-replay/`](docs/phase1/05-logging-replay/) — [dod](docs/phase1/05-logging-replay/dod.md) · prd · design |
+
+To trace **from a milestone to its docset**: find the milestone row above (e.g. M6 → docset 04) and open that folder. To trace **from a docset back to the plan**: each `dod.md` cites its milestone section(s) under `## 9. Traceability` and links back into this document. The 12-item [Phase 1 exit checklist](#phase-1-exit-checklist) is fully partitioned across the five docsets (every item has exactly one primary owner; items 1 and 10 are integrative), as enumerated in the table above and detailed in [`docs/phase1/README.md`](docs/phase1/README.md).
+
+---
+
 ## Test strategy
 
 The London-style TDD approach maps cleanly onto this stack if you're disciplined about the boundaries.
