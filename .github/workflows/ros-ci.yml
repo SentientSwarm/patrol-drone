@@ -1,0 +1,44 @@
+name: ROS CI
+on:
+  pull_request:
+    paths: ['ros2_ws/**', '.github/workflows/ros-ci.yml']
+  push:
+    branches: [main]
+    paths: ['ros2_ws/**', '.github/workflows/ros-ci.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ros2-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  colcon_build_test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest   # Noble = 24.04; pin sha256 at M3
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      # Bootstrap guard: no ROS packages exist until M3. Skip cleanly so the job is
+      # GREEN on the empty repo and auto-activates when the first package.xml lands.
+      - id: pkgs
+        shell: bash
+        run: |
+          if [ -n "$(find ros2_ws/src -name 'package.xml' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no ROS packages yet — skipping colcon build/test"
+          fi
+      - if: steps.pkgs.outputs.present == 'true'
+        uses: ros-tooling/action-ros-ci@3a640b10f09b756dabe556dac5413aba369f71b0 # 0.4.8
+        id: action_ros_ci
+        with:
+          target-ros2-distro: jazzy
+          package-name: patrol_interfaces patrol_mission patrol_perception patrol_bringup
+          # rosdep-skip-keys: px4_msgs   # uncomment ONLY if rosdep flags px4_msgs
+      - if: ${{ always() && steps.pkgs.outputs.present == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: colcon-logs
+          path: ${{ steps.action_ros_ci.outputs.ros-workspace-directory-name }}/log
