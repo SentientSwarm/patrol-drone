@@ -15,3 +15,27 @@ dev = [
     "xenon==0.9.3",
     "radon==6.0.1",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["ros2_ws/src", "analysis", "scripts", "tests"]
+extend-exclude = ["ros2_ws/src/external"]   # vendored px4_msgs — not our code
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM", "RUF", "PL", "PERF", "PT", "C901"]
+ignore = [
+    "E501",     # line length owned by the formatter
+    "PLR0913",  # "too many arguments" — overlaps complexity; xenon owns aggregate gates
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10   # CC > 10 == radon rank C, the same boundary as xenon -b B
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "PLR2004"]
+"**/__init__.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
