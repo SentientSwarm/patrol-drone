@@ -126,13 +126,12 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
           python-version: "3.12"
-      - run: uv sync --locked --group dev
+      # ruff is self-contained — run ephemerally via uvx (no project sync needed).
       - name: Ruff lint
-        run: uv run ruff check --output-format=github .
+        run: uvx ruff@0.15.15 check --output-format=github .
       - name: Ruff format check
-        run: uv run ruff format --check .
+        run: uvx ruff@0.15.15 format --check .
 
   types:
     runs-on: ubuntu-24.04
@@ -145,7 +144,19 @@ jobs:
           cache-dependency-glob: "uv.lock"
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      - name: mypy
+      # Bootstrap guard: mypy errors on "no .py files." Run only once first-party
+      # Python exists; until then, skip with a notice (see §8).
+      - id: pyfiles
+        shell: bash
+        run: |
+          if [ -n "$(find ros2_ws/src analysis scripts tests -name '*.py' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no first-party Python yet — skipping mypy"
+          fi
+      - if: steps.pyfiles.outputs.present == 'true'
+        name: mypy
         run: uv run mypy .
 
   complexity:
@@ -330,6 +341,8 @@ check_untyped_defs = true
 no_implicit_optional = true
 ignore_missing_imports = false        # strict globally; only ROS roots exempted below
 exclude = [
+    "^\\.venv/",                       # uv's tooling venv on the runner
+    "^ros2_ws/(build|install|log)/",   # colcon artifacts, if ever present
     "^ros2_ws/src/external/",          # vendored px4_msgs / px4_ros_com
     "^tests/integration/",             # live ROS env — Layer B / nightly only
     "^tests/replay/",
@@ -429,7 +442,7 @@ jobs:
       - id: pkgs
         shell: bash
         run: |
-          if compgen -G "ros2_ws/src/**/package.xml" > /dev/null; then
+          if [ -n "$(find ros2_ws/src -name 'package.xml' 2>/dev/null | head -n1)" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
@@ -536,7 +549,8 @@ The repo has zero `.py` files and zero ROS packages. The design is green on this
 state and activates incrementally:
 
 - **ruff** `check .` / `format --check .` → pass with zero matching files.
-- **mypy** `.` → no first-party files to check; ROS overrides inert. Pass.
+- **mypy** → bootstrap guard finds no first-party `.py`, skips with a notice
+  (mypy errors on "no files," so we guard rather than run it on an empty tree).
 - **xenon** over the listed dirs → no functions found. Pass.
 - **pytest** `tests/unit` → exit code 5 ("no tests collected"), explicitly
   treated as pass until the first unit test exists.
