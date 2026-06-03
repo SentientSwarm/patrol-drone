@@ -80,3 +80,13 @@ module = [
     "ament_index_python", "ament_index_python.*",
 ]
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests/unit"]
+norecursedirs = ["tests/integration", "tests/replay", "ros2_ws/src/external"]
+addopts = "-ra --strict-markers --strict-config"
+# pythonpath = ["ros2_ws/src/patrol_mission"]   # enable at M3 so `import patrol_mission` works
+markers = [
+    "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
+]
