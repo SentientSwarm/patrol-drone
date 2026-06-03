@@ -244,37 +244,46 @@ uvx --with radon==6.0.1 xenon@0.9.3 --max-absolute B -i "external,build,install,
 ```
 Expected: no output, `exit=0`. (No functions exist yet → no infractions.)
 
-- [ ] **Step 2: Prove the gate bites (deliberately complex function)**
+- [ ] **Step 2: Prove the gate bites (genuinely rank-C function)**
+
+The probe MUST be CC ≥ 11 (rank C). A function at CC ≤ 10 is rank B, which
+`--max-absolute B` correctly *allows* — so an under-complex probe would pass and
+falsely look like the gate is broken. The `grade` function below is exactly CC 11.
 
 Run:
 ```bash
-mkdir -p /tmp/xenon-probe && cat > /tmp/xenon-probe/bad.py <<'PY'
-def tangled(a, b, c, d):
-    total = 0
-    for i in range(a):
-        if i % 2 == 0:
-            for j in range(b):
-                if j > c:
-                    while d > 0:
-                        if d % 3 == 0:
-                            total += 1
-                        elif d % 5 == 0:
-                            total += 2
-                        else:
-                            total -= 1
-                        d -= 1
-    return total
+PROBE="$(mktemp -d)" && cat > "$PROBE/bad.py" <<'PY'
+def grade(score):
+    if score >= 95:
+        return "A+"
+    elif score >= 90:
+        return "A"
+    elif score >= 85:
+        return "B+"
+    elif score >= 80:
+        return "B"
+    elif score >= 75:
+        return "C+"
+    elif score >= 70:
+        return "C"
+    elif score >= 65:
+        return "D+"
+    elif score >= 60:
+        return "D"
+    elif score >= 55:
+        return "E"
+    elif score >= 50:
+        return "F+"
+    else:
+        return "F-"
 PY
-uvx --with radon==6.0.1 xenon@0.9.3 --max-absolute B /tmp/xenon-probe ; echo "exit=$?"
+uvx radon@6.0.1 cc -s "$PROBE"
+uvx --with radon==6.0.1 xenon@0.9.3 --max-absolute B "$PROBE" ; echo "exit=$?"
+rm -f "$PROBE/bad.py" && rmdir "$PROBE"
 ```
-Expected: prints a `block "...:tangled" has a rank of C` (or worse) message and `exit=1`. Confirms `--max-absolute B` fails on rank C+.
+Expected: radon reports `grade - C (11)`, then xenon prints `block "...grade" has a rank of C` and `exit=1`. Confirms `--max-absolute B` fails on rank C+. (Use precise `rm -f`/`rmdir`, not `rm -rf` — the latter trips the repo's security hook.)
 
-- [ ] **Step 3: Clean up the probe**
-
-Run: `rm -rf /tmp/xenon-probe`
-Expected: no output, exit 0. (Probe was outside the repo — nothing to commit.)
-
-- [ ] **Step 4: Verify the radon report command works (non-gating)**
+- [ ] **Step 3: Verify the radon report command works (non-gating)**
 
 Run: `uvx radon@6.0.1 cc -s -a analysis scripts tests ros2_ws/src ; echo "exit=$?"`
 Expected: minimal/no output and `exit=0`. (This is the report engine the workflow writes into the job summary.)
