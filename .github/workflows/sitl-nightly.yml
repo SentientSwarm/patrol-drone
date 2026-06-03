@@ -1,0 +1,14 @@
+name: SITL (scaffold)
+# Manual-only for now. The nightly `schedule:` returns in M3 once there is a real
+# SITL job to run — until then a nightly cron would just produce daily no-op runs.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sitl_integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # container: ghcr.io/sentientswarm/patrol-drone-sim:latest  # docker/sim image (M3+)
+    steps:
+      - run: 'echo "TODO M3+: PX4 SITL + Gazebo Harmonic, run canonical mission, assert on bag"'

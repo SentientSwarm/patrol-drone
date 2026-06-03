@@ -1,0 +1,140 @@
+name: Python Quality
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: pyq-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+  types:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      # Bootstrap guard: mypy errors on "no .py files." Run only once first-party
+      # Python exists; until then, skip with a notice.
+      - id: pyfiles
+        shell: bash
+        run: |
+          if [ -n "$(find ros2_ws/src analysis scripts tests -name '*.py' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no first-party Python yet — skipping mypy"
+          fi
+      - if: steps.pyfiles.outputs.present == 'true'
+        name: mypy
+        run: uv run mypy .
+
+  complexity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      # HARD GATE — fail if any single function exceeds rank B (CC > 10). No average gates.
+      # Run via locked uv env (xenon==0.9.3, radon==6.0.1) for full reproducibility.
+      - name: Complexity hard gate (xenon)
+        run: >
+          uv run xenon
+          --max-absolute B
+          -i "external,build,install,log"
+          analysis scripts tests ros2_ws/src
+      - name: Complexity report (radon, non-gating)
+        if: always()
+        run: |
+          uv run radon cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+          uv run radon mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      # Source-aware coverage policy (4 states — the coverage `source` is the mission
+      # core, so the 85% gate only makes sense once that source exists):
+      #   no mission-core source & no tests  -> skip (green)
+      #   mission-core source, no tests      -> fail (new code must be covered)
+      #   tests, no mission-core source      -> run pytest WITHOUT the coverage gate
+      #   mission-core source & tests        -> run pytest + the >= 85% coverage gate
+      - id: cov
+        shell: bash
+        run: |
+          src=false; tests=false
+          [ -n "$(find ros2_ws/src/patrol_mission/patrol_mission -name '*.py' 2>/dev/null | head -n1)" ] && src=true
+          [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ] && tests=true
+          if [ "$src" = true ] && [ "$tests" = true ]; then
+            echo "mode=cov" >> "$GITHUB_OUTPUT"
+          elif [ "$src" = true ]; then
+            echo "mode=fail" >> "$GITHUB_OUTPUT"
+          elif [ "$tests" = true ]; then
+            echo "mode=tests" >> "$GITHUB_OUTPUT"
+            echo "::notice::unit tests present but no mission-core source yet — running tests without the coverage gate"
+          else
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "::notice::no mission-core source or unit tests yet — skipping tests and coverage"
+          fi
+      - if: steps.cov.outputs.mode == 'fail'
+        run: |
+          echo "::error::mission-core source exists but there are no unit tests; the >= 85% coverage floor cannot be met. Add unit tests."
+          exit 1
+      - if: steps.cov.outputs.mode == 'tests'
+        name: Unit tests (no coverage gate yet)
+        run: uv run pytest tests/unit
+      - if: steps.cov.outputs.mode == 'cov'
+        name: Unit tests + coverage (>= 85%)
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=85 tests/unit
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0

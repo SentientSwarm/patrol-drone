@@ -1,0 +1,12 @@
+version: 2
+# Dependabot bumps SHA-pinned `uses:` action refs (and rewrites the `# vX.Y.Z`
+# comment). It does NOT track the ROS container image digest in ros-ci.yml
+# (`container.image`); refresh that digest manually when the colcon job
+# activates in M3.
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

@@ -43,6 +43,7 @@ What else did we look at? Why did we not pick those?
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-distro-and-os.md) | Ubuntu 24.04 + ROS 2 Jazzy + JetPack 7.2 | Accepted |
+| [0002](0002-ci-architecture.md) | Two-layer CI with xenon complexity and 85% coverage gates | Accepted |
 
 ## When to write an ADR
 

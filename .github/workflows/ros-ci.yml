@@ -1,0 +1,53 @@
+name: ROS CI
+# No top-level `paths:` filter: the workflow must always run so the
+# `colcon_build_test` check always reports — a workflow skipped by `on.paths`
+# never creates its check and would block a required-status-check PR forever.
+# The per-job `pkgs` guard does the real gating (skips the heavy build when
+# there are no packages yet).
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ros2-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  colcon_build_test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Pinned by digest for reproducibility. ubuntu-noble = 24.04. Refresh the digest
+    # when the colcon job activates in M3 (Dependabot does not track container digests).
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      # Bootstrap guard: no ROS packages exist until M3. Skip the build cleanly so the
+      # job is GREEN on the empty repo and auto-activates when the first package.xml lands.
+      - id: pkgs
+        shell: bash
+        run: |
+          if [ -n "$(find ros2_ws/src -name 'package.xml' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no ROS packages yet — skipping colcon build/test"
+          fi
+      - if: steps.pkgs.outputs.present == 'true'
+        uses: ros-tooling/action-ros-ci@3a640b10f09b756dabe556dac5413aba369f71b0 # 0.4.8
+        id: action_ros_ci
+        with:
+          target-ros2-distro: jazzy
+          # package-name intentionally omitted: action-ros-ci then builds and tests
+          # EVERY package in the workspace, so incremental M3 package introduction
+          # never fails on a package name that doesn't exist yet.
+          # rosdep-skip-keys: px4_msgs   # uncomment ONLY if rosdep flags px4_msgs
+      - if: ${{ always() && steps.pkgs.outputs.present == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: colcon-logs
+          path: ${{ steps.action_ros_ci.outputs.ros-workspace-directory-name }}/log
