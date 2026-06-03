@@ -1,8 +1,8 @@
-name: SITL Nightly (scaffold)
+name: SITL (scaffold)
+# Manual-only for now. The nightly `schedule:` returns in M3 once there is a real
+# SITL job to run — until then a nightly cron would just produce daily no-op runs.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 4 * * *'   # avoid :00 (congested); runs from default branch only
 permissions:
   contents: read
 jobs:

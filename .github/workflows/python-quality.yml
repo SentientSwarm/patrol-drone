@@ -15,20 +15,26 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
+          cache-dependency-glob: "uv.lock"
           python-version: "3.12"
+      - run: uv sync --locked --group dev
       - name: Ruff lint
-        run: uvx ruff@0.15.15 check --output-format=github .
+        run: uv run ruff check --output-format=github .
       - name: Ruff format check
-        run: uvx ruff@0.15.15 format --check .
+        run: uv run ruff format --check .
 
   types:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
@@ -55,47 +61,64 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          enable-cache: true
-          python-version: "3.12"
-      # HARD GATE — fail if any single function exceeds rank B (CC > 10). No average gates.
-      - name: Complexity hard gate (xenon)
-        run: >
-          uvx --with radon==6.0.1 xenon@0.9.3
-          --max-absolute B
-          -i "external,build,install,log"
-          analysis scripts tests ros2_ws/src
-      - name: Complexity report (radon, non-gating)
-        if: always()
-        run: |
-          uvx radon@6.0.1 cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
-          uvx radon@6.0.1 mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
-
-  test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      # Bootstrap guard: skip until unit tests exist. Once they do, the coverage gate
-      # runs and the ROS-free mission core must be >= 85% covered (see pyproject
-      # [tool.coverage.*]); the floor is then enforced on every PR.
-      - id: tests
+      # HARD GATE — fail if any single function exceeds rank B (CC > 10). No average gates.
+      # Run via locked uv env (xenon==0.9.3, radon==6.0.1) for full reproducibility.
+      - name: Complexity hard gate (xenon)
+        run: >
+          uv run xenon
+          --max-absolute B
+          -i "external,build,install,log"
+          analysis scripts tests ros2_ws/src
+      - name: Complexity report (radon, non-gating)
+        if: always()
+        run: |
+          uv run radon cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+          uv run radon mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      # Source-aware coverage policy (so new mission-core code can't bypass the floor):
+      #   no mission-core source & no tests -> skip (green)
+      #   mission-core source exists & no tests -> fail (new code must be covered)
+      #   unit tests exist -> run pytest + the >= 85% coverage gate
+      - id: cov
         shell: bash
         run: |
-          if [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
+          src=false; tests=false
+          [ -n "$(find ros2_ws/src/patrol_mission/patrol_mission -name '*.py' 2>/dev/null | head -n1)" ] && src=true
+          [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ] && tests=true
+          if [ "$tests" = true ]; then
+            echo "mode=run" >> "$GITHUB_OUTPUT"
+          elif [ "$src" = true ]; then
+            echo "mode=fail" >> "$GITHUB_OUTPUT"
           else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no unit tests yet — skipping tests and coverage"
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "::notice::no mission-core source or unit tests yet — skipping tests and coverage"
           fi
-      - if: steps.tests.outputs.present == 'true'
+      - if: steps.cov.outputs.mode == 'fail'
+        run: |
+          echo "::error::mission-core source exists but there are no unit tests; the >= 85% coverage floor cannot be met. Add unit tests."
+          exit 1
+      - if: steps.cov.outputs.mode == 'run'
         name: Unit tests + coverage (>= 85%)
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=85 tests/unit
 
@@ -104,4 +127,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0

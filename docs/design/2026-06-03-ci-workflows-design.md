@@ -49,7 +49,7 @@ type safety** — for a ROS 2 Jazzy + Python 3.12 monorepo that is currently a
   workflows/
     python-quality.yml   # Layer A — ruff, mypy, xenon, pytest+coverage, shellcheck (parallel jobs)
     ros-ci.yml           # Layer B — action-ros-ci colcon build+test in a Jazzy container
-    sitl-nightly.yml     # Scaffold only — workflow_dispatch + nightly cron, NOT required
+    sitl-nightly.yml     # Scaffold only — workflow_dispatch (manual), NOT required
   dependabot.yml         # keep action SHA pins fresh (github-actions ecosystem)
 pyproject.toml           # root: ruff/mypy/pytest/coverage config + dev dependency-group pins
 uv.lock                  # committed lockfile — identical tool versions in CI and local
@@ -124,21 +124,26 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
+          cache-dependency-glob: "uv.lock"
           python-version: "3.12"
-      # ruff is self-contained — run ephemerally via uvx (no project sync needed).
+      - run: uv sync --locked --group dev
       - name: Ruff lint
-        run: uvx ruff@0.15.15 check --output-format=github .
+        run: uv run ruff check --output-format=github .
       - name: Ruff format check
-        run: uvx ruff@0.15.15 format --check .
+        run: uv run ruff format --check .
 
   types:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
@@ -165,50 +170,64 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          enable-cache: true
-          python-version: "3.12"
-      # HARD GATE — fail if any single function exceeds rank B (CC > 10).
-      # No average gates: an average couples a PR to unrelated, previously-accepted
-      # code and can flip green->red on additive effects. Gate per-function only.
-      # xenon has no config file; thresholds live here as CLI flags (single source of truth).
-      - name: Complexity hard gate (xenon)
-        run: >
-          uvx --with radon==6.0.1 xenon@0.9.3
-          --max-absolute B
-          -i "external,build,install,log"
-          analysis scripts tests ros2_ws/src
-      # Non-gating report into the job summary (xenon is the sole authority).
-      - name: Complexity report (radon, non-gating)
-        if: always()
-        run: |
-          uvx radon@6.0.1 cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
-          uvx radon@6.0.1 mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
-
-  test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      # Bootstrap guard: skip until unit tests exist. Once they do, the coverage gate
-      # runs and the ROS-free mission core must be >= 85% covered (see §4.6).
-      - id: tests
+      # HARD GATE — fail if any single function exceeds rank B (CC > 10). No average gates.
+      # Run via the locked uv env (xenon==0.9.3, radon==6.0.1) for full reproducibility.
+      - name: Complexity hard gate (xenon)
+        run: >
+          uv run xenon
+          --max-absolute B
+          -i "external,build,install,log"
+          analysis scripts tests ros2_ws/src
+      - name: Complexity report (radon, non-gating)
+        if: always()
+        run: |
+          uv run radon cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+          uv run radon mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      # Source-aware coverage policy (so new mission-core code can't bypass the floor):
+      #   no mission-core source & no tests -> skip (green)
+      #   mission-core source exists & no tests -> fail (new code must be covered)
+      #   unit tests exist -> run pytest + the >= 85% coverage gate
+      - id: cov
         shell: bash
         run: |
-          if [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
+          src=false; tests=false
+          [ -n "$(find ros2_ws/src/patrol_mission/patrol_mission -name '*.py' 2>/dev/null | head -n1)" ] && src=true
+          [ -n "$(find tests/unit -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n1)" ] && tests=true
+          if [ "$tests" = true ]; then
+            echo "mode=run" >> "$GITHUB_OUTPUT"
+          elif [ "$src" = true ]; then
+            echo "mode=fail" >> "$GITHUB_OUTPUT"
           else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no unit tests yet — skipping tests and coverage"
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "::notice::no mission-core source or unit tests yet — skipping tests and coverage"
           fi
-      - if: steps.tests.outputs.present == 'true'
+      - if: steps.cov.outputs.mode == 'fail'
+        run: |
+          echo "::error::mission-core source exists but there are no unit tests; the >= 85% coverage floor cannot be met. Add unit tests."
+          exit 1
+      - if: steps.cov.outputs.mode == 'run'
         name: Unit tests + coverage (>= 85%)
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=85 tests/unit
 
@@ -217,18 +236,20 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
 ```
 
 ### Tool-runner rule
 
-- **`uvx`** for self-contained tools (`ruff`, `xenon`, `radon`) — ephemeral,
-  isolated, no project sync needed.
-- **`uv run`** for tools that must import the project's own modules (`mypy`,
-  `pytest`) — runs after `uv sync --locked`. `--locked` makes CI **fail** on a
-  stale `uv.lock` rather than silently re-resolving.
-- The dev group (§4.1) pins `ruff`/`mypy`/`pytest` to the same versions as the
-  `uvx` invocations, so `uv run` and `uvx` never diverge.
+- **`uv run`** (after `uv sync --locked`) for **every** tool — ruff, mypy,
+  pytest, xenon, radon. Running through the locked env (rather than `uvx`) makes
+  every tool version, including transitive deps, lockfile-backed and fully
+  reproducible. `--locked` makes CI **fail** on a stale `uv.lock` rather than
+  silently re-resolving.
+- The dev group (§4.1) pins all five tools; `uv run` resolves them from
+  `uv.lock`, so local and CI runs are byte-identical.
 - **Never** use `--fix` or a mutating `ruff format` in CI — `ruff check` is
   read-only and `ruff format --check` is verify-only (exits non-zero when a file
   *would* be reformatted, without modifying it).
@@ -459,12 +480,14 @@ counting against the floor. At M3 the `source` may switch to
 
 ```yaml
 name: ROS CI
+# No top-level `paths:` filter: the workflow must always run so the
+# `colcon_build_test` check always reports — a workflow skipped by `on.paths`
+# never creates its check and would block a required-status-check PR forever.
+# The per-job `pkgs` guard does the real (path-independent) gating.
 on:
   pull_request:
-    paths: ['ros2_ws/**', '.github/workflows/ros-ci.yml']
   push:
     branches: [main]
-    paths: ['ros2_ws/**', '.github/workflows/ros-ci.yml']
 permissions:
   contents: read
 concurrency:
@@ -475,10 +498,13 @@ jobs:
   colcon_build_test:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # Pinned by digest for reproducibility (ubuntu-noble = 24.04).
     container:
-      image: rostooling/setup-ros-docker:ubuntu-noble-latest   # Noble = 24.04; pin sha256 at impl
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       # Bootstrap guard: no ROS packages exist until M3. Skip the build cleanly so the
       # job is GREEN on the empty repo and auto-activates when the first package.xml lands.
       - id: pkgs
@@ -495,10 +521,11 @@ jobs:
         id: action_ros_ci
         with:
           target-ros2-distro: jazzy
-          package-name: patrol_interfaces patrol_mission patrol_perception patrol_bringup
+          # package-name omitted: action-ros-ci builds and tests ALL workspace packages,
+          # so incremental M3 package introduction can't fail on a not-yet-created name.
           # rosdep-skip-keys: px4_msgs   # uncomment ONLY if rosdep flags px4_msgs (see below)
       - if: ${{ always() && steps.pkgs.outputs.present == 'true' }}
-        uses: actions/upload-artifact@v4   # current major; pin exact SHA at implementation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: colcon-logs
           path: ${{ steps.action_ros_ci.outputs.ros-workspace-directory-name }}/log
@@ -507,8 +534,13 @@ jobs:
 - **Container approach** (`rostooling/setup-ros-docker:ubuntu-noble-latest`) is
   the action-ros-ci README's first-class recommendation. `setup-ros` is **not**
   needed in the container path (the image ships ROS dev tools + rosdep). Add
-  `setup-ros@0.7.18` only if you ever run container-less on a bare runner. Pin
-  the image's `sha256` digest at implementation (`:latest` is mutable).
+  `setup-ros@0.7.18` only if you ever run container-less on a bare runner. The
+  image is **pinned by digest** (`@sha256:f0ba5d58…`) for reproducibility;
+  refresh that digest when the colcon job activates in M3 (Dependabot does not
+  track container digests).
+- **`package-name` is omitted on purpose.** action-ros-ci then builds and tests
+  every package in the workspace, so M3 can add packages one at a time without
+  the build failing on a name that doesn't exist yet.
 - **Do not hand-roll colcon steps.** action-ros-ci internally runs
   `colcon build → colcon test → colcon test-result` and **propagates the
   non-zero exit** — fixing the well-known trap that `colcon test` itself exits 0
@@ -545,11 +577,9 @@ jobs:
 ## 6. `sitl-nightly.yml` — deferred scaffold (NOT a per-PR / required check)
 
 ```yaml
-name: SITL Nightly (scaffold)
+name: SITL (scaffold)
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: '17 4 * * *'   # avoid :00 (congested); runs from default branch only
+  workflow_dispatch:   # manual only; nightly schedule returns at M3 with a real job
 permissions:
   contents: read
 jobs:
@@ -561,13 +591,13 @@ jobs:
       - run: 'echo "TODO M3+: PX4 SITL + Gazebo Harmonic, run canonical mission, assert on bag"'
 ```
 
-`workflow_dispatch` (manual / self-test) + `schedule` (nightly, non-`:00` cron
-minute since top-of-hour slots are congested). Scheduled workflows run **only**
-from the default branch and GitHub can take 15+ minutes to register a new cron.
-This stays **informational forever** — never a required check. Per-PR
-`colcon test` only runs package test suites and never launches Gazebo/PX4 as
-long as those suites don't spawn the simulator — that invariant keeps SITL out
-of per-PR CI.
+**Manual-only (`workflow_dispatch`) for now** — a nightly `schedule:` on a no-op
+scaffold would just produce daily empty runs. The cron returns in M3 with a real
+SITL job (use a non-`:00` minute then; scheduled workflows run only from the
+default branch and GitHub can take 15+ min to register a new cron). This stays
+**informational forever** — never a required check. Per-PR `colcon test` only
+runs package test suites and never launches Gazebo/PX4 as long as those suites
+don't spawn the simulator — that invariant keeps SITL out of per-PR CI.
 
 ---
 
@@ -579,9 +609,12 @@ Require on `main`: the four Layer-A jobs (**lint**, **types**, **complexity**,
 `on: push: branches: [main]` (a check appears in the picker only after running on
 the default branch). Enable "Require branches to be up to date before merging."
 
-> Because `ros-ci.yml` is `paths:`-filtered, on pure-Python-only PRs the
-> `colcon_build_test` check reports as skipped. GitHub treats a skipped
-> path-filtered required check as success, which is the intended behavior here.
+> `ros-ci.yml` has **no** `paths:` filter, so it always runs and the
+> `colcon_build_test` check always reports — safe to mark required. (A
+> workflow-level `on.paths` skip would never create the check, blocking a
+> required-check PR indefinitely; the per-job `pkgs` guard does the
+> path-independent gating instead — it just skips the heavy build when there are
+> no packages.)
 
 ---
 
@@ -594,8 +627,9 @@ state and activates incrementally:
 - **mypy** → bootstrap guard finds no first-party `.py`, skips with a notice
   (mypy errors on "no files," so we guard rather than run it on an empty tree).
 - **xenon** over the listed dirs → no functions found. Pass.
-- **pytest + coverage** → bootstrap guard finds no unit tests, skips tests and
-  the 85% coverage gate with a notice. Both activate when the first unit test lands.
+- **tests + coverage** → source-aware guard: no mission-core source and no unit
+  tests → skip (green); mission-core source **without** tests → fail (new code
+  must be covered); unit tests present → run pytest + the 85% coverage gate.
 - **shellcheck** → lints existing `scripts/*.sh`. Pass (assuming clean).
 - **Layer B** → bootstrap guard finds no `package.xml`, skips the build. Green.
 
@@ -614,20 +648,21 @@ and possibly the `rosdep-skip-keys` line).
    lighter) vs a small editable install. Spike in M3.
 3. **px4_msgs build time** (rosidl generation) may dominate Layer-B; consider
    caching/splitting once real timings exist.
-4. **ADR-0002** — capture the settled CI decision (two-layer, xenon, tool stack)
-   as a short ADR per the repo working agreement, after implementation.
 
 ## 10. Verify at implementation time
 
-1. `actions/upload-artifact` — pin exact current major + commit SHA.
+Resolved in this PR: `actions/upload-artifact` pinned (`v7.0.1`), the
+`setup-ros-docker` image pinned by digest, `package-name` omitted (build/test all
+workspace packages), and all Layer-A tools run via the locked `uv` env. Remaining
+for M3:
+
+1. **Refresh the `setup-ros-docker` digest** when the colcon job activates
+   (Dependabot does not bump container digests).
 2. `codecov/codecov-action` — pin exact current major + SHA *if* uploading
    Layer-B coverage; do not copy the README's stale `@v1.2.1`.
-3. `rostooling/setup-ros-docker:ubuntu-noble-latest` — resolve and pin the
-   immutable `sha256` digest.
-4. Package names in `package-name` — confirm they match the actual M3 package
-   directory names so the test set is complete.
-5. Re-confirm `setup-uv` is still on the immutable-tag policy (no `@v8`) and the
-   pinned SHA matches the intended release.
+3. **px4_msgs rosdep key** — confirm on the first Layer-B run whether
+   `rosdep-skip-keys: px4_msgs` is needed.
+4. Re-confirm `setup-uv` is still on the immutable-tag policy (no `@v8`).
 
 ---
 
