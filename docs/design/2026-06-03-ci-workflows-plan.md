@@ -1,6 +1,6 @@
 # CI Workflows Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **How to use this plan:** work the tasks in order; each has bite-sized steps with exact commands and expected output. Steps use checkbox (`- [ ]`) syntax for tracking. Run commands from the repository root. This document is a historical build record for PR #1 — the durable design lives in the design spec and ADR-0002.
 
 **Goal:** Add GitHub Actions CI covering testing, linting, complexity, and type safety for the patrol-drone ROS 2 / Python monorepo, green on today's empty skeleton and auto-activating as code lands.
 
@@ -22,7 +22,7 @@
 
 - [ ] **Step 1: Confirm you're on the feature branch**
 
-Run: `git -C /Users/jxstanford/devel/SentientSwarm/patrol-drone branch --show-current`
+Run: `git branch --show-current`
 Expected: `ci/github-actions`
 
 - [ ] **Step 2: Confirm `uv` is installed (≥0.9)**
@@ -33,7 +33,7 @@ If "command not found": install with `curl -LsSf https://astral.sh/uv/install.sh
 
 - [ ] **Step 3: Confirm the working tree is clean**
 
-Run: `git -C /Users/jxstanford/devel/SentientSwarm/patrol-drone status --short`
+Run: `git status --short`
 Expected: empty output (the committed design spec is the only prior change on this branch).
 
 ---
@@ -83,7 +83,7 @@ Expected: sync completes, then prints `mypy 2.1.0 (compiled: ...)`. Confirms the
 
 Append `.venv/` to `.gitignore` if not already present.
 Run: `grep -qxF '.venv/' .gitignore || printf '\n# uv tooling venv\n.venv/\n' >> .gitignore`
-Then run: `git -C /Users/jxstanford/devel/SentientSwarm/patrol-drone status --short`
+Then run: `git status --short`
 Expected: shows `pyproject.toml`, `uv.lock`, and possibly `.gitignore` as changes — but **not** `.venv/`.
 
 - [ ] **Step 5: Commit**
@@ -672,7 +672,7 @@ git commit -m "Add Dependabot to update GitHub Actions pins"
 
 - [ ] **Step 1: Confirm a GitHub remote exists**
 
-Run: `git -C /Users/jxstanford/devel/SentientSwarm/patrol-drone remote -v`
+Run: `git remote -v`
 Expected: an `origin` pointing at the GitHub repo. If none, the workflows can't run on GitHub yet — stop and surface this to the user (the local verifications in Tasks 1–9 are the confidence floor until a remote exists).
 
 - [ ] **Step 2: Push the branch**
