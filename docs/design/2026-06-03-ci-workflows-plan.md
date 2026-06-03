@@ -161,7 +161,8 @@ git commit -m "Configure ruff lint and format for CI"
 ```toml
 [tool.mypy]
 python_version = "3.12"
-warn_unused_configs = true
+# warn_unused_configs intentionally OFF: the ROS import overrides are pre-declared
+# for modules the code may not all import yet, and would be flagged "unused".
 warn_redundant_casts = true
 warn_unused_ignores = true
 warn_return_any = true

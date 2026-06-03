@@ -39,3 +39,44 @@ max-complexity = 10   # CC > 10 == radon rank C, the same boundary as xenon -b B
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+# NB: warn_unused_configs is intentionally OFF — the ROS import overrides below are
+# pre-declared for modules the code may not all import yet, and would be flagged "unused".
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+check_untyped_defs = true
+no_implicit_optional = true
+ignore_missing_imports = false        # strict globally; only ROS roots exempted below
+exclude = [
+    "^\\.venv/",                       # uv's tooling venv on the runner
+    "^ros2_ws/(build|install|log)/",   # colcon artifacts, if ever present
+    "^ros2_ws/src/external/",          # vendored px4_msgs / px4_ros_com
+    "^tests/integration/",             # live ROS env — Layer B / nightly only
+    "^tests/replay/",
+]
+# mypy_path = "ros2_ws/src/patrol_mission"   # enable at M3 so `import patrol_mission` resolves
+
+# Tighten the ROS-free mission core (highest bug risk).
+[[tool.mypy.overrides]]
+module = "patrol_mission.*"
+disallow_untyped_defs = true
+
+# ROS packages ship no PEP 561 stubs and aren't installed on the Layer-A runner.
+# The trailing .* is MANDATORY — a bare `std_msgs` would not cover `std_msgs.msg`.
+[[tool.mypy.overrides]]
+module = [
+    "rclpy", "rclpy.*",
+    "px4_msgs", "px4_msgs.*",
+    "px4_ros_com", "px4_ros_com.*",
+    "std_msgs", "std_msgs.*",
+    "sensor_msgs", "sensor_msgs.*",
+    "geometry_msgs", "geometry_msgs.*",
+    "builtin_interfaces", "builtin_interfaces.*",
+    "patrol_interfaces", "patrol_interfaces.*",
+    "rosidl_runtime_py", "rosidl_runtime_py.*",
+    "ament_index_python", "ament_index_python.*",
+]
+ignore_missing_imports = true
