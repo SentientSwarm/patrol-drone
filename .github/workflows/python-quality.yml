@@ -1,0 +1,94 @@
+name: Python Quality
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: pyq-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Ruff lint
+        run: uvx ruff@0.15.15 check --output-format=github .
+      - name: Ruff format check
+        run: uvx ruff@0.15.15 format --check .
+
+  types:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      # Bootstrap guard: mypy errors on "no .py files." Run only once first-party
+      # Python exists; until then, skip with a notice.
+      - id: pyfiles
+        shell: bash
+        run: |
+          if [ -n "$(find ros2_ws/src analysis scripts tests -name '*.py' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no first-party Python yet — skipping mypy"
+          fi
+      - if: steps.pyfiles.outputs.present == 'true'
+        name: mypy
+        run: uv run mypy .
+
+  complexity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      # HARD GATE — fail if any single function exceeds rank B (CC > 10). No average gates.
+      - name: Complexity hard gate (xenon)
+        run: >
+          uvx --with radon==6.0.1 xenon@0.9.3
+          --max-absolute B
+          -i "external,build,install,log"
+          analysis scripts tests ros2_ws/src
+      - name: Complexity report (radon, non-gating)
+        if: always()
+        run: |
+          uvx radon@6.0.1 cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+          uvx radon@6.0.1 mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+      - run: uv sync --locked --group dev
+      - name: Unit tests
+        run: uv run pytest tests/unit || { code=$?; [ "$code" -eq 5 ] && echo "::notice::no unit tests yet" || exit "$code"; }
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
