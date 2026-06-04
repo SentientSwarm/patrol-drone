@@ -105,6 +105,32 @@ Remaining reconciler notes for your review:
 - **02 (OQ-8)** — RTH = explicit home-waypoint offboard sequence behind the single `RTH` state (PX4 RTL rejected to keep control authority + unit-testability).
 - **05 (OQ-3/4/5/6/7/8/10)** — manifest = SQLite (store-agnostic interface); reference bag = Git LFS trimmed slice + provenance note; replay assertions = 5 fixed topics, presence-first + mean-rate ±40%; CI replay budget ≤90 s; CI upload/ingest = local DGX stand-in (no real DGX); transport = rsync-over-SSH (S3 = deferred interface stub); sidecar = JSON.
 
+
+## 01 & 02 design-decision ratifications (2026-06-03)
+
+Reviewed the open questions in docsets 01 (Platform) and 02 (Mission Control). The auto-pilot had resolved nearly all with concrete defaults; these are now **human-ratified**.
+
+**Load-bearing (explicitly ratified):**
+
+| Docset | OQ | Decision | |
+|---|---|---|---|
+| 02 | OQ-1 | Mission state machine = **hand-rolled** (enum + `tick()`; no runtime dep; direct ≥85% branch coverage) | ✅ |
+| 02 | OQ-8 | Return-to-home = **explicit home-waypoint offboard sequence** (not PX4 RTL) — keeps control authority + unit-testability | ✅ |
+| 01 | OQ-2 | PX4 = **build from source**, multi-stage Dockerfile at the pinned tag (Docker-layer-cached) | ✅ |
+| 01 | OQ-4 | Gazebo CI rendering = **headless software-render** (llvmpipe); SITL stays nightly-only | ✅ |
+
+**Bulk-accepted defaults (ratified as the auto-pilot resolved them):**
+- **01 OQ-1** — uXRCE-DDS agent runs as a process inside the `sim` container (no separate compose service).
+- **01 OQ-5** — host-GPU passthrough = optional `docker compose --profile gpu` (never required).
+- **02 OQ-3** — mission topics: `std_msgs`, QoS reliable/transient-local depth-1 (state/current), latched (abort).
+- **02 OQ-4** — waypoint completion `tolerance_m: 0.5`, `hold_time_s: 2.0` (overridable YAML; SITL-tunable).
+- **02 OQ-5** — integration scenarios: one basic + one 2-wp patrol, nightly SITL; ≤8 min/scenario, quarantine-not-expand on flake (runtime figure **provisional** until measured).
+- **02 OQ-6** — low-battery abort: `/fmu/out/battery_status.remaining` < `0.20` (YAML threshold; transition unit-tested).
+
+**Still genuinely open (cannot be settled on paper — left as tracked OQs):**
+- **01 OQ-3** — exact PX4 v1.16.x tag + matching `px4_msgs` branch → M1–M2 integration spike (single edit point: the stack manifest).
+- **01 OQ-6** — ≤20-command README budget split → finalize once the sibling docsets contribute run-step counts (platform spine budgeted ≤12).
+
 ## Next step
 
 After you approve the pairs at the combined review, the lifecycle's next step is Linear materialization (run separately):
