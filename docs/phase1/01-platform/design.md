@@ -1,6 +1,6 @@
 # Platform & Simulation Foundation — System Design Working Document
 
-**Status:** Draft (rev — ReviewDesign auto-revise pass applied)
+**Status:** Approved (combined review 2026-06-03; bootstrapped to Linear)
 **Version:** 0.2.0
 **Date:** 2026-06-03
 **Projects:** Autonomous Drone Patrol — Phase 1 Docset 01 (Platform & Simulation Foundation)
@@ -172,7 +172,7 @@ Q1 (components/interactions), Q2 (owned contract = the `/fmu/*` ROS 2 topic surf
 
 ## 6. Implementation Plan
 
-Three milestones — M1, M2 (mirroring the DoD's M1/M2, walking-skeleton) plus **MZ** (terminal catch-all). Materialized as a per-docset-local Linear project; each milestone's Definition of Done includes a documentation true-up (§6.4):
+Three milestones — M1, M2 (mirroring the DoD's M1/M2, walking-skeleton) plus **MZ** (terminal catch-all). Materialized as a per-docset-local Linear project — **[Patrol Drone 01 Platform](https://linear.app/wemodulate/project/patrol-drone-01-platform-742e10556ec3)** (Swarm team; project id `b8c9ed1c-51dc-4ead-a63a-04d8de0cd352`); each milestone's Definition of Done includes a documentation true-up (§6.4):
 
 - **M1 (skeleton — toolchain installed, vanilla SITL flying):** thinnest end-to-end slice — pinned toolchain that flies `gz_x500` and hovers 60 s via QGC (PLAT-1). No ROS/containers yet (deliberate — validate the install before layering architecture). Demo gate: stakeholder runs `make px4_sitl gz_x500`, arms/takes off, watches 60 s hover. Tasks T1.1–T1.4 (toolchain+PX4 source build; draft manifest; scaffold `sim` build stage; first README fragment).
 - **M2 (layer 1: ROS 2 bridge, reproducible build & onboarding):** thickens the skeleton across every remaining layer — vendored `px4_msgs`/`px4_ros_com` (C6), agent bridging + `/fmu/*` (C4), `sim`+`dev` from compose incl. headless (C1/C2/C3, PLAT-9), single green `colcon build` in-container + on CI Layer B (C5, PLAT-4), `patrol_*` shells (C7/C8), README spine (C10), finalized manifest (C9). Demo gate: live `/fmu/*` at ~50 Hz over 60 s + clean-host README reproduction in <20 commands. Tasks T2.1–T2.8 with Files-Touched populated for L/XL tasks, per-milestone Out-of-Scope tables with Source citations, testing + documentation tables.
