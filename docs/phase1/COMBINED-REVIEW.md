@@ -131,6 +131,14 @@ Reviewed the open questions in docsets 01 (Platform) and 02 (Mission Control). T
 - **01 OQ-3** — exact PX4 v1.16.x tag + matching `px4_msgs` branch → M1–M2 integration spike (single edit point: the stack manifest).
 - **01 OQ-6** — ≤20-command README budget split → finalize once the sibling docsets contribute run-step counts (platform spine budgeted ≤12).
 
+## Linear materialization conventions (2026-06-03)
+
+- **Structure:** one **per-docset-local** Linear project per docset (local M1/M2… numbering). The PRD/DoD M3–M8 references are master-plan traceability links, not Linear milestones.
+- **MZ:** every project gets a terminal **MZ** catch-all milestone for work that surfaces during the build but isn't blocking — deferred OQs/spikes, e2e/integration test expansion, hardening. **"Project done" = MZ reviewed and cleared, or items explicitly punted to Phase 2.**
+- **Documentation true-up (both cadences):** each milestone's Definition of Done includes a lightweight doc true-up (PRD/Design/DoD/README reconciled against what was built that milestone); **MZ** holds the comprehensive final documentation + test consolidation.
+- **Bootstrap order:** **01 + 02 first** (foundation); 03/04/05 when reached. 02's forward-refs to 03/04/05 contracts stay as tracked text until those docsets are bootstrapped.
+- Seeded into the 01 and 02 design §6 already; apply the same pattern to 03/04/05 at their bootstrap.
+
 ## Next step
 
 After you approve the pairs at the combined review, the lifecycle's next step is Linear materialization (run separately):
