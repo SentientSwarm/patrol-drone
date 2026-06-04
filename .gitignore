@@ -67,3 +67,6 @@ credentials.json
 # Local development
 .local/
 local_config.yaml
+
+# lifecycle /drive session logs (process artifacts)
+lifecycle-sessions/

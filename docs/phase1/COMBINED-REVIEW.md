@@ -1,0 +1,150 @@
+# Phase 1 — Combined PRD + Design review packet
+
+**Status: REVIEWED — 2026-06-03.** All 10 cross-docset decisions resolved (8 confirmed the recommended default; 2 deferred to the M1–M2 probe). Per-doc OQ status flags flipped to Resolved. The pairs are approved for the next lifecycle step (Linear bootstrap), pending the two M1–M2 probes.
+
+Auto-piloted through the `lifecycle:/drive` harness (prd-engine + software-design) from each docset's `dod.md`. Each docset's PRD and Design were generated as a coherent pair, self-reviewed and auto-revised against the prd-engine / software-design rubrics at the medium-severity floor. These are **first-pass drafts for a single combined human review** — review each PRD+Design pair *together* (the lifecycle collapses Gate A and Gate B into one combined gate).
+
+## Resolutions (combined human review — 2026-06-03)
+
+| # | Decision | Resolution | Outcome |
+|---|---|---|---|
+| 1 | CheckpointCapture image representation | `string image_path` (PNG/JPEG on disk) + header/checkpoint_id/pose/metadata; live frames on a separate `sensor_msgs/CompressedImage` topic the bag records (not pixels by-value) | ✅ default confirmed |
+| 2 | Capture trigger (02↔04) | 02 enters DWELL and publishes the index on `/patrol/current_waypoint`; 04 captures exactly once per DWELL (02 owns the trigger) | ✅ default confirmed |
+| 3 | Camera owner + topics | 03 owns the camera: live `sensor_msgs/Image` on `/drone/camera/image_raw` (04 subscribes) + `sensor_msgs/CompressedImage` on `/drone/camera/image_raw/compressed` (05 records) | ✅ default confirmed |
+| 4 | `/patrol/*` mission topic types | `std_msgs`: `mission_state`=String, `current_waypoint`=Int32, `abort`=Bool (typed states live in the state-machine code) | ✅ default confirmed |
+| 5 | Checkpoint config location | single shared `sim/config/checkpoints.yaml` (03-owned), `{checkpoint_id, position{x,y,z} ENU, tag_family, tag_id}`; 02/04 read it via a parameter | ✅ default confirmed |
+| 6 | Recorded-topic set strategy | broad-then-prune (record the full relevant surface now; prune later) per M7 | ✅ default confirmed |
+| 7 | Gazebo near-real-time RTF | **non-binding** (informational); revisit only if M2 minimum-spec profiling shows a real problem | ✅ default confirmed |
+| 8 | Mission state-machine coverage floor | **≥85%** (the enforced ADR-0002 CI floor) governs; 02 DoD AC-4 prose updated from `>80%` | ✅ confirmed (≥85%) |
+| 9 | `apriltag_ros` / `cv_bridge` on Jazzy in-container | defer to an M1–M2 in-container probe; fallback = `apriltag` C lib + a thin off-the-shelf detector node | ⏳ deferred to probe |
+| 10 | Exact PX4 v1.16.x tag + `px4_msgs` branch | defer to the M1–M2 integration spike (also the falsification gate for the Jazzy-early-adopter bet) | ⏳ deferred to probe |
+
+These resolutions are authoritative. The per-docset PRD/Design/DoD OQ tables had their matching status flags flipped from "Provisional (pending user confirmation)" to "Resolved (combined review 2026-06-03)". The two deferred items remain tracked OQs resolved by a probe, not a paper decision.
+
+## Pairs
+
+| Docset | Tier | PRD | Design | Deferred OQs |
+|---|---|---|---|---|
+| 01-platform — Platform & Simulation Foundation | Standard | [prd.md](01-platform/prd.md) | [design.md](01-platform/design.md) | ~18 |
+| 02-mission-control — Mission Control | Standard | [prd.md](02-mission-control/prd.md) | [design.md](02-mission-control/design.md) | ~22 |
+| 03-sim-environment — Simulation Environment & Assets | Standard | [prd.md](03-sim-environment/prd.md) | [design.md](03-sim-environment/design.md) | ~24 |
+| 04-perception — Perception & Checkpoint Capture | Standard | [prd.md](04-perception/prd.md) | [design.md](04-perception/design.md) | ~25 |
+| 05-logging-replay — Logging & Replay Pipeline | Standard | [prd.md](05-logging-replay/prd.md) | [design.md](05-logging-replay/design.md) | ~24 |
+
+## Decisions presented for review (now resolved — see Resolutions above)
+
+These cross-docset contracts were generated to a **recommended default** (so the five pairs stay coherent) and need your confirmation:
+
+- Decision: CheckpointCapture image representation — recommended default `string image_path` (path to a PNG/JPEG on disk) + header/checkpoint_id/pose/metadata, NOT pixels by-value, with live frames carried on a separate `sensor_msgs/CompressedImage` topic that the bag records — affects 04-perception (owner), 05-logging-replay (consumer/recorder), 03-sim-environment (publishes the CompressedImage source).
+- Decision: Checkpoint mapping schema/location — recommended default a single shared YAML `sim/config/checkpoints.yaml`, list of `{checkpoint_id: string, position: {x,y,z} world/ENU meters, tag_family: string, tag_id: int}`, owned by 03 — affects 03-sim-environment (owner), 02-mission-control (reads position→waypoints, converts ENU→NED at one boundary), 04-perception (maps tag_id→checkpoint_id). Field-set is consistent across all three; confirm the final on-disk LOCATION/name (03 DoD §7 still lists it open — consumers isolate the path behind a parameter so a different location is a one-line change).
+- Decision: Camera topic names + CompressedImage owner — recommended default 03 OWNS the camera and publishes live `sensor_msgs/Image` on `/drone/camera/image_raw` plus the companion `sensor_msgs/CompressedImage` on `/drone/camera/image_raw/compressed` (the topic the bag records); concrete values 640×480 @ 15 Hz, frame_id `camera_link` are provisional — affects 03 (owner), 04 (subscribes to Image; OQ-8 owner now = 03), 05 (records the CompressedImage string). Reconciler aligned 05's topic string and 04's OQ-8 owner to 03.
+- Decision: Capture-trigger contract (02↔04) — recommended default 02 emits the observable `DWELL` state + index on the 02-owned `/patrol/current_waypoint`; 04 captures exactly once per DWELL (no new topic owned by 02) — affects 02-mission-control, 04-perception. Confirm explicit-DWELL-signal vs 04-infers-from-AprilTag-in-view+dwell.
+- Decision: Recorded camera-frame compressed-vs-raw + final recorded-topic set (05 OQ-1) — recommended default broad topic set per LR-2 with live frames recorded as `sensor_msgs/CompressedImage` from 03-owned `/drone/camera/image_raw/compressed` — affects 03, 04, 05. Must be confirmed before the M8 reference bag is generated (the reference bag bakes in the topic set).
+- Decision: /patrol/* mission topic types — recommended default the std_msgs types resolved in 02 design OQ-3 (`/patrol/mission_state`=std_msgs/String, `/patrol/current_waypoint`=std_msgs/Int32, `/patrol/abort`=std_msgs/Bool) — affects 02 (owner-of-record), 05 (records/asserts them), 04 (binds its trigger to /patrol/current_waypoint). Reconciler pinned these into 05.
+- Decision: Near-real-time RTF target (03 OQ-8) — recommended default keep NON-BINDING (the DoD sets no perf contract); promote to a binding acceptance criterion only if the human or M2 minimum-spec profiling decides minimum-spec performance is a hard gate — affects 03-sim-environment.
+- Decision: Coverage floor for the mission state machine (02) — recommended default the enforced ADR-0002 CI floor of ≥85% (stricter than the DoD AC-4 prose floor of >80%) — affects 02-mission-control. Confirm the stricter enforced number governs.
+- Decision: `apriltag_ros` (or equivalent) buildable on ROS 2 Jazzy in-container (04 OQ-6) — recommended action verify in-container (`apt-cache policy ros-jazzy-apriltag-ros` or source-build probe) before Phase B; fallback is the `apriltag` C library + a thin off-the-shelf detector node (no hand-rolling) — affects 04-perception. Needs an actual in-container probe, not a paper decision.
+- Decision: Exact PX4 v1.16.x tag + matching px4_msgs branch to vendor (01 OQ-3) — recommended action settle via the M1–M2 early-adopter integration spike (also the falsification gate for H2); cannot be picked on paper — affects 01-platform and, transitively, every docset that builds against px4_msgs.
+
+## Cross-pair reconciliation
+
+A reconciler pass checked every shared contract across the five pairs. Result:
+
+- ✅ **patrol_interfaces/msg/CheckpointCapture message schema (fields: std_msgs/Header header, string checkpoint_id, geometry_msgs/PoseStamped pose, string image_path, diagnostic_msgs/KeyValue[] metadata)** (owner 04-perception) — Owner 04 (design §4.2.7, PCAP-4) and consumer 05 (design §4.2.1, AppB UAC-LR-7 line 813) name the type and the image-by-path representation identically: string image_path (NOT by-value pixels), with live frames on a separate sensor_msgs/CompressedImage topic that the bag records. Both flag it Provisional/pending-user-confirmation with the settled default applied (04 OQ-1, 05 OQ-2). metadata=diagnostic_msgs/KeyValue[] is resolved in 04 and matches 05's recorded shape. 04's DoD AC-3 also allows sensor_msgs/Image as an alternative; both designs converged on the image_path default, so no drift between the pair.
+- ✅ **/patrol/checkpoint_capture topic (type patrol_interfaces/msg/CheckpointCapture)** (owner 04-perception) — Topic name and type identical across 04 (owner, design §1/PCAP-3) and 05 (recorded-topics table line 129, replay-assertion subset line 375, M7 exit criteria). 05 records it; 04 emits it. No drift.
+- ⚠️ DRIFT **/patrol/mission_state, /patrol/current_waypoint, /patrol/abort topic names + types** (owner 02-mission-control) — Names agree everywhere. TYPES drift: 02 design OQ-3 RESOLVED these to std_msgs: /patrol/mission_state=std_msgs/String, /patrol/current_waypoint=std_msgs/Int32, /patrol/abort=std_msgs/Bool. 05's design still carries these as 'TBD (02-owned)' (it correctly defers ownership to 02 but is stale on the now-resolved values, so the recorded-topics table and replay assertions do not pin the std_msgs types). 04 binds its capture trigger to /patrol/current_waypoint (a 02-owned topic) consistent with 02's ownership, but does not restate the type. Fix is to propagate 02's resolved std_msgs types into 05 (and optionally note them in 04).
+- ✅ **sim/config/checkpoints.yaml schema (list of {checkpoint_id: string, position: {x,y,z} world/ENU meters, tag_family: string, tag_id: int})** (owner 03-sim-environment) — Path sim/config/checkpoints.yaml and the four-field row are named identically by owner 03 (design OQ-2 / §4.4.2), consumer 02 (design OQ-2: reads position to build waypoints, path is a single MissionConfig param), and consumer 04 (design OQ-5: maps tag_id -> checkpoint_id, does not fork the mapping). All three carry it Provisional/pending-user-confirmation with the same settled default. One open sub-point all three correctly flag: the file LOCATION/name is listed as still-open in 03's DoD §7, so 02 and 04 isolate the path behind a parameter — schema (field set) is consistent; only the final on-disk location awaits the joint review. Not a drift, a tracked shared open question.
+- ⚠️ DRIFT **RGB camera topics: live sensor_msgs/Image + companion sensor_msgs/CompressedImage (the latter is what the bag records)** (owner 03-sim-environment) — TWO drifts. (1) TOPIC NAME: 03 design names them /drone/camera/image_raw (Image) and /drone/camera/image_raw/compressed (CompressedImage); 05 design records a camera CompressedImage topic written as '/camera/image/compressed' (hedged with 'e.g.', line 130) — a different name. They must agree on the exact CompressedImage topic string the bag records. (2) OWNERSHIP of the live CompressedImage topic: 03's design RESOLVES this — 03 owns the camera and explicitly owns the companion /drone/camera/image_raw/compressed topic. But 04 design OQ-8 still says the owner is 'Open (cross-docset, owner unassigned)' and 05 OQ-1 treats it as joint 03/04/05. Since 03 has claimed ownership, 04 and 05 should point at 03 as owner rather than leaving it unassigned. The image-representation default (CompressedImage carries frames for the bag) is otherwise consistent across all three.
+- ✅ **mission_basic.launch.py / mission_patrol.launch.py entrypoints (05's bag-recorder wrapper is included by mission_patrol.launch.py)** (owner 02-mission-control) — Both launch-file names owned by 02 (design §1, MC-1/MC-2, README matrix) and consumed identically. 05's design includes its recorder via mission_patrol.launch.py (05 design lines 642-645, M7; 02 design notes 'patrol_bringup launch (includes 05 recorder)'). Entrypoint command `ros2 launch patrol_bringup mission_patrol.launch.py` is byte-identical in 02 and 05. 05 names its own include 'record.launch.py' which 02's launch pulls in — no collision. No drift.
+- ✅ **/fmu/out/* telemetry surface (over uXRCE-DDS, px4_msgs types)** (owner 01-platform) — 01 owns and exposes /fmu/out/* (notably vehicle_local_position, battery_status, vehicle_status) per its DoD §5 and design. 02 consumes the specific fields (design §3.2) and 05 records the /fmu/out/* surface with px4_msgs types (design lines 125, 377). Names and types consistent across owner and both consumers. No drift.
+- ✅ **MCAP bag naming (patrol_<missionId>_<timestamp>.mcap) + recorded-topic set** (owner 05-logging-replay) — Filename convention patrol_<missionId>_<timestamp>.mcap is consistent (05 design LR-1/M7, matches its DoD AC-1 and the README matrix). The recorded-topic set (05 design §4.2.1 recorded_topics, M7 exit) includes every topic the other docsets produce: /fmu/out/* (01), /patrol/{mission_state,current_waypoint,abort} (02), /patrol/checkpoint_capture (04), the camera CompressedImage frames (03), and TF. Coverage is complete; the only residual is the exact camera CompressedImage topic STRING (see camera-topics contract drift) which must be the same name 05 lists in recorded_topics.yaml. Bag naming and topic-set coverage are otherwise consistent.
+
+**Drift fixes applied** (to make the committed docs internally consistent):
+- `05-logging-replay/design.md` §4.2.1 recorded-topics table: pinned the mission topic types to 02's resolved `std_msgs` types (`mission_state`=String, `current_waypoint`=Int32, `abort`=Bool) and corrected the camera topic to 03's `/drone/camera/image_raw/compressed` (owner 03).
+
+Remaining reconciler notes for your review:
+- `docs/phase1/05-logging-replay` [design]: Replace the hedged camera topic name '/camera/image/compressed' (recorded-topics table, ~line 130) with the exact name 03 owns: '/drone/camera/image_raw/compressed' (sensor_msgs/CompressedImage). Use that same string in recorded_topics.yaml (T7.3, §4.2.1) and the replay-assertion subset (§4.2.5, line 376) so the recorded/asserted camera topic matches 03's published topic verbatim.
+- `docs/phase1/03-sim-environment` [design]: Promote the camera topic names to the cross-docset contract surface (§4.4.4 / OQ-4) as the single source of truth other docsets cite: live sensor_msgs/Image on /drone/camera/image_raw and companion sensor_msgs/CompressedImage on /drone/camera/image_raw/compressed. Explicitly state that 03 OWNS the companion CompressedImage topic (so 04 OQ-8 / 05 OQ-1 can point at 03 as owner). Keep the Provisional/pending-user-confirmation flag on the concrete values.
+- `docs/phase1/04-perception` [design]: Update OQ-8: change the live-frame sensor_msgs/CompressedImage topic owner from 'Open (cross-docset, owner unassigned)' to '03-sim-environment (owns the camera; publishes the companion /drone/camera/image_raw/compressed topic)'. 04 still does not create the topic; it only records that 03 is the resolved owner, removing the 'owner unassigned' ambiguity. Keep flagged pending the combined human review.
+- `docs/phase1/05-logging-replay` [design]: Pin 02's resolved std_msgs types in the recorded-topics table (§4.2.1) and replay-assertion subset (§4.2.5): /patrol/mission_state=std_msgs/String, /patrol/current_waypoint=std_msgs/Int32, /patrol/abort=std_msgs/Bool, citing 02 design OQ-3 as the owner-of-record. Retain the '02-owned' attribution but replace 'TBD' with the resolved types so the bag/replay contract is concrete.
+- `docs/phase1/05-logging-replay` [design]: Update OQ-1 to reference 03 as the owner of the live CompressedImage camera topic (consistent with the 03-design fix), and confirm the recorded camera topic string equals 03's /drone/camera/image_raw/compressed rather than the placeholder '/camera/image/compressed'.
+
+## Deferred findings
+
+## Deferred / residual findings across the 5 PRD+Design pairs (for combined human review)
+
+### Cross-docset contracts — Provisional, PENDING USER CONFIRMATION (the two mandated defaults + their coordinates)
+- **04-perception · PRD+Design (OQ-1 / OQ-2)** — CheckpointCapture image representation = `string image_path` + separate `sensor_msgs/CompressedImage` live-frame topic the bag records; NOT pixels by-value. Owned by 04, consumed by 05. Needs joint confirmation with 05.
+- **05-logging-replay · PRD+Design (OQ-2)** — same CheckpointCapture image_path contract, consumer side. Must match 04 verbatim at combined review; confirm BEFORE the M8 reference bag is generated (the reference bag bakes in the topic set).
+- **03-sim-environment · PRD+Design (OQ-2)**, **02-mission-control · PRD+Design (OQ-2)**, **04-perception · PRD+Design (OQ-5)** — shared `sim/config/checkpoints.yaml` schema `{checkpoint_id:string, position{x,y,z} world/ENU m, tag_family:string, tag_id:int}`. Field-set CONSISTENT across all three. Residual open sub-point: the on-disk file LOCATION/name is still flagged open in 03 DoD §7 — consumers (02, 04) isolate the path behind a parameter; confirm the final location jointly.
+- **05-logging-replay · PRD+Design (OQ-1)** — final recorded-topic set + compressed-vs-raw camera frame (live frame as `sensor_msgs/CompressedImage`, 03-owned `/drone/camera/image_raw/compressed`). Provisional; confirm with 03/04 before the reference bag exists.
+
+### Cross-docset ownership/types RESOLVED by the reconciler (drift fixed; recorded for confirmation)
+- **Camera CompressedImage topic owner + name** — RESOLVED to **03-sim-environment**, topic string **`/drone/camera/image_raw/compressed`**. Reconciler aligned: 03 design §4.4.4/OQ-4 now states 03 owns the companion topic; 04 design OQ-8 owner changed 'unassigned' → 03; 05 design replaced placeholder `/camera/image/compressed` → `/drone/camera/image_raw/compressed` in §3.3, recorded_topics (§4.2.1), and replay assertions (§4.2.5). Confirm at review.
+- **/patrol/* mission topic types** — RESOLVED by 02 design OQ-3 to std_msgs (`/patrol/mission_state`=String, `/patrol/current_waypoint`=Int32, `/patrol/abort`=Bool). Reconciler pinned these into 05 §3.3 + §4.2.5 (were 'TBD'). 04 binds its trigger to the 02-owned `/patrol/current_waypoint`. Confirm at review.
+- **Capture-trigger contract (02↔04, OQ-3/OQ-7)** — 02 emits observable `DWELL` + `/patrol/current_waypoint` index; 04 captures once per DWELL. Confirm explicit-vs-inferred shape jointly.
+
+### Deferred / needs-external-input or measurement (not human contract decisions, recorded for visibility)
+- **01-platform · PRD (OQ-3)** — exact PX4 v1.16.x tag + matching px4_msgs branch; gated on the M1–M2 integration spike; falsification gate for H2.
+- **01-platform · PRD/Design (OQ-1/OQ-2/OQ-4/OQ-5/OQ-6)** — design-phase calls: uXRCE-DDS as own compose service vs in-`sim`; PX4 source-vs-prebuilt image; headless rendering backend for CI; GPU passthrough; ≤20-command README budget allocation (integrative, item 10, spans all docsets).
+- **02-mission-control · Design (OQ-5)** — SITL runtime/flakiness budget (≤8 min/scenario, quarantine on >1-in-5 flake) provisional; re-confirm against measured wall-clock once 01's SITL lands.
+- **02-mission-control · Design (§3.5)** — five pre-M3 verified-precondition gates pending until producers (01/03/05) + vendored px4_msgs land; run the probe commands before M3.
+- **03-sim-environment · PRD/Design (OQ-8)** — promote near-real-time RTF to a binding AC? Kept non-binding (DoD sets no perf contract); decide at review or via M2 profiling.
+- **03-sim-environment · Design (OQ-5)** — camera mount pose × FOV × tag size × approach altitude coupled-tuning rabbit hole; provisional values (FOV ~1.2 rad, ~0.5 m tag, forward/slightly-down); lock by tuning a reference checkpoint in M2 (T2.5) before 02 finalizes approach geometry.
+- **03-sim-environment · Design (OQ-7 residual)** — `gz_x500_patrol` camera-variant airframe via the PX4 override path (assumption A2) asserted, not yet verified against a live SITL run; M1-skeleton validates SIM-3 first to buy this down.
+- **04-perception · Design (OQ-6 / VP-1)** — `apriltag_ros` buildable on Jazzy in-container; UNVERIFIED, scheduled probe before Phase B; fallback `apriltag` C lib + thin detector node.
+- **04-perception · Design (OQ-9 / VP-2 [INFERRED])** — `cv_bridge` + OpenCV encode on Jazzy in-container; UNVERIFIED, bundled with the OQ-6 probe; fallback minimal PNG writer.
+- **05-logging-replay · PRD/Design (OQ-9)** — precise bag-size MB ceiling deferred to the first measured canonical 5-min M7 recording; until then pass/fail = 'hundreds-of-MB, not GB'.
+- **05-logging-replay · Design (inferred names)** — `patrol_logging` colcon package name and `analysis/upload_daemon/` dir are `[INFERRED]`; confirm against 01's workspace conventions before T7.1/T8.2.
+
+### Right-sized N/A dimensions (recorded so the reviewer does not read them as gaps)
+- **01, 03, 04, 05** — Security/Auth and (01/03/05) UX dimensions are explicitly `[OOS]`/N/A by docset nature (single-host SITL, no auth surface; infra/CLI/asset docsets with no GUI). Correct-by-scope, not omissions.
+
+### Design-resolved how-decisions (non-blocking, worth a glance)
+- **01 (OQ-1/2/4/5)** — agent as in-`sim` process; PX4 from source multi-stage; headless software-render default + SITL nightly; optional `gpu` compose profile.
+- **02 (OQ-8)** — RTH = explicit home-waypoint offboard sequence behind the single `RTH` state (PX4 RTL rejected to keep control authority + unit-testability).
+- **05 (OQ-3/4/5/6/7/8/10)** — manifest = SQLite (store-agnostic interface); reference bag = Git LFS trimmed slice + provenance note; replay assertions = 5 fixed topics, presence-first + mean-rate ±40%; CI replay budget ≤90 s; CI upload/ingest = local DGX stand-in (no real DGX); transport = rsync-over-SSH (S3 = deferred interface stub); sidecar = JSON.
+
+
+## 01 & 02 design-decision ratifications (2026-06-03)
+
+Reviewed the open questions in docsets 01 (Platform) and 02 (Mission Control). The auto-pilot had resolved nearly all with concrete defaults; these are now **human-ratified**.
+
+**Load-bearing (explicitly ratified):**
+
+| Docset | OQ | Decision | |
+|---|---|---|---|
+| 02 | OQ-1 | Mission state machine = **hand-rolled** (enum + `tick()`; no runtime dep; direct ≥85% branch coverage) | ✅ |
+| 02 | OQ-8 | Return-to-home = **explicit home-waypoint offboard sequence** (not PX4 RTL) — keeps control authority + unit-testability | ✅ |
+| 01 | OQ-2 | PX4 = **build from source**, multi-stage Dockerfile at the pinned tag (Docker-layer-cached) | ✅ |
+| 01 | OQ-4 | Gazebo CI rendering = **headless software-render** (llvmpipe); SITL stays nightly-only | ✅ |
+
+**Bulk-accepted defaults (ratified as the auto-pilot resolved them):**
+- **01 OQ-1** — uXRCE-DDS agent runs as a process inside the `sim` container (no separate compose service).
+- **01 OQ-5** — host-GPU passthrough = optional `docker compose --profile gpu` (never required).
+- **02 OQ-3** — mission topics: `std_msgs`, QoS reliable/transient-local depth-1 (state/current), latched (abort).
+- **02 OQ-4** — waypoint completion `tolerance_m: 0.5`, `hold_time_s: 2.0` (overridable YAML; SITL-tunable).
+- **02 OQ-5** — integration scenarios: one basic + one 2-wp patrol, nightly SITL; ≤8 min/scenario, quarantine-not-expand on flake (runtime figure **provisional** until measured).
+- **02 OQ-6** — low-battery abort: `/fmu/out/battery_status.remaining` < `0.20` (YAML threshold; transition unit-tested).
+
+**Still genuinely open (cannot be settled on paper — left as tracked OQs):**
+- **01 OQ-3** — exact PX4 v1.16.x tag + matching `px4_msgs` branch → M1–M2 integration spike (single edit point: the stack manifest).
+- **01 OQ-6** — ≤20-command README budget split → finalize once the sibling docsets contribute run-step counts (platform spine budgeted ≤12).
+
+## Linear materialization conventions (2026-06-03)
+
+- **Structure:** one **per-docset-local** Linear project per docset (local M1/M2… numbering). The PRD/DoD M3–M8 references are master-plan traceability links, not Linear milestones.
+- **MZ:** every project gets a terminal **MZ** catch-all milestone for work that surfaces during the build but isn't blocking — deferred OQs/spikes, e2e/integration test expansion, hardening. **"Project done" = MZ reviewed and cleared, or items explicitly punted to Phase 2.**
+- **Documentation true-up (both cadences):** each milestone's Definition of Done includes a lightweight doc true-up (PRD/Design/DoD/README reconciled against what was built that milestone); **MZ** holds the comprehensive final documentation + test consolidation.
+- **Bootstrap order:** **01 + 02 first** (foundation); 03/04/05 when reached. 02's forward-refs to 03/04/05 contracts stay as tracked text until those docsets are bootstrapped.
+- Seeded into the 01 and 02 design §6 already; apply the same pattern to 03/04/05 at their bootstrap.
+
+## Next step
+
+After you approve the pairs at the combined review, the lifecycle's next step is Linear materialization (run separately):
+
+```
+/linear "Bootstrap milestones and issues from these Phase 1 designs into the project"
+```
+
+_Auto-pilot drive: 2026-06-03T17-43-32. Session log under `lifecycle-sessions/` (gitignored)._
