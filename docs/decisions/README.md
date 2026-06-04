@@ -44,6 +44,7 @@ What else did we look at? Why did we not pick those?
 |---|---|---|
 | [0001](0001-distro-and-os.md) | Ubuntu 24.04 + ROS 2 Jazzy + JetPack 7.2 | Accepted |
 | [0002](0002-ci-architecture.md) | Two-layer CI with xenon complexity and 85% coverage gates | Accepted |
+| [0003](0003-phase1-bootstrap-scope.md) | `setup_phase1.sh` provisions the full Phase 1 toolchain, not just M1 | Accepted |
 
 ## When to write an ADR
 

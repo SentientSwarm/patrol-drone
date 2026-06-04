@@ -70,3 +70,6 @@ local_config.yaml
 
 # lifecycle /drive session logs (process artifacts)
 lifecycle-sessions/
+
+# Docs/Notes
+Claude.md
