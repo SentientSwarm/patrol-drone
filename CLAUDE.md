@@ -20,19 +20,22 @@ Current branch convention: `phase1/m<n>-<slug>` (e.g. `phase1/m1-host-setup`), P
 
 ## Stack (pinned) and what's installed on this host
 
-| Layer | Choice | Installed here |
+The **canonical pinned stack manifest is [`stack-manifest.toml`](stack-manifest.toml)** (PLAT-7 / AC-8) — the single source of truth every toolchain layer's version resolves to; the README bring-up path and the container build ARGs cite it. The table below is a **human-facing summary** of that file, kept in sync per [ADR-0004](docs/decisions/0004-stack-manifest-location.md) — when a version changes, edit the `.toml` first, then reconcile here. The manifest is a *draft* at M1; M2/SWM-11 finalizes it (incl. the OQ-3 PX4 pin). The **Pinned** column is the contract; **Installed here** records this host's verified state.
+
+| Layer | Pinned | Installed here |
 |---|---|---|
-| OS | Ubuntu 24.04 (Noble) | 24.04.4 LTS ✓ |
-| Middleware | ROS 2 Jazzy | by `setup_phase1.sh` (re-run pending on this host) |
-| Flight stack | PX4-Autopilot v1.16.x+/latest stable | **v1.17.0** at `~/PX4-Autopilot` ✓ |
-| Simulator | Gazebo Harmonic (gz-sim 8) | gz sim 8.12.0 ✓ |
-| PX4↔ROS 2 bridge | uXRCE-DDS (native, **not MAVROS**) | agent (snap) by `setup_phase1.sh`; bridge proven in M2 |
+| OS | Ubuntu 24.04 LTS (Noble) | 24.04.4 LTS ✓ |
+| Middleware | ROS 2 Jazzy Jalisco (LTS; `ros-jazzy-desktop`) | by `setup_phase1.sh` (re-run pending on this host) |
+| Build tool | colcon (`python3-colcon-common-extensions`, ROS 2 Jazzy apt) | by `setup_phase1.sh`; in-workspace `colcon build` is M2 work |
+| Flight stack | PX4-Autopilot **v1.17.0** — latest stable; **provisional pin pending [OQ-3](docs/phase1/01-platform/prd.md)** (exact v1.16.x+ tag + matching `px4_msgs` branch settle in the M1–M2 integration spike) | **v1.17.0** at `~/PX4-Autopilot` ✓ |
+| Simulator | Gazebo Harmonic (gz-sim 8.x) | gz sim 8.11.0 ✓ |
+| PX4↔ROS 2 bridge | uXRCE-DDS — Micro XRCE-DDS Agent (`ros-jazzy-micro-xrce-dds-agent`, ROS 2 apt; matches the sim container), native (**not MAVROS**) | agent by `setup_phase1.sh`; bridge proven in M2 |
 | Mission orchestration | Python 3.12 | 3.12.3 ✓ |
-| Bags | rosbag2 + **MCAP** (sqlite is legacy) | plugin by `setup_phase1.sh`; M7 work |
-| Visualization | Foxglove Studio | by `setup_phase1.sh`; M8 work |
-| Container runtime | Docker + Compose | by `setup_phase1.sh`; M2 builds containers |
-| Python tooling | uv | uv 0.11.18 ✓ |
-| GCS | QGroundControl AppImage | `~/Apps/QGroundControl-x86_64.AppImage` ✓ |
+| Bags | rosbag2 + **MCAP** plugin (`ros-jazzy-rosbag2-storage-mcap`; sqlite is legacy) | plugin by `setup_phase1.sh`; M7 work |
+| Visualization | Foxglove Studio (desktop) | by `setup_phase1.sh`; M8 work |
+| Container runtime | Docker Engine + Compose v2 | by `setup_phase1.sh`; M2 builds containers |
+| Python tooling | uv 0.11.x | uv 0.11.18 ✓ |
+| GCS | QGroundControl (AppImage, latest stable) | `~/Apps/QGroundControl-x86_64.AppImage` ✓ |
 
 As of [ADR-0003](docs/decisions/0003-phase1-bootstrap-scope.md), `setup_phase1.sh` provisions the **full Phase 1 toolchain** (not just M1). "Installed here" reflects this host's *current* state — the rows marked "by `setup_phase1.sh`" install when the (now-expanded) script is re-run. The script installs **prerequisites only**; repo **deliverables** (vendored `px4_msgs`, the containers, `colcon build`, mission code) stay milestone-owned.
 

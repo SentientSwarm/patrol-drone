@@ -14,6 +14,41 @@ If you're new to this project, read in this order:
 
 **Phase 1 — Pre-hardware simulation foundation.** No hardware purchased yet; that decision is gated on Phase 1 exit criteria (see Phase 1 plan).
 
+## Quickstart — M1 bring-up (flying SITL)
+
+The fastest path from a clean machine to a drone hovering in simulation. This is the **M1** slice:
+vanilla PX4 SITL flying in Gazebo Harmonic, flown manually from QGroundControl. ROS 2, the live
+`/fmu/*` telemetry bridge, and the containerized build land in **M2** — see the [Phase 1 plan](docs/phase1_simulation_plan.md).
+
+**Prerequisites:** native Ubuntu 24.04 (not WSL2), an **Xorg/X11** login session (Gazebo Harmonic
+rendering is unreliable under Wayland — verify with `echo $XDG_SESSION_TYPE`, expect `x11`), and a
+discrete GPU recommended. Versions are pinned in the [stack manifest](stack-manifest.toml) (`stack-manifest.toml`).
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/<owner>/patrol-drone.git
+cd patrol-drone
+
+# 2. Install the full Phase 1 toolchain (idempotent; also fetches & preps PX4-Autopilot).
+#    See --help for opt-outs; --disable-wayland forces Xorg at the GDM level.
+scripts/setup_phase1.sh
+
+# 3. Build and launch PX4 SITL with the x500 quad in Gazebo Harmonic.
+#    First run builds PX4 from source — do NOT interrupt it (several minutes).
+cd ~/PX4-Autopilot && make px4_sitl gz_x500
+
+# 4. In a second terminal, launch the ground station.
+~/Apps/QGroundControl-x86_64.AppImage
+```
+
+Then, in QGroundControl (AutoConnect → UDP must be on; it listens on UDP 14550): **Arm**, hit
+**Takeoff**, and watch the drone hold altitude for **60 continuous seconds**, then **Land**. That is
+the M1 exit criterion (AC-1 / PLAT-1).
+
+> **M2 adds:** ROS 2 Jazzy + the uXRCE-DDS bridge (live `/fmu/*` topics), the vendored `px4_msgs`
+> workspace with a green `colcon build`, and the `sim`/`dev` containers — extending this path into
+> the full setup-to-running-mission spine (≤20 commands).
+
 ## Stack at a glance
 
 | Layer | Choice |

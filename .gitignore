@@ -68,8 +68,9 @@ credentials.json
 .local/
 local_config.yaml
 
+# Claude Code / devloop local state (per-machine, not shared)
+.claude/settings.local.json
+.claude/.*-state.json
+
 # lifecycle /drive session logs (process artifacts)
 lifecycle-sessions/
-
-# Docs/Notes
-Claude.md

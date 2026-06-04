@@ -10,7 +10,7 @@
 #   - base build/dev apt packages
 #   - ROS 2 Jazzy (desktop) + colcon/rosdep + ROS dev tools
 #   - ROS runtime packages later milestones need (rosbag2-MCAP, apriltag_ros, ros-gz, cv_bridge)
-#   - Micro XRCE-DDS Agent (PX4 <-> ROS 2 bridge), via snap
+#   - Micro XRCE-DDS Agent (PX4 <-> ROS 2 bridge), via the ROS 2 apt repo
 #   - Docker Engine + Compose (+ optional NVIDIA Container Toolkit with --with-nvidia)
 #   - uv (Python manager) and the project's dev venv from pyproject.toml
 #   - PX4-Autopilot source checkout (pinned) + PX4's own ubuntu.sh dev-env setup
@@ -81,7 +81,7 @@ Installs the full Phase 1 prerequisite toolchain by default. Use --skip-* to opt
 
   --skip-ros           Skip ROS 2 Jazzy + colcon/rosdep install.
   --skip-ros-pkgs      Skip the ROS runtime packages (rosbag2-MCAP, apriltag, ros-gz, ...).
-  --skip-xrce          Skip the Micro XRCE-DDS Agent (snap) install.
+  --skip-xrce          Skip the Micro XRCE-DDS Agent (apt) install.
   --skip-docker        Skip Docker Engine + Compose install.
   --skip-python        Skip uv install + `uv sync`.
   --skip-px4           Skip PX4 clone + ubuntu.sh.
@@ -217,16 +217,19 @@ install_ros_packages() {
 # ----------------------------------------------------------------------------- Micro XRCE-DDS Agent
 install_xrce_agent() {
   [[ ${SKIP_XRCE} -eq 1 ]] && { log "Skipping Micro XRCE-DDS Agent (--skip-xrce)."; return 0; }
-  if snap list micro-xrce-dds-agent >/dev/null 2>&1; then
-    log "Micro XRCE-DDS Agent (snap) already installed."
+  # Installed from the ROS 2 apt repo (configured by install_ros2_jazzy) so the host
+  # matches the sim container, which apt-installs ros-${ROS_DISTRO}-micro-xrce-dds-agent
+  # (docs/phase1/01-platform/design.md §4.2.1). Provides the `MicroXRCEAgent` binary.
+  if [[ ${SKIP_ROS} -eq 1 ]] && ! have ros2; then
+    warn "ROS not installed (--skip-ros) — the agent's apt repo is unavailable. Skipping XRCE agent."
     return 0
   fi
-  if ! have snap; then
-    warn "snapd not available; cannot install micro-xrce-dds-agent via snap. Skipping."
+  if dpkg -l ros-${ROS_DISTRO}-micro-xrce-dds-agent 2>/dev/null | grep -q '^ii'; then
+    log "Micro XRCE-DDS Agent (ros-${ROS_DISTRO}-micro-xrce-dds-agent) already installed."
     return 0
   fi
-  log "Installing Micro XRCE-DDS Agent (snap)..."
-  sudo snap install micro-xrce-dds-agent
+  log "Installing Micro XRCE-DDS Agent (ros-${ROS_DISTRO}-micro-xrce-dds-agent)..."
+  sudo apt-get install -y ros-${ROS_DISTRO}-micro-xrce-dds-agent
 }
 
 # ----------------------------------------------------------------------------- Docker Engine + Compose

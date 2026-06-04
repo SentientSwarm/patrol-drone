@@ -1,0 +1,42 @@
+# stack-manifest.toml — the canonical pinned stack manifest (PLAT-7 / AC-8).
+#
+# Single source of truth for every toolchain layer's version. The README bring-up
+# path, the Dockerfiles (docker/sim, docker/dev), and docker-compose cite this and
+# pull values via .env / build ARGs — no version literal is duplicated anywhere
+# else. CLAUDE.md's "Stack (pinned)" table is a human-facing summary of this file
+# and must be kept in sync (see ADR-0004).
+#
+# Status: M1 DRAFT. Finalized at M2 (T2.7 / SWM-11). The px4_version / px4_msgs_ref
+# pair is the single edit point for OQ-3 — the exact PX4 tag + matching px4_msgs
+# branch are settled by the M1–M2 integration spike (tracked in MZ / §6.5), not
+# pinned on paper. Design reference: docs/phase1/01-platform/design.md §4.2.9 (C9).
+
+[os]
+ubuntu        = "24.04"                      # Noble Numbat (ADR-0001)
+
+[middleware]
+ros_distro    = "jazzy"                       # ROS 2 Jazzy Jalisco (LTS; ADR-0001)
+python        = "3.12"                         # Ubuntu 24.04 default interpreter
+
+[flight_stack]
+px4_version   = "v1.17.0"                      # ← OQ-3 edit point. PROVISIONAL: host-installed
+                                               #   reality (latest stable); final pin from the M1–M2 spike.
+px4_msgs_ref  = "release/1.16"                 # ← OQ-3 edit point. PROVISIONAL placeholder: the px4_msgs
+                                               #   branch matching the final px4_version is the spike's output.
+
+[simulator]
+gazebo        = "harmonic"                     # gz-sim 8.x (8.12.0 installed)
+
+[bridge]
+uxrce_dds     = "ros-jazzy-micro-xrce-dds-agent"  # Micro XRCE-DDS Agent via ROS 2 apt
+                                                  #   (matches the sim container + setup_phase1.sh; not MAVROS)
+
+[bags]
+mcap_plugin   = "rosbag2-storage-mcap"         # rosbag2 MCAP storage plugin (05 records; sqlite is legacy)
+
+[build]
+colcon        = "pinned"                        # python3-colcon-common-extensions (ROS 2 Jazzy apt)
+docker        = "pinned"                        # Docker Engine + Compose v2
+
+[container]
+ros_base_image = "osrf/ros:jazzy-desktop"       # shared base for the sim/dev containers (C1/C2)
