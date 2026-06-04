@@ -245,13 +245,13 @@ The system SHALL choose the AprilTag family and ID assignment so the same fiduci
 
 ### Interface Changes (contracts this docset owns)
 
-1. **Shared checkpoint-config schema** *(pending user confirmation — settled default for the 5-pair coherence)*: a single shared YAML at `sim/config/checkpoints.yaml`, a list of `{checkpoint_id: string, position: {x, y, z} in the world/ENU frame, tag_family: string, tag_id: int}`. 02 reads `position` to build waypoints; 03 places the AprilTag models + camera; 04 maps a detected `tag_id` → `checkpoint_id`. (Reconciles 03 §7, 02 §7 "YAML schema shape", 04 §7 "checkpoint_id namespace / mapping" into one schema.)
+1. **Shared checkpoint-config schema** *(confirmed at combined review (2026-06-03) — settled default for the 5-pair coherence)*: a single shared YAML at `sim/config/checkpoints.yaml`, a list of `{checkpoint_id: string, position: {x, y, z} in the world/ENU frame, tag_family: string, tag_id: int}`. 02 reads `position` to build waypoints; 03 places the AprilTag models + camera; 04 maps a detected `tag_id` → `checkpoint_id`. (Reconciles 03 §7, 02 §7 "YAML schema shape", 04 §7 "checkpoint_id namespace / mapping" into one schema.)
 2. **RGB camera topics** *(name/resolution/rate/frame_id — to be fixed in design, OQ-4)*: a `sensor_msgs/Image` topic from the drone-mounted camera (live frames 04 subscribes to), plus a companion `sensor_msgs/CompressedImage` topic that 05 records (recorded frames). This is the contract 04 and 05 bind to.
 3. **AprilTag asset + family contract** *(family/ID range — to be fixed in design, OQ-1)*: the textured Gazebo models under `sim/models/<apriltag_*>/` and the single tag family/ID range, chosen to run unmodified on Phase 4 hardware (SIM-7), that 04's detector targets.
 
 ### Deployment Coordination
 - **Build/dependency order:** `01 → 02 → 03 → 04 → 05`. This docset stands on 01 (sim base, container, build) and 02 (the M4 patrol used to traverse checkpoints); 04 and 05 stand on the contracts above.
-- The three contracts above must be **frozen jointly** during /drive so the 5 PRD/Design pairs stay coherent; they are flagged "pending user confirmation" below and in the Open Questions table.
+- The three contracts above must be **frozen jointly** during /drive so the 5 PRD/Design pairs stay coherent; they are flagged "confirmed at combined review (2026-06-03)" below and in the Open Questions table.
 
 ### Testing Implications
 - Integration: launch SITL against the world (SIM-1), assert ≥3 markers from a YAML (SIM-2), assert the camera topics publish (SIM-3), and run the M4 patrol to traverse checkpoints (SIM-5) — these exercise the contracts end-to-end and feed the integrative exit item 1.
@@ -296,9 +296,9 @@ Without this docset, SITL has only an empty plane: no checkpoints, no fiducials,
 | # | Question | Status | Decision target | Rationale (why open / what would resolve it) |
 |---|----------|--------|-----------------|----------------------------------------------|
 | OQ-1 | AprilTag family and ID range (e.g. tag36h11 vs tag25h9) | Open | Design | Affects detection robustness and must be the family used unmodified in Phase 4; the plan leaves the family open. Resolved by a documented choice in the design (default leaning tag36h11 per H3). |
-| OQ-2 | Checkpoint-config file location, name, and exact schema | **Provisional (pending user confirmation)** | Design — joint with 02 §7 + 04 §7 | The world, the patrol waypoints (02), and perception (04) must agree on one schema. **Settled default to confirm:** `sim/config/checkpoints.yaml`, list of `{checkpoint_id: string, position {x,y,z} in world/ENU frame, tag_family: string, tag_id: int}`. Flagged for the human's combined 5-pair review. |
+| OQ-2 | Checkpoint-config file location, name, and exact schema | **Resolved (combined review 2026-06-03)** | Design — joint with 02 §7 + 04 §7 | The world, the patrol waypoints (02), and perception (04) must agree on one schema. **Settled default to confirm:** `sim/config/checkpoints.yaml`, list of `{checkpoint_id: string, position {x,y,z} in world/ENU frame, tag_family: string, tag_id: int}`. Flagged for the human's combined 5-pair review. |
 | OQ-3 | World authored as static SDF vs. generated from the YAML at launch | Open | Design | Static SDF is simplest; generation keeps one source of truth for checkpoint positions but adds tooling. Resolved by the design choosing one (with a drift check if static). |
-| OQ-4 | RGB camera topic name, resolution, frame rate, and `frame_id` | **Provisional (pending user confirmation)** | Design — joint with 04 + 05 | Becomes the contract 04 and 05 bind to; resolution/rate trade sim load against image usefulness and bag size. **Settled default to confirm:** a `sensor_msgs/Image` topic plus a companion `sensor_msgs/CompressedImage` topic that 05 records (per M7). Concrete name/resolution/rate/frame_id to be fixed in design. |
+| OQ-4 | RGB camera topic name, resolution, frame rate, and `frame_id` | **Resolved (combined review 2026-06-03)** | Design — joint with 04 + 05 | Becomes the contract 04 and 05 bind to; resolution/rate trade sim load against image usefulness and bag size. **Settled default to confirm:** a `sensor_msgs/Image` topic plus a companion `sensor_msgs/CompressedImage` topic that 05 records (per M7). Concrete name/resolution/rate/frame_id to be fixed in design. |
 | OQ-5 | Camera mount pose and FOV on the airframe | Open | Design | Must let the drone see a tag when hovering at a checkpoint (SIM-4); affects waypoint approach geometry in 02. Resolved by tuning against a reference checkpoint and locking the contract. |
 | OQ-6 | World extent and obstacle layout specifics | Open | Design | Enough geometry to be "meaningful" without slowing physics; the plan says "flat plane, building-like boxes, a few trees" but leaves specifics open. Resolved by the design fixing extent + layout, validated by H1. |
 | OQ-7 | Which SITL airframe target the camera attaches to | Open | Design | `gz_x500` is the M1 default; attaching a camera may require an override/variant. Resolved by validating SIM-3 against the chosen airframe target early. |
@@ -321,7 +321,7 @@ Without this docset, SITL has only an empty plane: no checkpoints, no fiducials,
 ### UAC-SIM-3: Simulated RGB camera publishes ROS 2 image topics
 **GIVEN** SITL running with the drone in the world
 **WHEN** ROS 2 inspects topics
-**THEN** a simulated RGB camera publishes a `sensor_msgs/Image` topic at a steady, non-zero rate AND a companion `sensor_msgs/CompressedImage` topic for the bag, using the documented topic name(s)/resolution/frame rate/`frame_id`. *(DoD AC-4; the CompressedImage companion is the settled cross-docset contract default per M7 — pending user confirmation.)*
+**THEN** a simulated RGB camera publishes a `sensor_msgs/Image` topic at a steady, non-zero rate AND a companion `sensor_msgs/CompressedImage` topic for the bag, using the documented topic name(s)/resolution/frame rate/`frame_id`. *(DoD AC-4; the CompressedImage companion is the settled cross-docset contract default per M7 — confirmed at combined review (2026-06-03).)*
 
 ### UAC-SIM-4: Camera mount/FOV lets the drone see a tag at a checkpoint
 **GIVEN** the camera mounted at its fixed, documented pose and FOV, and a configured checkpoint hover pose

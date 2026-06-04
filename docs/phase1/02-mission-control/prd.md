@@ -255,7 +255,7 @@ This discipline keeps the design honest and the PRD lean.
 - **Consumes from 05-logging-replay:** the bag-recorder launch include/wrapper invoked at mission start from `mission_patrol.launch.py`.
 - **Provides to 03/04/05:** mission/route YAML schema, `mission_*.launch.py` entry-points, `/patrol/{mission_state,current_waypoint,abort}`, the checkpoint-arrival capture-trigger semantic, and the `MissionStateMachine` contract.
 
-### Checkpoint mapping contract (settled default — pending user confirmation)
+### Checkpoint mapping contract (settled default — confirmed at combined review (2026-06-03))
 The mission reads checkpoint positions from a single shared YAML `sim/config/checkpoints.yaml`, **owned by 03-sim-environment**, a list of `{checkpoint_id: string, position: {x,y,z} in the world/ENU frame, tag_family: string, tag_id: int}`. This docset (02) reads the `position` entries to build waypoints (converting world/ENU → PX4 NED at the MC-7 boundary). 03 places the AprilTag models + camera from the same file; 04 maps a detected `tag_id` → `checkpoint_id`. The mission YAML (MC-3) references checkpoint IDs from this shared file rather than duplicating positions. *This default is recorded as OQ-2 / OQ-7 pending the human's combined cross-docset review.*
 
 ### Data storage
@@ -359,17 +359,17 @@ Rely on manual QGroundControl stick input.
 
 ## Open Questions
 
-> Decisions handed to design via /drive. The two cross-docset contract defaults (OQ-2, OQ-7) carry the settled run-policy defaults and are flagged **pending user confirmation** for the human's combined review — they are not silently invented.
+> Decisions handed to design via /drive. The two cross-docset contract defaults (OQ-2, OQ-7) carry the settled run-policy defaults and are flagged **confirmed at combined review (2026-06-03)** for the human's combined review — they are not silently invented.
 
 | # | Question | Status | Decision target | Rationale (why open / what would resolve it) |
 |---|----------|--------|-----------------|----------------------------------------------|
 | OQ-1 | State-machine library: `transitions` vs `python-statemachine` vs hand-rolled? | Open | Design | Plan explicitly flags this open ("strong preferences welcome"). Resolved by a design spike weighing testability/clarity vs dependency weight. |
-| OQ-2 | Checkpoint mapping schema/location shared with 03/04. | Provisional (pending user confirmation) | Design (joint with 03, 04) | **Default:** a single shared YAML `sim/config/checkpoints.yaml` owned by 03, `{checkpoint_id, position {x,y,z} world/ENU, tag_family, tag_id}`; 02 reads `position` to build waypoints. Resolved when the human confirms the shared file in the combined cross-docset review. |
+| OQ-2 | Checkpoint mapping schema/location shared with 03/04. | Resolved (combined review 2026-06-03) | Design (joint with 03, 04) | **Default:** a single shared YAML `sim/config/checkpoints.yaml` owned by 03, `{checkpoint_id, position {x,y,z} world/ENU, tag_family, tag_id}`; 02 reads `position` to build waypoints. Resolved when the human confirms the shared file in the combined cross-docset review. |
 | OQ-3 | Mission topic names, types, and QoS (`patrol_interfaces` custom vs `std_msgs`). | Open | Design | Recorded by 05 and must be Foxglove-renderable (item 8). Resolved by choosing types that round-trip through MCAP and render in Foxglove. |
 | OQ-4 | Waypoint-completion tolerance and hold-time defaults (plan illustrates 0.5 m / 2 s). | Open | Design | Illustrative only in the plan; real defaults are a tuning call against SITL behavior. Resolved by tuning in SITL. |
 | OQ-5 | Canonical integration-test mission(s) + CI runtime/flakiness budget. | Open | Design | Plan's self-identified least-confident area. Resolved by selecting one small strict scenario and a measured runtime budget in the slow tier (ADR-0002). |
 | OQ-6 | Low-battery threshold + which `/fmu/out/*` battery field drives abort. | Open | Design | SITL battery-modeling fidelity affects whether the trigger is naturally exercisable. Resolved by picking the field/threshold and unit-testing the transition (SITL-observable half best-effort). |
-| OQ-7 | Capture-trigger contract with 04 (explicit "capture now" signal vs 04 infers from AprilTag-in-view + dwell). | Provisional (pending user confirmation) | Design (joint with 04) | **Default direction:** 02 emits an observable "arrived and dwelling at checkpoint N" mission signal that 04 keys capture off of (the checkpoint-arrival semantic this docset owns). Final explicit-vs-inferred shape resolved jointly with 04 §7 and confirmed in the combined review. |
+| OQ-7 | Capture-trigger contract with 04 (explicit "capture now" signal vs 04 infers from AprilTag-in-view + dwell). | Resolved (combined review 2026-06-03) | Design (joint with 04) | **Default direction:** 02 emits an observable "arrived and dwelling at checkpoint N" mission signal that 04 keys capture off of (the checkpoint-arrival semantic this docset owns). Final explicit-vs-inferred shape resolved jointly with 04 §7 and confirmed in the combined review. |
 | OQ-8 | Return-to-home semantics: PX4 RTL mode vs explicit home-waypoint offboard sequence. | Open | Design | Plan says "return home" without prescribing mechanism. Resolved by choosing one mechanism behind the RTH state, weighing mode-handoff/landing behavior. |
 
 ## Appendix B: User Acceptance Criteria
@@ -430,5 +430,5 @@ Rely on manual QGroundControl stick input.
 
 - **UAC bodies:** All P1 FRs (MC-1…MC-10) have completed (non-stub) UAC bodies in Appendix B. MC-11 is P2 and is covered by AC-8 via MC-9's coverage; no separate UAC required.
 - **Coverage figure reconciliation:** DoD AC-4 states ">80% on the mission state machine"; ADR-0002 enforces ≥85% as the CI floor. The PRD uses ≥85% as the gate (the stricter, enforced number) and notes the DoD floor — flagged so the design uses the enforced value, not the looser DoD prose.
-- **Deferred cross-docset confirmations:** OQ-2 (checkpoint mapping, default `sim/config/checkpoints.yaml` owned by 03) and OQ-7 (capture-trigger contract with 04) carry settled run-policy defaults marked *pending user confirmation* for the human's combined review of all five docset pairs. They are not invented answers.
+- **Deferred cross-docset confirmations:** OQ-2 (checkpoint mapping, default `sim/config/checkpoints.yaml` owned by 03) and OQ-7 (capture-trigger contract with 04) carry settled run-policy defaults marked *confirmed at combined review (2026-06-03)* for the human's combined review of all five docset pairs. They are not invented answers.
 - **Out-of-scope completeness:** All six DoD §2 deferrals are carried into Out of Scope, plus one inferred entry (mission-replan / dynamic re-routing [INFERRED] — not in the DoD but a plausible scope-creep vector worth fencing).

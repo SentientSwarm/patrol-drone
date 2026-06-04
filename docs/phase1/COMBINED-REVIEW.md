@@ -1,6 +1,25 @@
 # Phase 1 — Combined PRD + Design review packet
 
+**Status: REVIEWED — 2026-06-03.** All 10 cross-docset decisions resolved (8 confirmed the recommended default; 2 deferred to the M1–M2 probe). Per-doc OQ status flags flipped to Resolved. The pairs are approved for the next lifecycle step (Linear bootstrap), pending the two M1–M2 probes.
+
 Auto-piloted through the `lifecycle:/drive` harness (prd-engine + software-design) from each docset's `dod.md`. Each docset's PRD and Design were generated as a coherent pair, self-reviewed and auto-revised against the prd-engine / software-design rubrics at the medium-severity floor. These are **first-pass drafts for a single combined human review** — review each PRD+Design pair *together* (the lifecycle collapses Gate A and Gate B into one combined gate).
+
+## Resolutions (combined human review — 2026-06-03)
+
+| # | Decision | Resolution | Outcome |
+|---|---|---|---|
+| 1 | CheckpointCapture image representation | `string image_path` (PNG/JPEG on disk) + header/checkpoint_id/pose/metadata; live frames on a separate `sensor_msgs/CompressedImage` topic the bag records (not pixels by-value) | ✅ default confirmed |
+| 2 | Capture trigger (02↔04) | 02 enters DWELL and publishes the index on `/patrol/current_waypoint`; 04 captures exactly once per DWELL (02 owns the trigger) | ✅ default confirmed |
+| 3 | Camera owner + topics | 03 owns the camera: live `sensor_msgs/Image` on `/drone/camera/image_raw` (04 subscribes) + `sensor_msgs/CompressedImage` on `/drone/camera/image_raw/compressed` (05 records) | ✅ default confirmed |
+| 4 | `/patrol/*` mission topic types | `std_msgs`: `mission_state`=String, `current_waypoint`=Int32, `abort`=Bool (typed states live in the state-machine code) | ✅ default confirmed |
+| 5 | Checkpoint config location | single shared `sim/config/checkpoints.yaml` (03-owned), `{checkpoint_id, position{x,y,z} ENU, tag_family, tag_id}`; 02/04 read it via a parameter | ✅ default confirmed |
+| 6 | Recorded-topic set strategy | broad-then-prune (record the full relevant surface now; prune later) per M7 | ✅ default confirmed |
+| 7 | Gazebo near-real-time RTF | **non-binding** (informational); revisit only if M2 minimum-spec profiling shows a real problem | ✅ default confirmed |
+| 8 | Mission state-machine coverage floor | **≥85%** (the enforced ADR-0002 CI floor) governs; 02 DoD AC-4 prose updated from `>80%` | ✅ confirmed (≥85%) |
+| 9 | `apriltag_ros` / `cv_bridge` on Jazzy in-container | defer to an M1–M2 in-container probe; fallback = `apriltag` C lib + a thin off-the-shelf detector node | ⏳ deferred to probe |
+| 10 | Exact PX4 v1.16.x tag + `px4_msgs` branch | defer to the M1–M2 integration spike (also the falsification gate for the Jazzy-early-adopter bet) | ⏳ deferred to probe |
+
+These resolutions are authoritative. The per-docset PRD/Design/DoD OQ tables had their matching status flags flipped from "Provisional (pending user confirmation)" to "Resolved (combined review 2026-06-03)". The two deferred items remain tracked OQs resolved by a probe, not a paper decision.
 
 ## Pairs
 
@@ -12,7 +31,7 @@ Auto-piloted through the `lifecycle:/drive` harness (prd-engine + software-desig
 | 04-perception — Perception & Checkpoint Capture | Standard | [prd.md](04-perception/prd.md) | [design.md](04-perception/design.md) | ~25 |
 | 05-logging-replay — Logging & Replay Pipeline | Standard | [prd.md](05-logging-replay/prd.md) | [design.md](05-logging-replay/design.md) | ~24 |
 
-## Decisions to confirm at combined review
+## Decisions presented for review (now resolved — see Resolutions above)
 
 These cross-docset contracts were generated to a **recommended default** (so the five pairs stay coherent) and need your confirmation:
 
