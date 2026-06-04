@@ -241,7 +241,7 @@ This discipline keeps the design honest and the PRD lean.
 | Metric | Baseline (current) | Target | How Measured | Timeline |
 |--------|-------------------|--------|--------------|----------|
 | State-machine unit suite runtime | N/A (new) | <5 s, no ROS/Gazebo/PX4 process | `pytest` wall-clock on the pure-Python runner | M3 |
-| Mission state-machine coverage | N/A (new) | ≥85% (CI gate; DoD AC-4 floor >80%) | `coverage` on the unit suite in CI Layer A | M3 |
+| Mission state-machine coverage | N/A (new) | ≥85% (CI gate per ADR-0002; DoD AC-4) | `coverage` on the unit suite in CI Layer A | M3 |
 | Basic mission success (arm→takeoff→hover→land) | N/A (new) | Passes in SITL via `mission_basic.launch.py` | Manual + integration run, observed states | M3 |
 | Patrol completion (4+ waypoints, dwell, RTH, land) | N/A (new) | All waypoints visited in order, returns home, lands | SITL run via `mission_patrol.launch.py` | M4 |
 | External-signal abort observable in SITL | N/A (new) | Abort→return-home transition observed mid-patrol | SITL run + recorded `/patrol/*` topics | M4 |
@@ -429,6 +429,6 @@ Rely on manual QGroundControl stick input.
 ## Quality Gate Notes
 
 - **UAC bodies:** All P1 FRs (MC-1…MC-10) have completed (non-stub) UAC bodies in Appendix B. MC-11 is P2 and is covered by AC-8 via MC-9's coverage; no separate UAC required.
-- **Coverage figure reconciliation:** DoD AC-4 states ">80% on the mission state machine"; ADR-0002 enforces ≥85% as the CI floor. The PRD uses ≥85% as the gate (the stricter, enforced number) and notes the DoD floor — flagged so the design uses the enforced value, not the looser DoD prose.
+- **Coverage figure:** ≥85% governs (the enforced ADR-0002 CI floor). DoD AC-4 was aligned to ≥85% at the combined review (2026-06-03), so the DoD, PRD, and CI gate now agree on the single number.
 - **Deferred cross-docset confirmations:** OQ-2 (checkpoint mapping, default `sim/config/checkpoints.yaml` owned by 03) and OQ-7 (capture-trigger contract with 04) carry settled run-policy defaults marked *confirmed at combined review (2026-06-03)* for the human's combined review of all five docset pairs. They are not invented answers.
 - **Out-of-scope completeness:** All six DoD §2 deferrals are carried into Out of Scope, plus one inferred entry (mission-replan / dynamic re-routing [INFERRED] — not in the DoD but a plausible scope-creep vector worth fencing).
