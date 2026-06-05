@@ -18,6 +18,13 @@ ubuntu        = "24.04"                      # Noble Numbat (ADR-0001)
 ros_distro    = "jazzy"                       # ROS 2 Jazzy Jalisco (LTS; ADR-0001)
 python        = "3.12"                         # Ubuntu 24.04 default interpreter
 
+[ros_apt_source]
+# The ros-infrastructure/ros-apt-source .deb that drops in the ROS 2 apt signing key + repo
+# list. Pinned (not `latest`) and SHA256-verified before the root apt install (ADR-0006).
+# sha256 is for the noble (24.04) `_all` asset; bump version + sha256 together.
+version = "1.2.0"
+sha256  = "0804d9b13db770eb87019be414cd78378835228ad5fa801fc88758596dd8f7e5"
+
 [flight_stack]
 px4_version   = "v1.17.0"                      # ← OQ-3 edit point. PROVISIONAL: host-installed
                                                #   reality (latest stable); final pin from the M1–M2 spike.
@@ -47,7 +54,11 @@ ros_base_digest = "sha256:2ce9a0e3e9abd4dd804cd044d279f411d31074f165670e010dfdb4
                                                 #   reference is ros_base_image@ros_base_digest (gen_build_args.py).
 
 [tools]
-uv_version    = "0.11.18"                       # Python manager; installed via the versioned astral.sh installer
+uv_version         = "0.11.18"                  # Python manager
+uv_tarball_sha256  = "588f3e360f69ce02b6982aa99f2240e803933a6b7e176ac01617830adf955add"
+                                                #   sha256 of the GitHub release artifact
+                                                #   uv-x86_64-unknown-linux-gnu.tar.gz (verified before
+                                                #   extraction; no `curl | sh` remote-exec — ADR-0006).
 
 [apps]
 # Desktop apps are pinned to explicit releases (not `latest`) and checksum-verified after download

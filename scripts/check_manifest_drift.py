@@ -48,6 +48,37 @@ def check_px4_msgs_alignment(manifest: dict) -> list[str]:
     return []
 
 
+# Every pinned value the setup script must DERIVE from the manifest, as {shell var: manifest key}.
+# A literal inlined in the script removes the `VAR="$(manifest_get key)"` line, which this gate
+# then reports — closing the blind spot where changing UV/QGC/Foxglove values stayed green.
+DERIVED_VARS = {
+    "PX4_VERSION": "flight_stack.px4_version",
+    "PX4_COMMIT": "flight_stack.px4_commit",
+    "ROS_DISTRO": "middleware.ros_distro",
+    "ROS_APT_SOURCE_VERSION": "ros_apt_source.version",
+    "ROS_APT_SOURCE_SHA256": "ros_apt_source.sha256",
+    "UV_VERSION": "tools.uv_version",
+    "UV_TARBALL_SHA256": "tools.uv_tarball_sha256",
+    "QGC_VERSION": "apps.qgc_version",
+    "QGC_URL": "apps.qgc_url",
+    "QGC_SHA256": "apps.qgc_sha256",
+    "FOXGLOVE_VERSION": "apps.foxglove_version",
+    "FOXGLOVE_URL": "apps.foxglove_url",
+    "FOXGLOVE_SHA256": "apps.foxglove_sha256",
+}
+
+
+def missing_derivations(text: str) -> list[str]:
+    """Pinned vars in `text` that are no longer assigned via `manifest_get <key>` (inlined literal)."""
+    problems = []
+    for var, key in DERIVED_VARS.items():
+        if not re.search(rf'{var}="\$\(manifest_get {re.escape(key)}\)"', text):
+            problems.append(
+                f"setup_phase1.sh no longer derives {var} from {key} via manifest_get()"
+            )
+    return problems
+
+
 def check_setup_derives(repo_root: Path) -> list[str]:
     text = (repo_root / "scripts" / "setup_phase1.sh").read_text()
     problems = []
@@ -55,6 +86,7 @@ def check_setup_derives(repo_root: Path) -> list[str]:
         problems.append("setup_phase1.sh no longer derives versions via manifest_get()")
     if re.search(r'(PX4_VERSION|ROS_DISTRO)="v?\d', text):
         problems.append("setup_phase1.sh hardcodes a version literal; derive it from the manifest")
+    problems += missing_derivations(text)
     return problems
 
 

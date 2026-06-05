@@ -43,5 +43,26 @@ def test_alignment_flags_off_release_line_branch():
     assert "off px4_version's release line" in problems[0]
 
 
+def _setup_text_with_all_derivations() -> str:
+    """A synthetic setup script that derives every pinned var via manifest_get (the clean case)."""
+    return "\n".join(f'{var}="$(manifest_get {key})"' for var, key in drift.DERIVED_VARS.items())
+
+
+def test_missing_derivations_clean_when_all_derived():
+    assert drift.missing_derivations(_setup_text_with_all_derivations()) == []
+
+
+def test_missing_derivations_flags_inlined_literal():
+    # Simulate someone replacing the QGC_SHA256 derivation with a hardcoded literal.
+    text = _setup_text_with_all_derivations().replace(
+        'QGC_SHA256="$(manifest_get apps.qgc_sha256)"',
+        'QGC_SHA256="deadbeef"',
+    )
+    problems = drift.missing_derivations(text)
+    assert len(problems) == 1
+    assert "QGC_SHA256" in problems[0]
+    assert "apps.qgc_sha256" in problems[0]
+
+
 def test_live_repo_has_no_manifest_drift():
     assert drift.run_checks(REPO_ROOT) == []

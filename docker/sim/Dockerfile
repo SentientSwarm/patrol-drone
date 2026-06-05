@@ -49,17 +49,21 @@ RUN git clone --recurse-submodules --branch ${PX4_VERSION} --depth 1 \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- Stage 2: runtime — headless SITL + Gazebo + agent (M2 / T2.3) ---------
-# TODO(M2/T2.3, §4.2.1): flesh out the runtime stage:
+# TODO(M2/T2.3, §4.2.1): flesh out the runtime stage. NB: like the ARGs above, these carry NO
+# defaults — keep them manifest-derived so this scaffold can't reintroduce duplicated literals.
+# At M2, extend scripts/gen_build_args.py to also emit ROS_DISTRO ([middleware]) and GZ_VERSION
+# ([simulator]) so a copy of this block stays single-source-of-truth (ADR-0004/0005/0006).
 #   FROM ${ROS_BASE_IMAGE} AS runtime
-#   ARG GZ_VERSION=harmonic                         # stack-manifest.toml [simulator]
+#   ARG ROS_DISTRO                                  # stack-manifest.toml [middleware] (inject via gen_build_args.py)
+#   ARG GZ_VERSION                                  # stack-manifest.toml [simulator] (inject via gen_build_args.py)
 #   RUN apt-get update && apt-get install -y --no-install-recommends \
 #         gz-${GZ_VERSION} \
-#         ros-jazzy-micro-xrce-dds-agent \          # stack-manifest.toml [bridge]
+#         ros-${ROS_DISTRO}-micro-xrce-dds-agent \  # stack-manifest.toml [bridge]
 #         mesa-utils libgl1-mesa-dri \              # llvmpipe software render (OQ-4)
 #    && rm -rf /var/lib/apt/lists/*
 #   COPY --from=px4-build /opt/PX4-Autopilot/build /opt/PX4-Autopilot/build
 #   COPY --from=px4-build /opt/PX4-Autopilot/Tools /opt/PX4-Autopilot/Tools
 #   COPY ros2_ws /opt/ros2_ws                       # vendored px4_msgs land here (T2.1)
-#   RUN . /opt/ros/jazzy/setup.sh && colcon build --base-paths /opt/ros2_ws
+#   RUN . /opt/ros/${ROS_DISTRO}/setup.sh && colcon build --base-paths /opt/ros2_ws
 #   COPY docker/sim/entrypoint.sh /entrypoint.sh    # agent + gz_x500 launch (T2.5)
 #   ENTRYPOINT ["/entrypoint.sh"]

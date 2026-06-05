@@ -59,7 +59,10 @@ PY
 PX4_VERSION="$(manifest_get flight_stack.px4_version)"
 PX4_COMMIT="$(manifest_get flight_stack.px4_commit)"   # cleared when --px4-version overrides the pinned tag
 ROS_DISTRO="$(manifest_get middleware.ros_distro)"
+ROS_APT_SOURCE_VERSION="$(manifest_get ros_apt_source.version)"
+ROS_APT_SOURCE_SHA256="$(manifest_get ros_apt_source.sha256)"
 UV_VERSION="$(manifest_get tools.uv_version)"
+UV_TARBALL_SHA256="$(manifest_get tools.uv_tarball_sha256)"
 QGC_VERSION="$(manifest_get apps.qgc_version)"
 QGC_URL="$(manifest_get apps.qgc_url)"
 QGC_SHA256="$(manifest_get apps.qgc_sha256)"
@@ -68,6 +71,15 @@ FOXGLOVE_URL="$(manifest_get apps.foxglove_url)"
 FOXGLOVE_SHA256="$(manifest_get apps.foxglove_sha256)"
 PX4_DIR="${HOME}/PX4-Autopilot"
 QGC_DIR="${HOME}/Apps"
+
+# Upstream package-signing key fingerprints — the trust roots for the Docker and NVIDIA apt
+# repos. Verified against the downloaded key before the repo is trusted (ADR-0006), so a
+# tampered/substituted key is refused. These are fixed upstream trust roots (not versioned
+# pins), so they live here as constants rather than in stack-manifest.toml.
+#   Docker:  https://docs.docker.com/engine/install/ubuntu/ (primary key fingerprint)
+#   NVIDIA:  https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/ (libnvidia-container)
+readonly DOCKER_GPG_FPR="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+readonly NVIDIA_CTK_GPG_FPR="C95B321B61E88C1809C4F759DDCAE044F796ECB0"
 
 WITH_NVIDIA=0
 DISABLE_WAYLAND=0
@@ -104,6 +116,20 @@ verify_sha256() {
   fi
   err "Checksum MISMATCH for ${file} (expected ${expected}). Refusing to use it."
   rm -f "${file}"
+  return 1
+}
+
+# verify_gpg_fingerprint <keyfile> <expected-fingerprint> — abort if the downloaded signing key's
+# primary fingerprint does not match the pinned trust root, so a substituted apt key is refused
+# before its repo is added. Works on armored (.asc) or dearmored key files.
+verify_gpg_fingerprint() {
+  local keyfile="$1" expected="$2" actual
+  actual="$(gpg --show-keys --with-colons "${keyfile}" 2>/dev/null | awk -F: '/^fpr:/ {print $10; exit}')"
+  if [[ "${actual}" == "${expected}" ]]; then
+    log "GPG fingerprint OK: ${keyfile##*/}"
+    return 0
+  fi
+  err "GPG fingerprint MISMATCH for ${keyfile##*/}: got '${actual:-none}', expected ${expected}."
   return 1
 }
 
@@ -206,14 +232,16 @@ install_ros2_jazzy() {
     log "Adding the ROS 2 apt source and installing ROS 2 ${ROS_DISTRO} (desktop)..."
     sudo add-apt-repository -y universe
     # Modern apt-source method: a versioned .deb that drops in the key + repo list.
-    local codename ros_apt_ver deb
+    # Version is manifest-pinned (not GitHub `latest`) and the asset is SHA256-verified before the
+    # root apt install (ADR-0006). The pinned sha256 is the noble (24.04) `_all` asset, so on a
+    # non-noble host the check fails closed — correct, since this script targets 24.04.
+    local codename deb
     # shellcheck disable=SC1091
     codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
-    ros_apt_ver="$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest \
-                   | grep -F '"tag_name"' | awk -F'"' '{print $4}')"
     deb="/tmp/ros2-apt-source.deb"
     curl -fL -o "${deb}" \
-      "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ros_apt_ver}/ros2-apt-source_${ros_apt_ver}.${codename}_all.deb"
+      "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.${codename}_all.deb"
+    verify_sha256 "${deb}" "${ROS_APT_SOURCE_SHA256}" || return 1   # abort on a tampered/wrong asset
     sudo apt-get install -y "${deb}"
     rm -f "${deb}"
     sudo apt-get update -y
@@ -288,6 +316,7 @@ install_docker() {
     sudo install -m 0755 -d /etc/apt/keyrings
     sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
     sudo chmod a+r /etc/apt/keyrings/docker.asc
+    verify_gpg_fingerprint /etc/apt/keyrings/docker.asc "${DOCKER_GPG_FPR}" || return 1
     local codename arch
     # shellcheck disable=SC1091
     codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
@@ -401,8 +430,13 @@ install_nvidia_container_toolkit() {
     return 0
   fi
   log "Installing the NVIDIA Container Toolkit (GPU passthrough for the sim/dev containers)..."
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  # Download the signing key to a temp file, verify its fingerprint against the pinned trust root,
+  # THEN dearmor it into the keyring — so a substituted key is refused before the repo is added.
+  local nvidia_key; nvidia_key="$(mktemp)"
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey -o "${nvidia_key}"
+  verify_gpg_fingerprint "${nvidia_key}" "${NVIDIA_CTK_GPG_FPR}" || { rm -f "${nvidia_key}"; return 1; }
+  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg "${nvidia_key}"
+  rm -f "${nvidia_key}"
   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
     | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
@@ -439,12 +473,29 @@ install_python_env() {
   if have uv; then
     log "uv already installed ($(uv --version))."
   else
-    log "Installing uv ${UV_VERSION} (version-pinned installer)..."
-    curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+    # Install from the version-pinned GitHub release tarball, SHA256-verified before extraction —
+    # no `curl | sh` remote-exec (ADR-0006). The pinned artifact is x86_64-linux only.
+    local arch; arch="$(uname -m)"
+    if [[ "${arch}" != "x86_64" ]]; then
+      warn "uv pin is for x86_64 but this host is ${arch}; install uv ${UV_VERSION} manually."
+    else
+      log "Installing uv ${UV_VERSION} (release tarball, checksum-verified)..."
+      local tmp tarball="uv-x86_64-unknown-linux-gnu"
+      tmp="$(mktemp -d)"
+      curl -fL -o "${tmp}/uv.tar.gz" \
+        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${tarball}.tar.gz"
+      verify_sha256 "${tmp}/uv.tar.gz" "${UV_TARBALL_SHA256}" || { rm -rf "${tmp}"; return 1; }
+      tar -xzf "${tmp}/uv.tar.gz" -C "${tmp}"
+      mkdir -p "${HOME}/.local/bin"
+      install -m 0755 "${tmp}/${tarball}/uv" "${tmp}/${tarball}/uvx" "${HOME}/.local/bin/"
+      rm -rf "${tmp}"
+    fi
   fi
   export PATH="${HOME}/.local/bin:${PATH}"
 
-  if [[ -f "${REPO_ROOT}/pyproject.toml" ]]; then
+  if ! have uv; then
+    warn "uv not on PATH; skipping 'uv sync'. Install uv ${UV_VERSION}, then run: uv sync"
+  elif [[ -f "${REPO_ROOT}/pyproject.toml" ]]; then
     log "Syncing project venv with uv (from ${REPO_ROOT}/pyproject.toml)..."
     ( cd "${REPO_ROOT}" && uv sync )
   else
