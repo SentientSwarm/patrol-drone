@@ -200,7 +200,7 @@ install_base_packages() {
 install_ros2_jazzy() {
   [[ ${SKIP_ROS} -eq 1 ]] && { log "Skipping ROS 2 Jazzy (--skip-ros)."; return 0; }
 
-  if have ros2 || dpkg -l ros-${ROS_DISTRO}-desktop 2>/dev/null | grep -q '^ii'; then
+  if have ros2 || dpkg -l ros-"${ROS_DISTRO}"-desktop 2>/dev/null | grep -q '^ii'; then
     log "ROS 2 ${ROS_DISTRO} already installed."
   else
     log "Adding the ROS 2 apt source and installing ROS 2 ${ROS_DISTRO} (desktop)..."
@@ -218,7 +218,7 @@ install_ros2_jazzy() {
     rm -f "${deb}"
     sudo apt-get update -y
     sudo apt-get install -y \
-      ros-${ROS_DISTRO}-desktop ros-dev-tools \
+      ros-"${ROS_DISTRO}"-desktop ros-dev-tools \
       python3-colcon-common-extensions python3-rosdep python3-vcstool
   fi
 
@@ -253,10 +253,10 @@ install_ros_packages() {
   log "Installing ROS runtime packages used by later Phase 1 milestones..."
   # NB: plan text says ros-humble-rosbag2-storage-mcap — that's a distro typo; we use jazzy.
   sudo apt-get install -y \
-    ros-${ROS_DISTRO}-rosbag2-storage-mcap \
-    ros-${ROS_DISTRO}-apriltag ros-${ROS_DISTRO}-apriltag-ros \
-    ros-${ROS_DISTRO}-cv-bridge ros-${ROS_DISTRO}-image-transport ros-${ROS_DISTRO}-vision-msgs \
-    ros-${ROS_DISTRO}-ros-gz ros-${ROS_DISTRO}-ros-gz-bridge ros-${ROS_DISTRO}-ros-gz-image
+    ros-"${ROS_DISTRO}"-rosbag2-storage-mcap \
+    ros-"${ROS_DISTRO}"-apriltag ros-"${ROS_DISTRO}"-apriltag-ros \
+    ros-"${ROS_DISTRO}"-cv-bridge ros-"${ROS_DISTRO}"-image-transport ros-"${ROS_DISTRO}"-vision-msgs \
+    ros-"${ROS_DISTRO}"-ros-gz ros-"${ROS_DISTRO}"-ros-gz-bridge ros-"${ROS_DISTRO}"-ros-gz-image
 }
 
 # ----------------------------------------------------------------------------- Micro XRCE-DDS Agent
@@ -269,12 +269,12 @@ install_xrce_agent() {
     warn "ROS not installed (--skip-ros) — the agent's apt repo is unavailable. Skipping XRCE agent."
     return 0
   fi
-  if dpkg -l ros-${ROS_DISTRO}-micro-xrce-dds-agent 2>/dev/null | grep -q '^ii'; then
+  if dpkg -l ros-"${ROS_DISTRO}"-micro-xrce-dds-agent 2>/dev/null | grep -q '^ii'; then
     log "Micro XRCE-DDS Agent (ros-${ROS_DISTRO}-micro-xrce-dds-agent) already installed."
     return 0
   fi
   log "Installing Micro XRCE-DDS Agent (ros-${ROS_DISTRO}-micro-xrce-dds-agent)..."
-  sudo apt-get install -y ros-${ROS_DISTRO}-micro-xrce-dds-agent
+  sudo apt-get install -y ros-"${ROS_DISTRO}"-micro-xrce-dds-agent
 }
 
 # ----------------------------------------------------------------------------- Docker Engine + Compose
