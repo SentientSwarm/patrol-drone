@@ -55,12 +55,14 @@ the M1 exit criterion (AC-1 / PLAT-1).
 |---|---|
 | OS | Ubuntu 24.04 |
 | Middleware | ROS 2 Jazzy |
-| Flight stack | PX4 v1.16.x or latest stable |
+| Flight stack | PX4 — pinned in [stack-manifest.toml](stack-manifest.toml) |
 | Simulator | Gazebo Harmonic |
 | Bridge | uXRCE-DDS (native) |
 | Bags | rosbag2 + MCAP |
 | Visualization | Foxglove Studio |
 
+Exact versions live in [stack-manifest.toml](stack-manifest.toml) — the canonical pinned-stack manifest
+([ADR-0004](docs/decisions/0004-stack-manifest-location.md)); this table avoids duplicating them.
 See [ADR-0001](docs/decisions/0001-distro-and-os.md) for why this stack, not the Humble + 22.04 path that some references use.
 
 ## Repo layout

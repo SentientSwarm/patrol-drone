@@ -138,3 +138,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+
+  manifest-drift:
+    # Enforces the ADR-0004 contract: stack-manifest.toml is the single source of truth and no
+    # consumer (setup script, Dockerfile) or summary (README, CLAUDE.md) may drift from it.
+    # Pure stdlib (tomllib) on the runner's system python3.12 — no uv/deps needed.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Manifest drift gate
+        run: python3 scripts/check_manifest_drift.py

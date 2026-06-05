@@ -21,8 +21,10 @@ python        = "3.12"                         # Ubuntu 24.04 default interprete
 [flight_stack]
 px4_version   = "v1.17.0"                      # ← OQ-3 edit point. PROVISIONAL: host-installed
                                                #   reality (latest stable); final pin from the M1–M2 spike.
-px4_msgs_ref  = "release/1.16"                 # ← OQ-3 edit point. PROVISIONAL placeholder: the px4_msgs
-                                               #   branch matching the final px4_version is the spike's output.
+px4_commit    = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4"  # commit the v1.17.0 tag dereferences to;
+                                               #   setup_phase1.sh verifies HEAD matches this post-checkout.
+px4_msgs_ref  = "release/1.17"                 # ← OQ-3 edit point. PROVISIONAL: matched to px4_version's
+                                               #   release line (release/1.17 ↔ v1.17.0); final pair is the spike's output.
 
 [simulator]
 gazebo        = "harmonic"                     # gz-sim 8.x (8.12.0 installed)
@@ -39,4 +41,20 @@ colcon        = "pinned"                        # python3-colcon-common-extensio
 docker        = "pinned"                        # Docker Engine + Compose v2
 
 [container]
-ros_base_image = "osrf/ros:jazzy-desktop"       # shared base for the sim/dev containers (C1/C2)
+ros_base_image  = "osrf/ros:jazzy-desktop"      # shared base for the sim/dev containers (C1/C2)
+ros_base_digest = "sha256:2ce9a0e3e9abd4dd804cd044d279f411d31074f165670e010dfdb4e096404716"
+                                                #   pin the base by digest for reproducibility — the consumed
+                                                #   reference is ros_base_image@ros_base_digest (gen_build_args.py).
+
+[tools]
+uv_version    = "0.11.18"                       # Python manager; installed via the versioned astral.sh installer
+
+[apps]
+# Desktop apps are pinned to explicit releases (not `latest`) and checksum-verified after download
+# (setup_phase1.sh::verify_sha256). Bump version+sha256 together; the URL derives from the version.
+qgc_version       = "v5.0.8"
+qgc_sha256        = "06969c67ef58ea063def0a8271447a1cc385438c4a7df36813315b4475146737"
+qgc_url           = "https://github.com/mavlink/qgroundcontrol/releases/download/v5.0.8/QGroundControl-x86_64.AppImage"
+foxglove_version  = "2.54.0"
+foxglove_sha256   = "00d3956a060116032ca842d3706302a9220e1a799b0d6fc63abfd617e1e8910c"
+foxglove_url      = "https://get.foxglove.dev/desktop/v2.54.0/foxglove-studio-2.54.0-linux-amd64.deb"

@@ -34,13 +34,40 @@
 set -euo pipefail
 trap 'err "failed at line ${LINENO}"; exit 1' ERR
 
+# ----------------------------------------------------------------------------- repo root + manifest
+# Resolve the repo root from this script's location so the canonical pinned-stack manifest is
+# the single source of truth for every version literal below — nothing is hardcoded here (ADR-0004).
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MANIFEST="${REPO_ROOT}/stack-manifest.toml"
+
+# manifest_get <dotted.key> — read one value from stack-manifest.toml (stdlib tomllib, Python 3.11+).
+# Fails (non-zero) on a missing key, which aborts the deriving assignments below under `set -e`.
+manifest_get() {
+  python3 - "$1" "${MANIFEST}" <<'PY'
+import sys, tomllib
+key, path = sys.argv[1], sys.argv[2]
+with open(path, "rb") as fh:
+    node = tomllib.load(fh)
+for part in key.split("."):
+    node = node[part]
+print(node)
+PY
+}
+
 # ----------------------------------------------------------------------------- config / flags
-PX4_VERSION="v1.17.0"                 # plan pins "v1.16.x or latest stable"; latest stable = v1.17.0
+# Version literals are DERIVED from stack-manifest.toml — do not hardcode them here (ADR-0004 / ADR-0005).
+PX4_VERSION="$(manifest_get flight_stack.px4_version)"
+PX4_COMMIT="$(manifest_get flight_stack.px4_commit)"   # cleared when --px4-version overrides the pinned tag
+ROS_DISTRO="$(manifest_get middleware.ros_distro)"
+UV_VERSION="$(manifest_get tools.uv_version)"
+QGC_VERSION="$(manifest_get apps.qgc_version)"
+QGC_URL="$(manifest_get apps.qgc_url)"
+QGC_SHA256="$(manifest_get apps.qgc_sha256)"
+FOXGLOVE_VERSION="$(manifest_get apps.foxglove_version)"
+FOXGLOVE_URL="$(manifest_get apps.foxglove_url)"
+FOXGLOVE_SHA256="$(manifest_get apps.foxglove_sha256)"
 PX4_DIR="${HOME}/PX4-Autopilot"
 QGC_DIR="${HOME}/Apps"
-QGC_URL="https://github.com/mavlink/qgroundcontrol/releases/latest/download/QGroundControl-x86_64.AppImage"
-FOXGLOVE_URL="https://get.foxglove.dev/desktop/latest/foxglove-studio-latest-linux-amd64.deb"
-ROS_DISTRO="jazzy"
 
 WITH_NVIDIA=0
 DISABLE_WAYLAND=0
@@ -63,6 +90,23 @@ warn() { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()  { printf '\033[1;31m[err]\033[0m   %s\n' "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# verify_sha256 <file> <expected-sha256> — abort (and delete the file) on mismatch so a tampered
+# or wrong-version download is never installed/used. Empty expected -> warn-and-skip (unpinned).
+verify_sha256() {
+  local file="$1" expected="$2"
+  if [[ -z "${expected}" ]]; then
+    warn "No checksum pinned for ${file##*/}; skipping verification."
+    return 0
+  fi
+  if echo "${expected}  ${file}" | sha256sum -c - >/dev/null 2>&1; then
+    log "Checksum OK: ${file##*/}"
+    return 0
+  fi
+  err "Checksum MISMATCH for ${file} (expected ${expected}). Refusing to use it."
+  rm -f "${file}"
+  return 1
+}
+
 usage() {
   cat <<'EOF'
 Usage: scripts/setup_phase1.sh [options]
@@ -76,7 +120,8 @@ Installs the full Phase 1 prerequisite toolchain by default. Use --skip-* to opt
                        Takes effect on next login. Off by default.
   --px4-no-nuttx       Pass --no-nuttx to PX4's ubuntu.sh (sim-only; skips Pixhawk toolchain).
                        Leaner for Phase 1. Verify the flag exists for your PX4 version.
-  --px4-version <tag>  PX4 tag to check out (default: v1.17.0).
+  --px4-version <tag>  PX4 tag to check out (default: stack-manifest.toml flight_stack.px4_version).
+                       Overriding this also disables the pinned-commit verification.
   --px4-dir <path>     Where to clone PX4-Autopilot (default: ~/PX4-Autopilot).
 
   --skip-ros           Skip ROS 2 Jazzy + colcon/rosdep install.
@@ -96,7 +141,7 @@ while [[ $# -gt 0 ]]; do
     --with-nvidia)     WITH_NVIDIA=1 ;;
     --disable-wayland) DISABLE_WAYLAND=1 ;;
     --px4-no-nuttx)    PX4_NO_NUTTX=1 ;;
-    --px4-version)     PX4_VERSION="${2:?--px4-version needs a value}"; shift ;;
+    --px4-version)     PX4_VERSION="${2:?--px4-version needs a value}"; PX4_COMMIT=""; shift ;;
     --px4-dir)         PX4_DIR="${2:?--px4-dir needs a value}"; shift ;;
     --skip-ros)        SKIP_ROS=1 ;;
     --skip-ros-pkgs)   SKIP_ROS_PKGS=1 ;;
@@ -291,13 +336,14 @@ download_qgc() {
   [[ ${SKIP_QGC} -eq 1 ]] && { log "Skipping QGroundControl (--skip-qgc)."; return 0; }
   mkdir -p "${QGC_DIR}"
   local target="${QGC_DIR}/QGroundControl-x86_64.AppImage"
-  if [[ -f "${target}" ]]; then
-    log "QGC AppImage already present at ${target}."
+  if [[ -f "${target}" ]] && verify_sha256 "${target}" "${QGC_SHA256}"; then
+    log "QGC AppImage already present and verified at ${target}."
     chmod +x "${target}"   # ensure it's runnable even if placed here manually
     return 0
   fi
-  log "Downloading QGroundControl AppImage..."
+  log "Downloading QGroundControl ${QGC_VERSION}..."
   if curl -fL -o "${target}" "${QGC_URL}"; then
+    verify_sha256 "${target}" "${QGC_SHA256}" || return 1   # abort setup on a tampered/wrong asset
     chmod +x "${target}"
     log "QGC saved to ${target}"
   else
@@ -313,12 +359,13 @@ install_foxglove() {
     log "Foxglove Studio already installed."
     return 0
   fi
-  log "Downloading and installing Foxglove Studio..."
+  log "Downloading and installing Foxglove Studio ${FOXGLOVE_VERSION}..."
   local deb="/tmp/foxglove-studio.deb"
   if curl -fL -o "${deb}" "${FOXGLOVE_URL}"; then
+    verify_sha256 "${deb}" "${FOXGLOVE_SHA256}" || return 1   # abort setup on a tampered/wrong asset
     sudo apt-get install -y "${deb}"
     rm -f "${deb}"
-    log "Foxglove Studio installed."
+    log "Foxglove Studio ${FOXGLOVE_VERSION} installed."
   else
     warn "Foxglove download failed. Grab the .deb from foxglove.dev/download manually."
     rm -f "${deb}"
@@ -392,18 +439,16 @@ install_python_env() {
   if have uv; then
     log "uv already installed ($(uv --version))."
   else
-    log "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    log "Installing uv ${UV_VERSION} (version-pinned installer)..."
+    curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
   fi
   export PATH="${HOME}/.local/bin:${PATH}"
 
-  local repo_root
-  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  if [[ -f "${repo_root}/pyproject.toml" ]]; then
-    log "Syncing project venv with uv (from ${repo_root}/pyproject.toml)..."
-    ( cd "${repo_root}" && uv sync )
+  if [[ -f "${REPO_ROOT}/pyproject.toml" ]]; then
+    log "Syncing project venv with uv (from ${REPO_ROOT}/pyproject.toml)..."
+    ( cd "${REPO_ROOT}" && uv sync )
   else
-    warn "No pyproject.toml at repo root (${repo_root}); skipping 'uv sync'."
+    warn "No pyproject.toml at repo root (${REPO_ROOT}); skipping 'uv sync'."
   fi
 }
 
@@ -423,6 +468,20 @@ install_px4() {
     git fetch --tags --quiet
     git checkout "${PX4_VERSION}"
     git submodule update --init --recursive )
+
+  # Supply-chain check: the tag must dereference to the commit pinned in the manifest. Catches an
+  # upstream-moved/retagged release. Skipped when --px4-version overrides the pinned tag (PX4_COMMIT="").
+  if [[ -n "${PX4_COMMIT}" ]]; then
+    local head
+    head="$(git -C "${PX4_DIR}" rev-parse HEAD)"
+    if [[ "${head}" == "${PX4_COMMIT}" ]]; then
+      log "PX4 HEAD matches the pinned commit (${PX4_COMMIT})."
+    else
+      err "PX4 HEAD ${head} != pinned ${PX4_COMMIT} (stack-manifest.toml flight_stack.px4_commit)."
+      err "The ${PX4_VERSION} tag may have moved upstream. Verify, then update the manifest pin. Aborting."
+      exit 1
+    fi
+  fi
 
   log "Running PX4's ubuntu.sh dev-environment setup (this is the long step)..."
   local px4_args=()

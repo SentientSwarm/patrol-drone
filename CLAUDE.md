@@ -27,7 +27,7 @@ The **canonical pinned stack manifest is [`stack-manifest.toml`](stack-manifest.
 | OS | Ubuntu 24.04 LTS (Noble) | 24.04.4 LTS ✓ |
 | Middleware | ROS 2 Jazzy Jalisco (LTS; `ros-jazzy-desktop`) | by `setup_phase1.sh` (re-run pending on this host) |
 | Build tool | colcon (`python3-colcon-common-extensions`, ROS 2 Jazzy apt) | by `setup_phase1.sh`; in-workspace `colcon build` is M2 work |
-| Flight stack | PX4-Autopilot **v1.17.0** — latest stable; **provisional pin pending [OQ-3](docs/phase1/01-platform/prd.md)** (exact v1.16.x+ tag + matching `px4_msgs` branch settle in the M1–M2 integration spike) | **v1.17.0** at `~/PX4-Autopilot` ✓ |
+| Flight stack | PX4-Autopilot **v1.17.0** (`px4_msgs` **release/1.17**) — latest stable; **provisional pin pending [OQ-3](docs/phase1/01-platform/prd.md)** (the exact tag + matching `px4_msgs` branch settle in the M1–M2 integration spike) | **v1.17.0** at `~/PX4-Autopilot` ✓ |
 | Simulator | Gazebo Harmonic (gz-sim 8.x) | gz sim 8.11.0 ✓ |
 | PX4↔ROS 2 bridge | uXRCE-DDS — Micro XRCE-DDS Agent (`ros-jazzy-micro-xrce-dds-agent`, ROS 2 apt; matches the sim container), native (**not MAVROS**) | agent by `setup_phase1.sh`; bridge proven in M2 |
 | Mission orchestration | Python 3.12 | 3.12.3 ✓ |
