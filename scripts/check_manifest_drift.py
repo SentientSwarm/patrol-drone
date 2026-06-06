@@ -122,6 +122,16 @@ def _dockerfile_command_body(text: str) -> str:
     return "\n".join(lines)
 
 
+def _literals_in_dockerfile(rel: str, path: Path, forbidden) -> list[str]:
+    """Forbidden version/distro literals found in one Dockerfile's command body."""
+    body = _dockerfile_command_body(path.read_text())
+    return [
+        f"{rel} contains {label} in a command body; derive it from the manifest"
+        for pattern, label in forbidden
+        if pattern.search(body)
+    ]
+
+
 def check_dockerfile_no_literals(repo_root: Path, manifest: dict) -> list[str]:
     """Reject hardcoded version/distro literals in Dockerfile command bodies (not just ARG defaults).
 
@@ -142,14 +152,8 @@ def check_dockerfile_no_literals(repo_root: Path, manifest: dict) -> list[str]:
     problems = []
     for rel in ("docker/sim/Dockerfile", "docker/dev/Dockerfile"):
         path = repo_root / rel
-        if not path.exists():
-            continue
-        body = _dockerfile_command_body(path.read_text())
-        for pattern, label in forbidden:
-            if pattern.search(body):
-                problems.append(
-                    f"{rel} contains {label} in a command body; derive it from the manifest"
-                )
+        if path.exists():
+            problems += _literals_in_dockerfile(rel, path, forbidden)
     return problems
 
 
