@@ -138,6 +138,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          # Vendored upstream scripts (eProsima px4_ros_com) are out of our control and not part
+          # of our shell surface — lint only first-party scripts.
+          ignore_paths: ros2_ws/src/external
 
   manifest-drift:
     # Enforces the ADR-0004 contract: stack-manifest.toml is the single source of truth and no

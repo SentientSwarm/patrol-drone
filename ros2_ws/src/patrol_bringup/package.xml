@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>patrol_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    Launch files, configs, and params for the patrol-drone mission stack.
+    M2 ships this as an empty-but-buildable ament_python shell (design 01-platform C7);
+    02-mission-control (M3+) lands mission_basic.launch.py / mission_patrol.launch.py here.
+  </description>
+  <maintainer email="egemencankaya14@gmail.com">Egemen Cankaya</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

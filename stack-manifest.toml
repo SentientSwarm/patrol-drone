@@ -6,10 +6,13 @@
 # else. CLAUDE.md's "Stack (pinned)" table is a human-facing summary of this file
 # and must be kept in sync (see ADR-0004).
 #
-# Status: M1 DRAFT. Finalized at M2 (T2.7 / SWM-11). The px4_version / px4_msgs_ref
-# pair is the single edit point for OQ-3 — the exact PX4 tag + matching px4_msgs
-# branch are settled by the M1–M2 integration spike (tracked in MZ / §6.5), not
-# pinned on paper. Design reference: docs/phase1/01-platform/design.md §4.2.9 (C9).
+# Status: FINAL as of M2 (T2.7 / SWM-11). OQ-3 RESOLVED — the px4_version / px4_msgs_ref
+# pair is no longer provisional: the M1–M2 integration spike confirmed v1.17.0 ↔ release/1.17
+# as a known-good combination. Evidence: PX4 v1.17.0 (at px4_commit) installed on the host;
+# px4_msgs release/1.17 + px4_ros_com vendored and built green by a single `colcon build`
+# (all 4 workspace packages); live /fmu/* bridge proven against gz_x500 SITL. The
+# px4_version / px4_msgs_ref pair remains the single edit point should the pin ever move.
+# Design reference: docs/phase1/01-platform/design.md §4.2.9 (C9); OQ-3 tracked in MZ / §6.5.
 
 [os]
 ubuntu        = "24.04"                      # Noble Numbat (ADR-0001)
@@ -26,19 +29,30 @@ version = "1.2.0"
 sha256  = "0804d9b13db770eb87019be414cd78378835228ad5fa801fc88758596dd8f7e5"
 
 [flight_stack]
-px4_version   = "v1.17.0"                      # ← OQ-3 edit point. PROVISIONAL: host-installed
-                                               #   reality (latest stable); final pin from the M1–M2 spike.
+px4_version   = "v1.17.0"                      # ← OQ-3 edit point (FINAL). Latest stable; proven by M2.
 px4_commit    = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4"  # commit the v1.17.0 tag dereferences to;
-                                               #   setup_phase1.sh verifies HEAD matches this post-checkout.
-px4_msgs_ref  = "release/1.17"                 # ← OQ-3 edit point. PROVISIONAL: matched to px4_version's
-                                               #   release line (release/1.17 ↔ v1.17.0); final pair is the spike's output.
+                                               #   setup_phase1.sh + docker/sim/Dockerfile verify HEAD matches this.
+px4_msgs_ref  = "release/1.17"                 # ← OQ-3 edit point (FINAL). Matches px4_version's release
+                                               #   line (release/1.17 ↔ v1.17.0); built green at M2.
+# Exact commits of the vendored copies under ros2_ws/src/external/ (committed, not fetched at
+# build time — design C6/H3). Recorded for reproducibility; bump alongside px4_msgs_ref.
+px4_msgs_commit    = "86d8239e962f6939e05c3737784f60c02fa884db"  # px4_msgs @ release/1.17
+px4_ros_com_commit = "86e9aeb20e55a4673fa8a9f1c29ea06a6c5ad1af"  # px4_ros_com @ main (no release/1.17
+                                               #   branch cut upstream; main == release/1.16 at this commit)
 
 [simulator]
-gazebo        = "harmonic"                     # gz-sim 8.x (8.12.0 installed)
+gazebo        = "harmonic"                     # gz-sim 8.x (host patch version tracked in CLAUDE.md)
 
 [bridge]
-uxrce_dds     = "ros-jazzy-micro-xrce-dds-agent"  # Micro XRCE-DDS Agent via ROS 2 apt
-                                                  #   (matches the sim container + setup_phase1.sh; not MAVROS)
+# Micro XRCE-DDS Agent — the native PX4<->ROS 2 bridge (NOT MAVROS). M2 integration-spike
+# finding (ADR-0007): there is NO `ros-${ROS_DISTRO}-micro-xrce-dds-agent` apt package in the
+# ROS 2 Jazzy repo (verified on the host and in the osrf/ros:jazzy-desktop base). The agent is
+# built FROM SOURCE at a pinned eProsima tag — the PX4-canonical method. The sim container
+# (docker/sim/Dockerfile) and setup_phase1.sh both build this exact tag; both produce the
+# `MicroXRCEAgent` binary used by the bridge (`MicroXRCEAgent udp4 -p 8888`).
+uxrce_dds_agent_source  = "https://github.com/eProsima/Micro-XRCE-DDS-Agent.git"
+uxrce_dds_agent_version = "v3.0.1"
+uxrce_dds_agent_commit  = "155cfaaf8b7abac2e85d4a62d3649b09ace0be55"  # tag v3.0.1 dereferences here
 
 [bags]
 mcap_plugin   = "rosbag2-storage-mcap"         # rosbag2 MCAP storage plugin (05 records; sqlite is legacy)

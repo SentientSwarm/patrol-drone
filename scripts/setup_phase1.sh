@@ -10,7 +10,7 @@
 #   - base build/dev apt packages
 #   - ROS 2 Jazzy (desktop) + colcon/rosdep + ROS dev tools
 #   - ROS runtime packages later milestones need (rosbag2-MCAP, apriltag_ros, ros-gz, cv_bridge)
-#   - Micro XRCE-DDS Agent (PX4 <-> ROS 2 bridge), via the ROS 2 apt repo
+#   - Micro XRCE-DDS Agent (PX4 <-> ROS 2 bridge), built from source at the pinned tag (ADR-0007)
 #   - Docker Engine + Compose (+ optional NVIDIA Container Toolkit with --with-nvidia)
 #   - uv (Python manager) and the project's dev venv from pyproject.toml
 #   - PX4-Autopilot source checkout (pinned) + PX4's own ubuntu.sh dev-env setup
@@ -61,6 +61,10 @@ PX4_COMMIT="$(manifest_get flight_stack.px4_commit)"   # cleared when --px4-vers
 ROS_DISTRO="$(manifest_get middleware.ros_distro)"
 ROS_APT_SOURCE_VERSION="$(manifest_get ros_apt_source.version)"
 ROS_APT_SOURCE_SHA256="$(manifest_get ros_apt_source.sha256)"
+UXRCE_AGENT_SOURCE="$(manifest_get bridge.uxrce_dds_agent_source)"
+UXRCE_AGENT_VERSION="$(manifest_get bridge.uxrce_dds_agent_version)"
+UXRCE_AGENT_COMMIT="$(manifest_get bridge.uxrce_dds_agent_commit)"
+MCAP_PLUGIN="$(manifest_get bags.mcap_plugin)"          # rosbag2 MCAP storage plugin suffix (M7)
 UV_VERSION="$(manifest_get tools.uv_version)"
 UV_TARBALL_SHA256="$(manifest_get tools.uv_tarball_sha256)"
 QGC_VERSION="$(manifest_get apps.qgc_version)"
@@ -279,9 +283,10 @@ install_ros_packages() {
     return 0
   fi
   log "Installing ROS runtime packages used by later Phase 1 milestones..."
-  # NB: plan text says ros-humble-rosbag2-storage-mcap — that's a distro typo; we use jazzy.
+  # The MCAP plugin suffix is manifest-derived (bags.mcap_plugin); the distro half resolves from
+  # ROS_DISTRO (also manifest-derived). NB: plan text says ros-humble-* — a distro typo; we use jazzy.
   sudo apt-get install -y \
-    ros-"${ROS_DISTRO}"-rosbag2-storage-mcap \
+    ros-"${ROS_DISTRO}"-"${MCAP_PLUGIN}" \
     ros-"${ROS_DISTRO}"-apriltag ros-"${ROS_DISTRO}"-apriltag-ros \
     ros-"${ROS_DISTRO}"-cv-bridge ros-"${ROS_DISTRO}"-image-transport ros-"${ROS_DISTRO}"-vision-msgs \
     ros-"${ROS_DISTRO}"-ros-gz ros-"${ROS_DISTRO}"-ros-gz-bridge ros-"${ROS_DISTRO}"-ros-gz-image
@@ -290,19 +295,25 @@ install_ros_packages() {
 # ----------------------------------------------------------------------------- Micro XRCE-DDS Agent
 install_xrce_agent() {
   [[ ${SKIP_XRCE} -eq 1 ]] && { log "Skipping Micro XRCE-DDS Agent (--skip-xrce)."; return 0; }
-  # Installed from the ROS 2 apt repo (configured by install_ros2_jazzy) so the host
-  # matches the sim container, which apt-installs ros-${ROS_DISTRO}-micro-xrce-dds-agent
-  # (docs/phase1/01-platform/design.md §4.2.1). Provides the `MicroXRCEAgent` binary.
-  if [[ ${SKIP_ROS} -eq 1 ]] && ! have ros2; then
-    warn "ROS not installed (--skip-ros) — the agent's apt repo is unavailable. Skipping XRCE agent."
+  # Built FROM SOURCE at the pinned eProsima tag (stack-manifest.toml [bridge]) so the host
+  # matches the sim container (docker/sim/Dockerfile). M2 spike finding (ADR-0007): there is NO
+  # `ros-${ROS_DISTRO}-micro-xrce-dds-agent` apt package in the ROS 2 Jazzy repo — the
+  # PX4-canonical install is a source build. Produces the `MicroXRCEAgent` binary.
+  if have MicroXRCEAgent; then
+    log "Micro XRCE-DDS Agent (${UXRCE_AGENT_VERSION}) already installed: $(command -v MicroXRCEAgent)."
     return 0
   fi
-  if dpkg -l ros-"${ROS_DISTRO}"-micro-xrce-dds-agent 2>/dev/null | grep -q '^ii'; then
-    log "Micro XRCE-DDS Agent (ros-${ROS_DISTRO}-micro-xrce-dds-agent) already installed."
+  log "Building Micro XRCE-DDS Agent ${UXRCE_AGENT_VERSION} from source (${UXRCE_AGENT_SOURCE})..."
+  # Shared recipe with the sim container (docker/sim/Dockerfile) — one source of the build steps,
+  # so host and container agents can't drift. `sudo` here: /usr/local install needs root on the host.
+  # NON-FATAL: a clone/build failure must not abort the rest of the bootstrap (Docker/QGC/PX4) —
+  # the script is idempotent, so we warn loudly and continue; re-run setup to retry the agent.
+  if ! bash "${REPO_ROOT}/scripts/build_xrce_agent.sh" \
+        "${UXRCE_AGENT_SOURCE}" "${UXRCE_AGENT_VERSION}" "${UXRCE_AGENT_COMMIT}" sudo; then
+    warn "Micro XRCE-DDS Agent build FAILED — agent NOT installed (the PX4<->ROS 2 bridge will"
+    warn "  not work until you re-run setup_phase1.sh). Continuing with the rest of the toolchain."
     return 0
   fi
-  log "Installing Micro XRCE-DDS Agent (ros-${ROS_DISTRO}-micro-xrce-dds-agent)..."
-  sudo apt-get install -y ros-"${ROS_DISTRO}"-micro-xrce-dds-agent
 }
 
 # ----------------------------------------------------------------------------- Docker Engine + Compose

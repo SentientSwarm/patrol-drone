@@ -1,0 +1,68 @@
+# docker-compose.yml — patrol-drone sim/dev orchestration (docset 01-platform, C3 / §4.2.3).
+#
+# Build ARGs come from stack-manifest.toml — generate the env file the variable substitution
+# below reads, then pass it explicitly (this avoids the repo-root ./.env, which holds secrets):
+#
+#   scripts/gen_build_args.py --env > .env.build          # manifest -> KEY=VALUE (gitignored)
+#   docker compose --env-file .env.build build sim dev     # C1 + C2 from the shared base
+#   docker compose --env-file .env.build up -d sim         # PX4 SITL + Gazebo + uXRCE-DDS agent
+#
+# The uXRCE-DDS agent is NOT a third service (OQ-1 resolution) — it is a process inside `sim`
+# (docker/sim/entrypoint.sh). `network_mode: host` gives the agent the UDP-localhost transport
+# PX4's uxrce_dds_client expects (design A1).
+services:
+  sim:
+    build:
+      context: .                              # REPO ROOT — runtime stage COPYs ros2_ws + entrypoint
+      dockerfile: docker/sim/Dockerfile
+      args:
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE}     # from stack-manifest.toml via .env.build
+        PX4_VERSION: ${PX4_VERSION}           # [flight_stack] px4_version (OQ-3)
+        PX4_COMMIT: ${PX4_COMMIT}             # [flight_stack] px4_commit
+        GZ_VERSION: ${GZ_VERSION}             # [simulator] gazebo
+        ROS_DISTRO: ${ROS_DISTRO}             # [middleware] ros_distro
+        XRCE_AGENT_SOURCE: ${XRCE_AGENT_SOURCE}    # [bridge] uxrce_dds_agent_source (built from source)
+        XRCE_AGENT_VERSION: ${XRCE_AGENT_VERSION}  # [bridge] uxrce_dds_agent_version
+        XRCE_AGENT_COMMIT: ${XRCE_AGENT_COMMIT}    # [bridge] uxrce_dds_agent_commit (verified post-clone)
+    network_mode: host                        # UDP-localhost agent <-> PX4 (A1)
+    init: true                                # tini as PID 1: forwards SIGTERM to the entrypoint
+                                              #   (prompt graceful shutdown) + reaps orphaned children
+    environment:
+      LIBGL_ALWAYS_SOFTWARE: "1"              # headless software render default (OQ-4)
+      QT_QPA_PLATFORM: offscreen
+      HEADLESS: "1"
+
+  dev:
+    build:
+      context: .
+      dockerfile: docker/dev/Dockerfile
+      args:
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE}     # same shared base as sim (one base, two derivatives)
+        ROS_DISTRO: ${ROS_DISTRO}
+    volumes:
+      # Mount SOURCE ONLY (not the whole ros2_ws): the in-container `colcon build` then writes
+      # build/install/log inside the container, so it never reuses the host's host-toolchain
+      # artifacts (which would corrupt the cross-environment build). Edits on the host are live (C2).
+      - ./ros2_ws/src:/workspace/ros2_ws/src
+    network_mode: host
+    stdin_open: true
+    tty: true
+
+  # Optional GPU passthrough — never required (OQ-5). `docker compose --profile gpu up sim-gpu`.
+  # The device reservation is the single swappable runtime knob the Phase 2 Jetson image flips
+  # (NVIDIA Container Runtime) with no Dockerfile rewrite (PLAT-3 AC3).
+  sim-gpu:
+    extends:
+      service: sim
+    profiles: ["gpu"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+    environment:
+      LIBGL_ALWAYS_SOFTWARE: "0"              # hardware render when the GPU is reserved
+      QT_QPA_PLATFORM: offscreen
+      HEADLESS: "1"

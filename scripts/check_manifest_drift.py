@@ -6,10 +6,11 @@ executable consumers (setup script, Dockerfile) and the human-facing summaries (
 CLAUDE.md). This guard enforces that contract in CI:
 
   1. px4_msgs_ref sits on px4_version's release line     (Hermes Medium #1)
-  2. setup_phase1.sh derives versions, hardcodes none     (Hermes Medium #3)
+  2. setup_phase1.sh derives versions, hardcodes none     (Hermes Medium #3; incl. bridge agent + mcap)
   3. docker/sim/Dockerfile ARGs carry no version defaults  (Hermes Medium #3)
   4. README "Stack at a glance" carries no stale PX4 pin    (Hermes Low #1)
   5. CLAUDE.md summary table agrees with the manifest       (ADR-0004)
+  6. Dockerfile command bodies carry no hardcoded version/distro literals (round-3 Medium #1)
 
 Exit 0 = clean; exit 1 = drift, with one line per problem.
 """
@@ -57,6 +58,10 @@ DERIVED_VARS = {
     "ROS_DISTRO": "middleware.ros_distro",
     "ROS_APT_SOURCE_VERSION": "ros_apt_source.version",
     "ROS_APT_SOURCE_SHA256": "ros_apt_source.sha256",
+    "UXRCE_AGENT_SOURCE": "bridge.uxrce_dds_agent_source",
+    "UXRCE_AGENT_VERSION": "bridge.uxrce_dds_agent_version",
+    "UXRCE_AGENT_COMMIT": "bridge.uxrce_dds_agent_commit",
+    "MCAP_PLUGIN": "bags.mcap_plugin",
     "UV_VERSION": "tools.uv_version",
     "UV_TARBALL_SHA256": "tools.uv_tarball_sha256",
     "QGC_VERSION": "apps.qgc_version",
@@ -99,6 +104,55 @@ def check_dockerfile_no_defaults(repo_root: Path) -> list[str]:
     ]
 
 
+# A hardcoded PX4 clone tag — `--branch v1.17.0` / `--tag=v1.16` — that should be `${PX4_VERSION}`.
+# Anchored to the clone-arg so an unrelated version-shaped token (a `pip==1.2.3`, a `/v2.0/` URL
+# path, a soname) is NOT misflagged as the PX4 pin.
+_PX4_BRANCH_LITERAL = re.compile(r"--(?:branch|tag)[ =]v\d+\.\d+")
+
+
+def _dockerfile_command_body(text: str) -> str:
+    """Dockerfile text with comments removed: full-line comments AND whitespace-preceded trailing
+    `# ...` comments. (A `#` not preceded by whitespace — e.g. `${VAR#x}`, `sha256:...` — is kept.)
+    """
+    lines = []
+    for line in text.splitlines():
+        if re.match(r"\s*#", line):
+            continue  # full-line comment
+        lines.append(re.sub(r"\s#.*$", "", line))  # drop a trailing ` # ...` comment
+    return "\n".join(lines)
+
+
+def check_dockerfile_no_literals(repo_root: Path, manifest: dict) -> list[str]:
+    """Reject hardcoded version/distro literals in Dockerfile command bodies (not just ARG defaults).
+
+    The forbidden distro/simulator words are DERIVED from the manifest (not hardcoded), so the gate
+    self-updates when the ros_distro / gazebo pin changes instead of guarding stale tokens.
+    """
+    forbidden = (
+        (_PX4_BRANCH_LITERAL, "a hardcoded PX4 version (use ${PX4_VERSION})"),
+        (
+            re.compile(rf"\b{re.escape(manifest['middleware']['ros_distro'])}\b"),
+            "a hardcoded ROS distro (use ${ROS_DISTRO})",
+        ),
+        (
+            re.compile(rf"\b{re.escape(manifest['simulator']['gazebo'])}\b"),
+            "a hardcoded Gazebo version (use ${GZ_VERSION})",
+        ),
+    )
+    problems = []
+    for rel in ("docker/sim/Dockerfile", "docker/dev/Dockerfile"):
+        path = repo_root / rel
+        if not path.exists():
+            continue
+        body = _dockerfile_command_body(path.read_text())
+        for pattern, label in forbidden:
+            if pattern.search(body):
+                problems.append(
+                    f"{rel} contains {label} in a command body; derive it from the manifest"
+                )
+    return problems
+
+
 def _stale_px4_tokens(text: str, release_line: str) -> list[str]:
     """PX4 version tokens in `text` whose major.minor differs from the manifest release line."""
     return [tok for tok in re.findall(r"v\d+\.\d+", text) if not tok.startswith(f"v{release_line}")]
@@ -135,6 +189,7 @@ def run_checks(repo_root: Path) -> list[str]:
     problems += check_px4_msgs_alignment(manifest)
     problems += check_setup_derives(repo_root)
     problems += check_dockerfile_no_defaults(repo_root)
+    problems += check_dockerfile_no_literals(repo_root, manifest)
     problems += check_readme(repo_root, manifest)
     problems += check_claudemd(repo_root, manifest)
     return problems

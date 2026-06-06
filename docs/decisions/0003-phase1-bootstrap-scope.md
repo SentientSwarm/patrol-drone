@@ -26,7 +26,8 @@ flowing at 50 Hz (that work, and its exit test, still belong to M2).
 ## Decision
 
 `setup_phase1.sh` installs the **full Phase 1 prerequisite toolchain by default** (ROS 2 Jazzy
-+ colcon/rosdep, the Micro XRCE-DDS Agent via snap, Docker + Compose, the ROS runtime packages
++ colcon/rosdep, the Micro XRCE-DDS Agent built from source at the pinned eProsima tag
+([ADR-0007](0007-uxrce-dds-agent-from-source.md) — there is no Jazzy apt package), Docker + Compose, the ROS runtime packages
 later milestones need, QGroundControl, and Foxglove Studio), with `--skip-*` flags to opt out of
 any section. The NVIDIA Container Toolkit is installed only under `--with-nvidia`.
 

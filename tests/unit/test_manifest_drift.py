@@ -64,5 +64,65 @@ def test_missing_derivations_flags_inlined_literal():
     assert "apps.qgc_sha256" in problems[0]
 
 
+def _write_sim_dockerfile(root: Path, contents: str) -> None:
+    sim = root / "docker" / "sim"
+    sim.mkdir(parents=True, exist_ok=True)
+    (sim / "Dockerfile").write_text(contents)
+
+
+# Minimal manifest the literal check derives its forbidden distro/sim words from.
+_LITERAL_MANIFEST = {"middleware": {"ros_distro": "jazzy"}, "simulator": {"gazebo": "harmonic"}}
+
+
+def test_dockerfile_literals_clean_when_args_used(tmp_path):
+    _write_sim_dockerfile(
+        tmp_path,
+        "ARG PX4_VERSION\n"
+        "RUN git clone --branch ${PX4_VERSION} https://example/PX4.git\n"
+        'RUN apt-get install -y "gz-${GZ_VERSION}" "ros-${ROS_DISTRO}-foo"\n',
+    )
+    assert drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST) == []
+
+
+def test_dockerfile_literals_clean_with_inline_comment_mentioning_tokens(tmp_path):
+    # Trailing inline comments mentioning harmonic / a version must NOT trip the gate.
+    _write_sim_dockerfile(
+        tmp_path,
+        'RUN apt-get install -y "gz-${GZ_VERSION}"   # the gz-harmonic metapackage, pinned v1.17.0\n'
+        "RUN git clone --branch ${PX4_VERSION} https://example/PX4.git   # jazzy-era PX4\n",
+    )
+    assert drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST) == []
+
+
+def test_dockerfile_literals_clean_for_unrelated_version_token(tmp_path):
+    # A non-PX4 version-shaped token (a pinned pip dep, a URL path) must NOT be misflagged.
+    _write_sim_dockerfile(
+        tmp_path,
+        "RUN pip install foo==1.2.3 && curl -fsSL https://example/v2.0/key.gpg -o /k.gpg\n",
+    )
+    assert drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST) == []
+
+
+def test_dockerfile_literals_flag_hardcoded_px4_branch(tmp_path):
+    _write_sim_dockerfile(
+        tmp_path,
+        "ARG PX4_VERSION\nRUN git clone --branch v9.99.0 https://example/PX4.git\n",
+    )
+    problems = drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST)
+    assert len(problems) == 1
+    assert "docker/sim/Dockerfile" in problems[0]
+    assert "PX4 version" in problems[0]
+
+
+def test_dockerfile_literals_flag_hardcoded_distro_and_sim(tmp_path):
+    _write_sim_dockerfile(
+        tmp_path,
+        'RUN apt-get install -y gz-harmonic "ros-jazzy-foo"\n',
+    )
+    problems = drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST)
+    assert any("ROS distro" in p for p in problems)
+    assert any("Gazebo version" in p for p in problems)
+
+
 def test_live_repo_has_no_manifest_drift():
     assert drift.run_checks(REPO_ROOT) == []

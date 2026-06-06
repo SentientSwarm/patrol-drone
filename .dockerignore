@@ -1,0 +1,27 @@
+# Keep the docker build context small and the in-image `colcon build` clean. Docker does NOT
+# honor .gitignore, so host-only/ephemeral paths must be excluded here explicitly — otherwise
+# `COPY ros2_ws` would import the host's stale build artifacts (built against host paths) and
+# the container's colcon build would start from a polluted tree.
+
+# Python tooling venv (uv) — host-only, large, ROS-free (CLAUDE.md uv/ROS boundary)
+.venv/
+**/__pycache__/
+*.pyc
+
+# colcon ephemeral outputs — must be rebuilt cleanly inside the image
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ros2_ws/.colcon_install_layout
+
+# VCS + generated env + local tooling
+.git/
+.env
+.env.build
+.env.example
+docker-compose.override.yml
+
+# Docs / plans / CI not needed in the image
+.github/
+docs/
+*.md

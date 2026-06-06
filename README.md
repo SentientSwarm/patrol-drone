@@ -45,9 +45,41 @@ Then, in QGroundControl (AutoConnect → UDP must be on; it listens on UDP 14550
 **Takeoff**, and watch the drone hold altitude for **60 continuous seconds**, then **Land**. That is
 the M1 exit criterion (AC-1 / PLAT-1).
 
-> **M2 adds:** ROS 2 Jazzy + the uXRCE-DDS bridge (live `/fmu/*` topics), the vendored `px4_msgs`
-> workspace with a green `colcon build`, and the `sim`/`dev` containers — extending this path into
-> the full setup-to-running-mission spine (≤20 commands).
+## Quickstart — M2 bring-up (live `/fmu/*` bridge)
+
+**M2** adds ROS 2 Jazzy + the native uXRCE-DDS bridge: PX4 telemetry shows up as live ROS 2
+topics. The containerized path below reaches a running sim and proves the bridge in a handful of
+commands (continues the M1 spine, within the ≤20-command Phase 1 budget). Versions all resolve
+from the [stack manifest](stack-manifest.toml) — `gen_build_args.py` turns it into the compose
+build args (written to `.env.build`, kept separate from the secret-bearing `./.env`).
+
+```bash
+# (from a clean checkout; Docker came from scripts/setup_phase1.sh)
+git clone https://github.com/<owner>/patrol-drone.git && cd patrol-drone   #  1–2
+scripts/gen_build_args.py --env > .env.build                               #  3  manifest → compose ARGs
+docker compose --env-file .env.build build sim dev                         #  4  sim + dev from one base
+docker compose --env-file .env.build up -d sim                             #  5  PX4 SITL + Gazebo + agent
+# `exec` starts a fresh shell that does NOT run the entrypoint, so source ROS + the workspace
+# overlay first (the bridge process itself is already sourced by the entrypoint):
+docker compose --env-file .env.build exec sim bash -c \
+    'source /opt/ros/jazzy/setup.bash && source /opt/ros2_ws/install/setup.bash \
+     && ros2 topic list | grep fmu'                                        #  6  bridge up (PLAT-2)
+docker compose --env-file .env.build exec sim bash -c \
+    'source /opt/ros/jazzy/setup.bash && source /opt/ros2_ws/install/setup.bash \
+     && ros2 topic hz /fmu/out/vehicle_local_position_v1'                  #  7  steady ~50 Hz over 60 s
+```
+
+The workspace builds inside the image at build time (a single green `colcon build` over the
+vendored `px4_msgs`/`px4_ros_com` and the `patrol_*` package shells). For day-to-day work, edit on
+the host and rebuild in the `dev` container (source is bind-mounted):
+
+```bash
+docker compose --env-file .env.build run --rm dev colcon build             #  8  in-container build
+```
+
+> **Note (ADR-0007):** the Micro XRCE-DDS Agent is **built from source** at a pinned eProsima tag
+> — there is no `ros-jazzy-micro-xrce-dds-agent` apt package in the ROS 2 Jazzy repo. Both the sim
+> container and `setup_phase1.sh` build the same pinned version, so the host and container agree.
 
 ## Stack at a glance
 

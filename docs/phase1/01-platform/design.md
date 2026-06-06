@@ -908,6 +908,45 @@ MZ adds no new platform capability; it absorbs work surfaced during M1–M2 that
 
 ## 7. Changelog
 
+### v0.4.0 — 2026-06-05 (M2 implementation true-up)
+
+**Milestone:** M2 implemented on `phase1/m2-bridge-bringup`. Two design realities diverged from
+the v0.3.0 sketch during the integration spike; recorded here (the §4.2 snippets remain as the
+illustrative intent, these notes are the as-built truth):
+
+- **uXRCE-DDS Agent — built from source, not apt ([ADR-0007](../../decisions/0007-uxrce-dds-agent-from-source.md)).**
+  §4.2.1's `apt install ros-${ROS_DISTRO}-micro-xrce-dds-agent` does not exist: there is **no
+  `micro-xrce-dds-agent` package** in the ROS 2 Jazzy apt repo (verified on the host and in the
+  `osrf/ros:jazzy-desktop` base). The sim container and `setup_phase1.sh` now build the agent
+  from the pinned eProsima tag (`stack-manifest.toml [bridge]` — `uxrce_dds_agent_version`/
+  `_commit`, v3.0.1), the PX4-canonical method. The superbuild emits the binary in `build/`
+  with no top-level `install` target, so the binary + its `temp_install` shared libs are copied
+  into `/usr/local` + `ldconfig`. OQ-1 (agent as an in-container process) and the C4 topic
+  contract are unchanged.
+- **`sim` runtime stage derives `FROM px4-build`, not a slim `FROM ${ROS_BASE_IMAGE}` copy.**
+  `make px4_sitl gz_x500` (the entrypoint launch) needs the PX4 Makefile + source + build system
+  at runtime, which a build/+Tools/-only copy lacks; the agent's cmake superbuild also needs the
+  toolchain. Deriving from `px4-build` keeps launch correct-by-construction (identical to the
+  proven host path). The slim-runtime image-size optimization is deferred to MZ (§6.5).
+- **`gen_build_args.py` extended** to emit `GZ_VERSION`, `ROS_DISTRO`, `XRCE_AGENT_VERSION`,
+  `XRCE_AGENT_COMMIT` (per the §4.2.1 TODO / ADR-0006), so the runtime stage carries no version
+  literal. `docker/dev/Dockerfile`, `docker-compose.yml`, `.env.example`, and `.dockerignore`
+  landed as designed (C2/C3); compose reads `--env-file .env.build` to keep build args out of
+  the secret-bearing root `./.env`.
+- **C4 topic naming — `_v1` suffix (PX4 message versioning).** Proven against gz_x500 SITL, the
+  live topics carry the message-version suffix: `/fmu/out/vehicle_local_position_v1` (steady
+  **50.0 Hz** over the measured window), `/fmu/out/vehicle_status_v1`, `/fmu/out/battery_status_v1`,
+  etc. (27 `/fmu/out/*`, 38 addressable `/fmu/in/*`). The §4.2.4 contract table names the
+  unversioned topics; M3/02 must subscribe to the `_v1` names PX4 v1.17 actually advertises.
+- **OQ-3 resolved:** `v1.17.0` ↔ `px4_msgs release/1.17` proven by a green single `colcon build`
+  (host + in-container) over the vendored `px4_msgs`/`px4_ros_com` + the `patrol_*` shells, plus
+  a live `/fmu/*` bridge. Manifest status flipped DRAFT → FINAL; vendored commit SHAs recorded.
+  `px4_ros_com` has no upstream `release/1.17` branch (latest is `release/1.16` == `main`); it is
+  pinned to that commit.
+
+**Codebase drift:** implemented — see `phase1/m2-bridge-bringup`. No FR or component-inventory
+change (C1–C10 unchanged in substance); these are realization details + ADR-0007.
+
 ### v0.3.0 — 2026-06-03
 
 **Full-depth regeneration from PRD** (replaces the v0.2.0 body); no scope or decision change. All 10 components (C1–C10), all 9 FRs (PLAT-1…PLAT-9), the §2 Open-Questions resolutions (OQ-1/2/4/5 resolved; OQ-3/6 deferred; OQ-7/8 provisional-confirmed), and the §6 milestone plan (M1, M2, MZ) with the exact bootstrapped Linear task list are identical in substance to v0.2.0 — only the level of detail in the file changed.

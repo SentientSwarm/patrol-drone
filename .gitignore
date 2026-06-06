@@ -48,6 +48,7 @@ recordings/
 # Docker
 docker-compose.override.yml
 .env
+.env.build
 
 # Secrets
 *.key
@@ -71,6 +72,8 @@ local_config.yaml
 # Claude Code / devloop local state (per-machine, not shared)
 .claude/settings.local.json
 .claude/.*-state.json
+# devloop hook state in sub-trees (e.g. ros2_ws/.claude/)
+**/.claude/.*-state.json
 
 # lifecycle /drive session logs (process artifacts)
 lifecycle-sessions/
