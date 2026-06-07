@@ -24,6 +24,10 @@ services:
         XRCE_AGENT_SOURCE: ${XRCE_AGENT_SOURCE}    # [bridge] uxrce_dds_agent_source (built from source)
         XRCE_AGENT_VERSION: ${XRCE_AGENT_VERSION}  # [bridge] uxrce_dds_agent_version
         XRCE_AGENT_COMMIT: ${XRCE_AGENT_COMMIT}    # [bridge] uxrce_dds_agent_commit (verified post-clone)
+        XRCE_FASTCDR_COMMIT: ${XRCE_FASTCDR_COMMIT}        # [bridge] transitive superbuild pins,
+        XRCE_FASTDDS_COMMIT: ${XRCE_FASTDDS_COMMIT}        #   verified post-fetch by build_xrce_agent.sh
+        XRCE_FOONATHAN_COMMIT: ${XRCE_FOONATHAN_COMMIT}    #   (Medium #3) — Fast-CDR/Fast-DDS/foonathan/
+        XRCE_SPDLOG_COMMIT: ${XRCE_SPDLOG_COMMIT}          #   spdlog commit tripwires
     network_mode: host                        # UDP-localhost agent <-> PX4 (A1)
     init: true                                # tini as PID 1: forwards SIGTERM to the entrypoint
                                               #   (prompt graceful shutdown) + reaps orphaned children
@@ -44,7 +48,10 @@ services:
       # build/install/log inside the container, so it never reuses the host's host-toolchain
       # artifacts (which would corrupt the cross-environment build). Edits on the host are live (C2).
       - ./ros2_ws/src:/workspace/ros2_ws/src
-    network_mode: host
+    # No `network_mode: host`: the dev container only runs in-container `colcon build` and editing,
+    # which need no host network namespace. Host networking is intentionally scoped to `sim` (the
+    # uXRCE-DDS agent's UDP-localhost transport to PX4, A1) — broadening it to an interactive build
+    # container would needlessly widen the trust boundary (Hermes Medium #4). Default bridge net is fine.
     stdin_open: true
     tty: true
 

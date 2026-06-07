@@ -7,6 +7,7 @@ The module is loaded by path because scripts/ is intentionally not a Python pack
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +123,81 @@ def test_dockerfile_literals_flag_hardcoded_distro_and_sim(tmp_path):
     problems = drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST)
     assert any("ROS distro" in p for p in problems)
     assert any("Gazebo version" in p for p in problems)
+
+
+# --- #8: hardcoded Gazebo/ROS-distro *alternatives* (not just the current manifest token) ----------
+
+
+def test_hardcoded_alternatives_clean_when_vars_used(tmp_path):
+    _write_sim_dockerfile(
+        tmp_path,
+        'RUN apt-get install -y "gz-${GZ_VERSION}" "ros-${ROS_DISTRO}-foo"\n',
+    )
+    assert drift.check_dockerfile_hardcoded_alternatives(tmp_path) == []
+
+
+def test_hardcoded_alternatives_flag_wrong_gazebo(tmp_path):
+    # The Hermes mutation probe: gz-${GZ_VERSION} -> gz-fortress must fail even though `fortress`
+    # is not the current manifest Gazebo word.
+    _write_sim_dockerfile(tmp_path, 'RUN apt-get install -y "gz-fortress"\n')
+    problems = drift.check_dockerfile_hardcoded_alternatives(tmp_path)
+    assert any("Gazebo metapackage" in p for p in problems)
+
+
+def test_hardcoded_alternatives_flag_wrong_ros_distro(tmp_path):
+    _write_sim_dockerfile(tmp_path, "RUN apt-get install -y ros-humble-rmw-cyclonedds-cpp\n")
+    problems = drift.check_dockerfile_hardcoded_alternatives(tmp_path)
+    assert any("ROS distro" in p for p in problems)
+
+
+# --- #5: vendored-subtree provenance tree-hash guard ----------------------------------------------
+
+
+def _git(root: Path, *args: str) -> None:
+
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+def _init_repo_with_vendor(tmp_path: Path) -> Path:
+    """A throwaway git repo with one vendored file, committed so git ls-files can fingerprint it."""
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    vendored = tmp_path / "ros2_ws" / "src" / "external" / "px4_msgs"
+    vendored.mkdir(parents=True)
+    (vendored / "msg.idl").write_text("struct A { long x; };\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "vendor")
+    return tmp_path
+
+
+def test_vendor_provenance_passes_when_hash_matches(tmp_path):
+    root = _init_repo_with_vendor(tmp_path)
+    actual = drift._vendor_tree_sha(root, "ros2_ws/src/external/px4_msgs")
+    manifest = {"flight_stack": {"px4_msgs_tree_sha": actual, "px4_ros_com_tree_sha": "x"}}
+    # Only the px4_msgs subtree exists in this throwaway repo; px4_ros_com flags as untracked.
+    problems = drift.check_vendor_provenance(root, manifest)
+    assert all("px4_msgs/" not in p or "drifted" not in p for p in problems)
+    assert not any(
+        p.startswith("vendored subtree ros2_ws/src/external/px4_msgs drifted") for p in problems
+    )
+
+
+def test_vendor_provenance_flags_local_edit(tmp_path):
+    root = _init_repo_with_vendor(tmp_path)
+    good = drift._vendor_tree_sha(root, "ros2_ws/src/external/px4_msgs")
+    # Mutate + re-stage the vendored file: its git blob SHA changes -> tree hash changes.
+    (root / "ros2_ws/src/external/px4_msgs/msg.idl").write_text("struct A { long y; };\n")
+    _git(root, "add", "-A")
+    manifest = {"flight_stack": {"px4_msgs_tree_sha": good, "px4_ros_com_tree_sha": "x"}}
+    problems = drift.check_vendor_provenance(root, manifest)
+    assert any("px4_msgs drifted" in p for p in problems)
+
+
+def test_vendor_provenance_flags_missing_manifest_key(tmp_path):
+    root = _init_repo_with_vendor(tmp_path)
+    problems = drift.check_vendor_provenance(root, {"flight_stack": {}})
+    assert any("missing vendor tree hash" in p for p in problems)
 
 
 def test_live_repo_has_no_manifest_drift():

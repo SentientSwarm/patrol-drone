@@ -102,6 +102,11 @@ ARG ROS_DISTRO             # stack-manifest.toml [middleware] ros_distro
 ARG XRCE_AGENT_SOURCE      # stack-manifest.toml [bridge]     uxrce_dds_agent_source
 ARG XRCE_AGENT_VERSION     # stack-manifest.toml [bridge]     uxrce_dds_agent_version
 ARG XRCE_AGENT_COMMIT      # stack-manifest.toml [bridge]     uxrce_dds_agent_commit
+# Transitive superbuild dep pins — verified post-fetch by build_xrce_agent.sh (Medium #3)
+ARG XRCE_FASTCDR_COMMIT    # stack-manifest.toml [bridge]     uxrce_fastcdr_commit
+ARG XRCE_FASTDDS_COMMIT    # stack-manifest.toml [bridge]     uxrce_fastdds_commit
+ARG XRCE_FOONATHAN_COMMIT  # stack-manifest.toml [bridge]     uxrce_foonathan_memory_commit
+ARG XRCE_SPDLOG_COMMIT     # stack-manifest.toml [bridge]     uxrce_spdlog_commit
 
 # Headless software-render libs (llvmpipe, OQ-4 default so CI/headless runs with no display).
 # Gazebo Harmonic itself is already present — installed in the px4-build stage so the gz_bridge
@@ -116,7 +121,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # present (this stage is FROM px4-build). The recipe lives in ONE place — scripts/build_xrce_agent.sh
 # — invoked here (root, no sudo) and by setup_phase1.sh on the host, so the two agents can't drift.
 COPY scripts/build_xrce_agent.sh /tmp/build_xrce_agent.sh
-RUN bash /tmp/build_xrce_agent.sh "${XRCE_AGENT_SOURCE}" "${XRCE_AGENT_VERSION}" "${XRCE_AGENT_COMMIT}" \
+RUN EXPECT_FASTCDR_COMMIT="${XRCE_FASTCDR_COMMIT}" \
+    EXPECT_FASTDDS_COMMIT="${XRCE_FASTDDS_COMMIT}" \
+    EXPECT_FOONATHAN_COMMIT="${XRCE_FOONATHAN_COMMIT}" \
+    EXPECT_SPDLOG_COMMIT="${XRCE_SPDLOG_COMMIT}" \
+    bash /tmp/build_xrce_agent.sh "${XRCE_AGENT_SOURCE}" "${XRCE_AGENT_VERSION}" "${XRCE_AGENT_COMMIT}" \
  && rm -f /tmp/build_xrce_agent.sh
 
 # Vendored px4_msgs/px4_ros_com (T2.1) + patrol_* shells (T2.2) build into the workspace here.

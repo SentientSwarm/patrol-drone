@@ -38,6 +38,11 @@ def build_args(manifest: dict) -> dict[str, str]:
         "XRCE_AGENT_SOURCE": bridge["uxrce_dds_agent_source"],
         "XRCE_AGENT_VERSION": bridge["uxrce_dds_agent_version"],
         "XRCE_AGENT_COMMIT": bridge["uxrce_dds_agent_commit"],
+        # Transitive superbuild dep pins — verified post-fetch by build_xrce_agent.sh (Medium #3)
+        "XRCE_FASTCDR_COMMIT": bridge["uxrce_fastcdr_commit"],
+        "XRCE_FASTDDS_COMMIT": bridge["uxrce_fastdds_commit"],
+        "XRCE_FOONATHAN_COMMIT": bridge["uxrce_foonathan_memory_commit"],
+        "XRCE_SPDLOG_COMMIT": bridge["uxrce_spdlog_commit"],
     }
 
 

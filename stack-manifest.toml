@@ -39,6 +39,13 @@ px4_msgs_ref  = "release/1.17"                 # ← OQ-3 edit point (FINAL). Ma
 px4_msgs_commit    = "86d8239e962f6939e05c3737784f60c02fa884db"  # px4_msgs @ release/1.17
 px4_ros_com_commit = "86e9aeb20e55a4673fa8a9f1c29ea06a6c5ad1af"  # px4_ros_com @ main (no release/1.17
                                                #   branch cut upstream; main == release/1.16 at this commit)
+# Deterministic content fingerprint of each vendored subtree: sha256 of `git ls-files -s <path>`
+# (file mode + git blob SHA + path per tracked file). The drift checker (check_vendor_provenance)
+# recomputes and compares — so any local edit to the committed upstream copies trips CI offline,
+# enforcing the recorded provenance the *_commit pins above only document (Hermes Medium #5).
+# Regenerate alongside a deliberate px4_msgs_ref bump: git ls-files -s <path> | sha256sum.
+px4_msgs_tree_sha    = "71bb476465ab0519a9bfcef4b5cd0ccd35e1e63e0f5fbff2f9b7e2a4f8d9d252"
+px4_ros_com_tree_sha = "3dd5271afe558fb7ab176094d407005e5854374ce25d3379260a162699064a13"
 
 [simulator]
 gazebo        = "harmonic"                     # gz-sim 8.x (host patch version tracked in CLAUDE.md)
@@ -53,6 +60,23 @@ gazebo        = "harmonic"                     # gz-sim 8.x (host patch version 
 uxrce_dds_agent_source  = "https://github.com/eProsima/Micro-XRCE-DDS-Agent.git"
 uxrce_dds_agent_version = "v3.0.1"
 uxrce_dds_agent_commit  = "155cfaaf8b7abac2e85d4a62d3649b09ace0be55"  # tag v3.0.1 dereferences here
+
+# Transitive deps the agent's CMake SUPERBUILD fetches, builds, and installs into /usr/local
+# (their .so files ship in the image). The agent commit above references these via the refs below
+# in cmake/SuperBuild.cmake + CMakeLists.txt. Pinned by COMMIT and verified post-fetch by
+# build_xrce_agent.sh (Hermes Medium #3) so a moved/compromised upstream ref cannot silently change
+# installed code. NB: Fast-CDR `2.2.x` and Fast-DDS `3.x` are MOVING BRANCHES upstream — the commit
+# pin is the tripwire: when eProsima advances the branch the build fails loudly and a human
+# re-resolves (`git ls-remote <repo> <ref>`) and bumps the commit here. The refs/commits are tied to
+# uxrce_dds_agent_version; re-capture all four when that pin moves.
+uxrce_fastcdr_ref             = "2.2.x"     # branch (moves)
+uxrce_fastcdr_commit          = "9821b82dea52b9393155daf9b5f1d5c125e7db46"
+uxrce_fastdds_ref             = "3.x"       # branch (moves)
+uxrce_fastdds_commit          = "dff5a82fd74b95befe8b4dddd75f1a8830cdbf07"
+uxrce_foonathan_memory_ref    = "v0.7-3"    # tag
+uxrce_foonathan_memory_commit = "0f0775770fd1c506fa9c5ad566bd6ba59659db66"
+uxrce_spdlog_ref              = "v1.9.2"    # tag
+uxrce_spdlog_commit           = "eb3220622e73a4889eee355ffa37972b3cac3df5"
 
 [bags]
 mcap_plugin   = "rosbag2-storage-mcap"         # rosbag2 MCAP storage plugin (05 records; sqlite is legacy)

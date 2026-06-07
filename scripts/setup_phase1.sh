@@ -64,6 +64,11 @@ ROS_APT_SOURCE_SHA256="$(manifest_get ros_apt_source.sha256)"
 UXRCE_AGENT_SOURCE="$(manifest_get bridge.uxrce_dds_agent_source)"
 UXRCE_AGENT_VERSION="$(manifest_get bridge.uxrce_dds_agent_version)"
 UXRCE_AGENT_COMMIT="$(manifest_get bridge.uxrce_dds_agent_commit)"
+# Transitive superbuild deps, pinned by commit + verified post-fetch in build_xrce_agent.sh (Medium #3)
+UXRCE_FASTCDR_COMMIT="$(manifest_get bridge.uxrce_fastcdr_commit)"
+UXRCE_FASTDDS_COMMIT="$(manifest_get bridge.uxrce_fastdds_commit)"
+UXRCE_FOONATHAN_COMMIT="$(manifest_get bridge.uxrce_foonathan_memory_commit)"
+UXRCE_SPDLOG_COMMIT="$(manifest_get bridge.uxrce_spdlog_commit)"
 MCAP_PLUGIN="$(manifest_get bags.mcap_plugin)"          # rosbag2 MCAP storage plugin suffix (M7)
 UV_VERSION="$(manifest_get tools.uv_version)"
 UV_TARBALL_SHA256="$(manifest_get tools.uv_tarball_sha256)"
@@ -93,6 +98,7 @@ SKIP_PYTHON=0
 SKIP_ROS=0
 SKIP_ROS_PKGS=0
 SKIP_XRCE=0
+ALLOW_MISSING_XRCE=0
 SKIP_DOCKER=0
 SKIP_QGC=0
 SKIP_FOXGLOVE=0
@@ -157,6 +163,9 @@ Installs the full Phase 1 prerequisite toolchain by default. Use --skip-* to opt
   --skip-ros           Skip ROS 2 Jazzy + colcon/rosdep install.
   --skip-ros-pkgs      Skip the ROS runtime packages (rosbag2-MCAP, apriltag, ros-gz, ...).
   --skip-xrce          Skip the Micro XRCE-DDS Agent (apt) install.
+  --allow-missing-xrce Treat a Micro XRCE-DDS Agent BUILD FAILURE as non-fatal (warn + continue
+                       instead of aborting). Without this, a failed agent build stops setup with a
+                       non-zero exit, since the PX4<->ROS 2 bridge is the core M2 deliverable.
   --skip-docker        Skip Docker Engine + Compose install.
   --skip-python        Skip uv install + `uv sync`.
   --skip-px4           Skip PX4 clone + ubuntu.sh.
@@ -176,6 +185,7 @@ while [[ $# -gt 0 ]]; do
     --skip-ros)        SKIP_ROS=1 ;;
     --skip-ros-pkgs)   SKIP_ROS_PKGS=1 ;;
     --skip-xrce)       SKIP_XRCE=1 ;;
+    --allow-missing-xrce) ALLOW_MISSING_XRCE=1 ;;
     --skip-docker)     SKIP_DOCKER=1 ;;
     --skip-python)     SKIP_PYTHON=1 ;;
     --skip-px4)        SKIP_PX4=1 ;;
@@ -293,26 +303,54 @@ install_ros_packages() {
 }
 
 # ----------------------------------------------------------------------------- Micro XRCE-DDS Agent
+# Commit marker written by build_xrce_agent.sh after a successful install; read back here so a rerun
+# can tell a manifest-current agent from a stale/manual one on PATH (Hermes Medium #2).
+XRCE_COMMIT_MARKER="/usr/local/share/patrol-drone/xrce-agent.commit"
+
 install_xrce_agent() {
   [[ ${SKIP_XRCE} -eq 1 ]] && { log "Skipping Micro XRCE-DDS Agent (--skip-xrce)."; return 0; }
   # Built FROM SOURCE at the pinned eProsima tag (stack-manifest.toml [bridge]) so the host
   # matches the sim container (docker/sim/Dockerfile). M2 spike finding (ADR-0007): there is NO
   # `ros-${ROS_DISTRO}-micro-xrce-dds-agent` apt package in the ROS 2 Jazzy repo — the
   # PX4-canonical install is a source build. Produces the `MicroXRCEAgent` binary.
+  #
+  # Trust the existing binary ONLY if its commit marker matches the manifest pin. A bare
+  # `have MicroXRCEAgent` (any binary on PATH) would let a stale/manual agent survive reruns and
+  # drift from the container/manifest-pinned version (Hermes Medium #2) — so on a missing or
+  # mismatched marker we warn loudly and rebuild (the build overwrites /usr/local/bin, idempotent).
   if have MicroXRCEAgent; then
-    log "Micro XRCE-DDS Agent (${UXRCE_AGENT_VERSION}) already installed: $(command -v MicroXRCEAgent)."
-    return 0
+    local installed_commit=""
+    [[ -r ${XRCE_COMMIT_MARKER} ]] && installed_commit="$(cat "${XRCE_COMMIT_MARKER}")"
+    if [[ ${installed_commit} == "${UXRCE_AGENT_COMMIT}" ]]; then
+      log "Micro XRCE-DDS Agent ${UXRCE_AGENT_VERSION} verified (${UXRCE_AGENT_COMMIT}): $(command -v MicroXRCEAgent)."
+      return 0
+    fi
+    warn "Existing MicroXRCEAgent at $(command -v MicroXRCEAgent) does NOT match the manifest pin"
+    warn "  (marker '${installed_commit:-none}' != '${UXRCE_AGENT_COMMIT}') — rebuilding from source."
   fi
   log "Building Micro XRCE-DDS Agent ${UXRCE_AGENT_VERSION} from source (${UXRCE_AGENT_SOURCE})..."
   # Shared recipe with the sim container (docker/sim/Dockerfile) — one source of the build steps,
   # so host and container agents can't drift. `sudo` here: /usr/local install needs root on the host.
-  # NON-FATAL: a clone/build failure must not abort the rest of the bootstrap (Docker/QGC/PX4) —
-  # the script is idempotent, so we warn loudly and continue; re-run setup to retry the agent.
-  if ! bash "${REPO_ROOT}/scripts/build_xrce_agent.sh" \
+  # EXPECT_*_COMMIT pass the transitive pins through for the post-fetch verification (Medium #3).
+  if ! EXPECT_FASTCDR_COMMIT="${UXRCE_FASTCDR_COMMIT}" \
+       EXPECT_FASTDDS_COMMIT="${UXRCE_FASTDDS_COMMIT}" \
+       EXPECT_FOONATHAN_COMMIT="${UXRCE_FOONATHAN_COMMIT}" \
+       EXPECT_SPDLOG_COMMIT="${UXRCE_SPDLOG_COMMIT}" \
+       bash "${REPO_ROOT}/scripts/build_xrce_agent.sh" \
         "${UXRCE_AGENT_SOURCE}" "${UXRCE_AGENT_VERSION}" "${UXRCE_AGENT_COMMIT}" sudo; then
-    warn "Micro XRCE-DDS Agent build FAILED — agent NOT installed (the PX4<->ROS 2 bridge will"
-    warn "  not work until you re-run setup_phase1.sh). Continuing with the rest of the toolchain."
-    return 0
+    # The PX4<->ROS 2 bridge is the core M2 deliverable, so a build failure is FATAL by default
+    # (Hermes Medium #1): without it, setup_phase1.sh would still print "complete" and a downstream
+    # `/fmu/*` failure looks like a runtime bug instead of an incomplete bootstrap. Opt out with
+    # --allow-missing-xrce (idempotent: re-run setup to retry the agent).
+    if [[ ${ALLOW_MISSING_XRCE} -eq 1 ]]; then
+      warn "Micro XRCE-DDS Agent build FAILED — agent NOT installed (the PX4<->ROS 2 bridge will"
+      warn "  not work until you re-run setup_phase1.sh). Continuing (--allow-missing-xrce)."
+      return 0
+    fi
+    err "Micro XRCE-DDS Agent build FAILED — agent NOT installed. The PX4<->ROS 2 bridge is the"
+    err "  core M2 deliverable, so this aborts setup. Re-run to retry, or pass --allow-missing-xrce"
+    err "  to continue without it."
+    return 1
   fi
 }
 
@@ -588,7 +626,7 @@ main() {
   install_base_packages
   install_ros2_jazzy
   install_ros_packages
-  install_xrce_agent
+  install_xrce_agent || exit 1   # fatal unless --allow-missing-xrce (the bridge is the M2 deliverable)
   install_docker
   install_qgc_prereqs
   download_qgc
@@ -600,4 +638,8 @@ main() {
   print_next_steps
 }
 
-main "$@"
+# Run main() only when executed directly — when sourced (BASH_SOURCE != $0), expose the functions
+# for unit testing (tests/unit/test_setup_xrce.sh) without running the whole bootstrap.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

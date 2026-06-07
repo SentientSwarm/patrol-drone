@@ -32,6 +32,48 @@ cmake -S "${src}" -B "${src}/build" \
     -DUAGENT_BUILD_EXECUTABLE=ON -DUAGENT_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build "${src}/build" -j"$(nproc)"
 
+# Verify the superbuild's TRANSITIVE deps before installing them (Hermes Medium #3). The cmake
+# superbuild fetches Fast-CDR/Fast-DDS/foonathan_memory/spdlog by upstream ref (two are MOVING
+# branches) and installs their .so into /usr/local; an unpinned ref could change installed code
+# without tripping manifest drift. Each EXPECT_<dep>_COMMIT is the manifest pin (stack-manifest.toml
+# [bridge]); empty = not pinned -> skipped. A dep satisfied by a system package is not fetched (no
+# checkout) and is skipped with a note. Fail CLOSED on a mismatch — we've built but refuse to install.
+verify_transitive() {
+  local url="$1" expected="$2" name="$3" dir actual
+  [[ -z "${expected}" ]] && return 0
+  # Find this dep's checkout among the superbuild's fetched repos by matching the clone URL
+  # (robust to the ExternalProject prefix layout, which varies across superbuild versions).
+  dir=""
+  while IFS= read -r gitdir; do
+    local d url_actual
+    d="$(dirname "${gitdir}")"
+    url_actual="$(git -C "${d}" config --get remote.origin.url 2>/dev/null || true)"
+    if [[ "${url_actual%.git}" == "${url%.git}" ]]; then dir="${d}"; break; fi
+  done < <(find "${src}/build" -name .git 2>/dev/null)
+  if [[ -z "${dir}" ]]; then
+    echo "[xrce] NOTE: ${name} not fetched by the superbuild (system-satisfied?) — skipping pin check" >&2
+    return 0
+  fi
+  actual="$(git -C "${dir}" rev-parse HEAD)"
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "[xrce] ERROR: ${name} transitive pin MISMATCH — fetched ${actual}, manifest pins ${expected}." >&2
+    echo "[xrce]   The upstream ref moved or was tampered. Re-resolve and bump stack-manifest.toml" >&2
+    echo "[xrce]   [bridge] (git ls-remote <repo> <ref>), then rebuild. Refusing to install." >&2
+    return 1
+  fi
+  echo "[xrce] OK: ${name} @ ${actual} matches the manifest pin." >&2
+}
+verify_transitive "https://github.com/eProsima/Fast-CDR.git" "${EXPECT_FASTCDR_COMMIT:-}"   "Fast-CDR"
+verify_transitive "https://github.com/eProsima/Fast-DDS.git" "${EXPECT_FASTDDS_COMMIT:-}"   "Fast-DDS"
+verify_transitive "https://github.com/foonathan/memory.git"  "${EXPECT_FOONATHAN_COMMIT:-}" "foonathan_memory"
+verify_transitive "https://github.com/gabime/spdlog.git"     "${EXPECT_SPDLOG_COMMIT:-}"    "spdlog"
+
 ${SUDO} install -m755 "${src}/build/MicroXRCEAgent" /usr/local/bin/MicroXRCEAgent
 ${SUDO} find "${src}/build" -name "*.so*" -exec cp -a {} /usr/local/lib/ \;
 ${SUDO} ldconfig
+
+# Record the installed commit so a rerun (host setup_phase1.sh::install_xrce_agent) can verify the
+# on-disk agent against the manifest pin instead of trusting any MicroXRCEAgent on PATH (Hermes
+# Medium #2). Same marker path on the host and in the sim container — they install the same tag.
+${SUDO} install -d -m755 /usr/local/share/patrol-drone
+printf '%s\n' "${COMMIT}" | ${SUDO} tee /usr/local/share/patrol-drone/xrce-agent.commit > /dev/null

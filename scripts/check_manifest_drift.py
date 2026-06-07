@@ -17,12 +17,20 @@ Exit 0 = clean; exit 1 = drift, with one line per problem.
 
 from __future__ import annotations
 
+import hashlib
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Vendored upstream subtrees (committed, not fetched) and their manifest tree-hash keys.
+VENDOR_TREES = {
+    "ros2_ws/src/external/px4_msgs": "px4_msgs_tree_sha",
+    "ros2_ws/src/external/px4_ros_com": "px4_ros_com_tree_sha",
+}
 
 
 def load_manifest(repo_root: Path) -> dict:
@@ -61,6 +69,10 @@ DERIVED_VARS = {
     "UXRCE_AGENT_SOURCE": "bridge.uxrce_dds_agent_source",
     "UXRCE_AGENT_VERSION": "bridge.uxrce_dds_agent_version",
     "UXRCE_AGENT_COMMIT": "bridge.uxrce_dds_agent_commit",
+    "UXRCE_FASTCDR_COMMIT": "bridge.uxrce_fastcdr_commit",
+    "UXRCE_FASTDDS_COMMIT": "bridge.uxrce_fastdds_commit",
+    "UXRCE_FOONATHAN_COMMIT": "bridge.uxrce_foonathan_memory_commit",
+    "UXRCE_SPDLOG_COMMIT": "bridge.uxrce_spdlog_commit",
     "MCAP_PLUGIN": "bags.mcap_plugin",
     "UV_VERSION": "tools.uv_version",
     "UV_TARBALL_SHA256": "tools.uv_tarball_sha256",
@@ -157,6 +169,81 @@ def check_dockerfile_no_literals(repo_root: Path, manifest: dict) -> list[str]:
     return problems
 
 
+# ROS 2 distro codenames — lets the gate reject a *hardcoded* distro package in a Dockerfile command
+# body even when it isn't the current manifest distro (the manifest-word check only catches the
+# current one, leaving `ros-humble-…` as a blind spot — Hermes Medium #8).
+_ROS2_DISTROS = ("foxy", "galactic", "humble", "iron", "jazzy", "kilted", "rolling")
+_ROS_DISTRO_LITERAL = re.compile(rf"ros-(?:{'|'.join(_ROS2_DISTROS)})-")
+
+# A Gazebo metapackage pinned to a literal release (gz-fortress, gz-harmonic, …) instead of the
+# gz-${GZ_VERSION} variable. Value-agnostic, so a *wrong* version (gz-fortress) is caught too — the
+# specific blind spot Hermes flagged (`gz-${GZ_VERSION}` → `gz-fortress` stayed green).
+_GZ_LITERAL = re.compile(r"gz-(?!\$\{GZ_VERSION\})[a-z]")
+
+
+def check_dockerfile_hardcoded_alternatives(repo_root: Path) -> list[str]:
+    """Reject hardcoded Gazebo/ROS-distro *alternatives*, not only the current manifest token.
+
+    The existing manifest-word guard catches a literal of the CURRENT pin (e.g. `harmonic`); this
+    closes the complementary gap where a literal *wrong* value (`gz-fortress`, `ros-humble-…`) slips
+    through because it is not the guarded token (Hermes Medium #8).
+    """
+    problems = []
+    for rel in ("docker/sim/Dockerfile", "docker/dev/Dockerfile"):
+        path = repo_root / rel
+        if not path.exists():
+            continue
+        body = _dockerfile_command_body(path.read_text())
+        if _GZ_LITERAL.search(body):
+            problems.append(f"{rel} pins a literal Gazebo metapackage; use gz-${{GZ_VERSION}}")
+        if _ROS_DISTRO_LITERAL.search(body):
+            problems.append(f"{rel} pins a literal ROS distro package; use ros-${{ROS_DISTRO}}-…")
+    return problems
+
+
+def _vendor_tree_sha(repo_root: Path, rel: str) -> str | None:
+    """sha256 of `git ls-files -s <rel>` (file mode + git blob SHA + path per tracked file).
+
+    Deterministic and offline — reuses git's own content-addressed blob hashes. None when the path
+    has no git-tracked files (so the caller can flag a missing/empty vendored subtree).
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-files", "-s", rel],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout:
+        return None
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def check_vendor_provenance(repo_root: Path, manifest: dict) -> list[str]:
+    """Verify each vendored subtree's content fingerprint against its manifest pin (Hermes Medium #5).
+
+    The *_commit pins in [flight_stack] only *document* upstream provenance; this recomputes a
+    tree-hash over the committed copy and compares, so any local edit to the vendored upstream source
+    trips CI offline instead of drifting silently from its stated provenance.
+    """
+    flight = manifest["flight_stack"]
+    problems = []
+    for rel, key in VENDOR_TREES.items():
+        expected = flight.get(key)
+        if not expected:
+            problems.append(
+                f"stack-manifest.toml [flight_stack] is missing vendor tree hash {key!r}"
+            )
+            continue
+        actual = _vendor_tree_sha(repo_root, rel)
+        if actual is None:
+            problems.append(f"vendored subtree {rel} has no git-tracked files to fingerprint")
+        elif actual != expected:
+            problems.append(
+                f"vendored subtree {rel} drifted from its recorded provenance: "
+                f"tree sha {actual} != manifest {key}={expected}"
+            )
+    return problems
+
+
 def _stale_px4_tokens(text: str, release_line: str) -> list[str]:
     """PX4 version tokens in `text` whose major.minor differs from the manifest release line."""
     return [tok for tok in re.findall(r"v\d+\.\d+", text) if not tok.startswith(f"v{release_line}")]
@@ -194,6 +281,8 @@ def run_checks(repo_root: Path) -> list[str]:
     problems += check_setup_derives(repo_root)
     problems += check_dockerfile_no_defaults(repo_root)
     problems += check_dockerfile_no_literals(repo_root, manifest)
+    problems += check_dockerfile_hardcoded_alternatives(repo_root)
+    problems += check_vendor_provenance(repo_root, manifest)
     problems += check_readme(repo_root, manifest)
     problems += check_claudemd(repo_root, manifest)
     return problems

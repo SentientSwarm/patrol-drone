@@ -46,6 +46,27 @@ jobs:
           # EVERY package in the workspace, so incremental M3 package introduction
           # never fails on a package name that doesn't exist yet.
           # rosdep-skip-keys: px4_msgs   # uncomment ONLY if rosdep flags px4_msgs
+          #
+          # The vendored upstream packages (ros2_ws/src/external/{px4_msgs,px4_ros_com})
+          # are committed as IMMUTABLE third-party source — we must not gate this repo's
+          # required check on their lint/copyright/coverage. They are still BUILT (the
+          # whole workspace compiles — the M2 "green colcon build over vendored msgs"
+          # proof, and px4_msgs stays available for M3); only their TESTS are skipped via
+          # the colcon defaults below. `packages-skip-test` keeps them in the build graph
+          # but excludes them from `colcon test` (the ament_cpplint/flake8/copyright suite
+          # that emits the upstream lint errors).
+          colcon-defaults: |
+            {
+              "test": {
+                "packages-skip": ["px4_msgs", "px4_ros_com"]
+              }
+            }
+          # Coverage (colcon lcov-result) runs workspace-wide and errors with
+          # "geninfo: no .gcno files" on the message-only vendored packages. M2 has no
+          # ROS-side coverage gate (the >80% target is enforced on the plain-Python
+          # state machine via pytest, CLAUDE.md), so disable it here; re-enable with a
+          # coverage-ignore-pattern when M3 lands real ROS tests.
+          coverage-result: 'false'
       - if: ${{ always() && steps.pkgs.outputs.present == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
