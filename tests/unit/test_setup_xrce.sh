@@ -32,11 +32,13 @@ trap - ERR                       # drop inherited strict-mode/trap so we can cap
 have() { return 1; }             # force the build path: pretend no MicroXRCEAgent is installed
 REPO_ROOT="${tmp}"               # point install_xrce_agent at the failing stub
 
+# shellcheck disable=SC2034  # ALLOW_MISSING_XRCE is read by install_xrce_agent (sourced above)
 ALLOW_MISSING_XRCE=0
 install_xrce_agent >/dev/null 2>&1
 rc=$?
 [[ ${rc} -ne 0 ]] || fail "build failure must be fatal by default (install_xrce_agent returned ${rc})"
 
+# shellcheck disable=SC2034  # ditto — consumed by the sourced install_xrce_agent
 ALLOW_MISSING_XRCE=1
 install_xrce_agent >/dev/null 2>&1
 rc=$?
