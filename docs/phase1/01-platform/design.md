@@ -1,7 +1,7 @@
 # Platform & Simulation Foundation — System Design Working Document
 
 **Status:** Approved (combined review 2026-06-03; bootstrapped to Linear)
-**Version:** 0.4.1
+**Version:** 0.4.2
 **Date:** 2026-06-07
 **Projects:** Autonomous Drone Patrol — Phase 1 Docset 01 (Platform & Simulation Foundation)
 **Authors:** jxstanford@wemodulate.energy (solo dev / DRI)
@@ -912,6 +912,8 @@ MZ adds no new platform capability; it absorbs work surfaced during M1–M2 that
 | Pin exact PX4 v1.16.x tag + matching `px4_msgs` branch (OQ-3 spike) | §2 OQ-3; COMBINED-REVIEW #10 | Settled by the M1–M2 integration spike (falsification gate for H2); retrofit the manifest (C9) `px4_version`/`px4_msgs_ref` + docs |
 | Finalize the ≤20-command README budget across docsets (OQ-6) | §2 OQ-6; COMBINED-REVIEW | Needs sibling (02–05) run-step counts; platform spine budgeted ≤12 — allocate the remainder |
 | e2e/integration test-suite expansion | DoD §4 AC-9; Linear MZ convention | Broaden the SITL/integration tier the `sim` container enables (owned by 02/05) without blocking platform |
+| Slim the `sim` runtime — drop the make-at-runtime launch path (`runtime FROM px4-build`) | Hermes R3 Low #3; §4.2.1 / v0.4.0 changelog | M2 derives the runtime from the build stage so the entrypoint's `make px4_sitl gz_x500` + agent superbuild have the toolchain; revisit a build/-only runtime to cut image size + attack surface |
+| Re-enable ROS-side tests/lint + coverage in ros-ci.yml | Hermes R3 (build-gate scope) | M2 ROS CI is a build-only gate (`skip-tests`); restore `colcon test` + a `coverage-ignore-pattern` once first-party packages carry real tests and a stable lint config (M3) |
 | Documentation + test consolidation (final true-up) | Linear MZ convention | Comprehensive final PRD/Design/DoD/README + test reconciliation |
 
 **Exit:** MZ reviewed and cleared, or items explicitly punted to Phase 2.
@@ -919,6 +921,20 @@ MZ adds no new platform capability; it absorbs work surfaced during M1–M2 that
 ---
 
 ## 7. Changelog
+
+### v0.4.2 — 2026-06-07 (M2 review true-up — Hermes round 3 + ROS CI build gate)
+
+**Milestone:** M2 review follow-ups on `phase1/m2-bridge-bringup`. No design-contract change:
+
+- **ROS CI is now a build gate** (`skip-tests` in `.github/workflows/ros-ci.yml`): `colcon build`
+  still compiles the whole workspace (the M2 proof), but premature ament lints on skeleton packages
+  (and a flaky `ament_xmllint` schema fetch + the container-pytest/`minversion` clash) no longer gate
+  the PR. ROS-side tests/lint/coverage re-enable at M3 (tracked in §6.5 MZ).
+- **Manifest-drift guard extended** (Hermes round-3): `target-ros2-distro` in ros-ci.yml is now
+  verified against `middleware.ros_distro`, and the ARG-defaults check spans both Dockerfiles and the
+  full manifest-injected ARG set.
+- **§6.5 MZ** gains explicit rows for the slim-runtime debt and the ROS-test re-enable; `sim` host
+  networking comment expanded to document it as an intentional, `sim`-scoped exception.
 
 ### v0.4.1 — 2026-06-07 (M2 review true-up — Hermes round 2)
 

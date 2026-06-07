@@ -107,13 +107,39 @@ def check_setup_derives(repo_root: Path) -> list[str]:
     return problems
 
 
+# Every ARG the Dockerfiles inject from the manifest (via gen_build_args.py) — none may carry a
+# default, or the image could silently reintroduce a duplicated version literal (ADR-0004/0005/0006).
+# NB: scoped to this set on purpose — a non-version ARG with a legitimate default (e.g. the
+# OSRF_GPG_FPRS trust root in docker/sim/Dockerfile) is NOT a manifest value and must not be flagged.
+_MANIFEST_ARGS = (
+    "PX4_VERSION",
+    "PX4_COMMIT",
+    "ROS_BASE_IMAGE",
+    "GZ_VERSION",
+    "ROS_DISTRO",
+    "XRCE_AGENT_SOURCE",
+    "XRCE_AGENT_VERSION",
+    "XRCE_AGENT_COMMIT",
+    "XRCE_FASTCDR_COMMIT",
+    "XRCE_FASTDDS_COMMIT",
+    "XRCE_FOONATHAN_COMMIT",
+    "XRCE_SPDLOG_COMMIT",
+)
+
+
 def check_dockerfile_no_defaults(repo_root: Path) -> list[str]:
-    text = (repo_root / "docker" / "sim" / "Dockerfile").read_text()
-    return [
-        f"docker/sim/Dockerfile pins ARG {arg} with a default; inject it from the manifest"
-        for arg in ("PX4_VERSION", "PX4_COMMIT", "ROS_BASE_IMAGE")
-        if re.search(rf"^ARG {arg}=", text, re.MULTILINE)
-    ]
+    problems = []
+    for rel in ("docker/sim/Dockerfile", "docker/dev/Dockerfile"):
+        path = repo_root / rel
+        if not path.exists():
+            continue
+        text = path.read_text()
+        problems += [
+            f"{rel} pins ARG {arg} with a default; inject it from the manifest"
+            for arg in _MANIFEST_ARGS
+            if re.search(rf"^ARG {arg}=", text, re.MULTILINE)
+        ]
+    return problems
 
 
 # A hardcoded PX4 clone tag — `--branch v1.17.0` / `--tag=v1.16` — that should be `${PX4_VERSION}`.
@@ -244,6 +270,28 @@ def check_vendor_provenance(repo_root: Path, manifest: dict) -> list[str]:
     return problems
 
 
+def check_workflow_distro(repo_root: Path, manifest: dict) -> list[str]:
+    """ROS CI's `target-ros2-distro` must equal the manifest ROS distro (Hermes round-3 Medium #1).
+
+    The required ROS CI is a manifest consumer like the setup script and Dockerfiles: a distro bump
+    in stack-manifest.toml must flow here too, or CI would keep building the old distro while the
+    rest of the toolchain moved.
+    """
+    path = repo_root / ".github" / "workflows" / "ros-ci.yml"
+    if not path.exists():
+        return [".github/workflows/ros-ci.yml is missing"]
+    expected = manifest["middleware"]["ros_distro"]
+    match = re.search(r"^\s*target-ros2-distro:\s*(\S+)", path.read_text(), re.MULTILINE)
+    if not match:
+        return ["ros-ci.yml has no target-ros2-distro to validate against the manifest"]
+    actual = match.group(1).strip("\"'")
+    if actual != expected:
+        return [
+            f"ros-ci.yml target-ros2-distro={actual!r} != manifest middleware.ros_distro={expected!r}"
+        ]
+    return []
+
+
 def _stale_px4_tokens(text: str, release_line: str) -> list[str]:
     """PX4 version tokens in `text` whose major.minor differs from the manifest release line."""
     return [tok for tok in re.findall(r"v\d+\.\d+", text) if not tok.startswith(f"v{release_line}")]
@@ -283,6 +331,7 @@ def run_checks(repo_root: Path) -> list[str]:
     problems += check_dockerfile_no_literals(repo_root, manifest)
     problems += check_dockerfile_hardcoded_alternatives(repo_root)
     problems += check_vendor_provenance(repo_root, manifest)
+    problems += check_workflow_distro(repo_root, manifest)
     problems += check_readme(repo_root, manifest)
     problems += check_claudemd(repo_root, manifest)
     return problems

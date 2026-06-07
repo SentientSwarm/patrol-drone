@@ -28,7 +28,12 @@ services:
         XRCE_FASTDDS_COMMIT: ${XRCE_FASTDDS_COMMIT}        #   verified post-fetch by build_xrce_agent.sh
         XRCE_FOONATHAN_COMMIT: ${XRCE_FOONATHAN_COMMIT}    #   (Medium #3) — Fast-CDR/Fast-DDS/foonathan/
         XRCE_SPDLOG_COMMIT: ${XRCE_SPDLOG_COMMIT}          #   spdlog commit tripwires
-    network_mode: host                        # UDP-localhost agent <-> PX4 (A1)
+    # INTENTIONAL, and scoped to `sim` ONLY (the `dev` service deliberately uses default bridge
+    # networking). PX4's uxrce_dds_client and the in-container MicroXRCEAgent rendezvous over
+    # UDP on localhost:8888 (design A1); host networking gives them that shared loopback and lets a
+    # host-side QGC/ROS 2 reach the same `/fmu/*` surface without per-port mapping. This is an
+    # accepted, documented exception to default-deny networking — not a convenience default.
+    network_mode: host                        # UDP-localhost agent <-> PX4 (A1) — see note above
     init: true                                # tini as PID 1: forwards SIGTERM to the entrypoint
                                               #   (prompt graceful shutdown) + reaps orphaned children
     environment:

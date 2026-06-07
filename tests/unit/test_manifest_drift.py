@@ -200,5 +200,60 @@ def test_vendor_provenance_flags_missing_manifest_key(tmp_path):
     assert any("missing vendor tree hash" in p for p in problems)
 
 
+# --- R3-1: ROS CI target-ros2-distro must track the manifest ROS distro ---------------------------
+
+_DISTRO_MANIFEST = {"middleware": {"ros_distro": "jazzy"}}
+
+
+def _write_ros_ci(root: Path, distro_line: str) -> None:
+    wf = root / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "ros-ci.yml").write_text(f"jobs:\n  build:\n    with:\n      {distro_line}\n")
+
+
+def test_workflow_distro_clean_when_matching(tmp_path):
+    _write_ros_ci(tmp_path, "target-ros2-distro: jazzy")
+    assert drift.check_workflow_distro(tmp_path, _DISTRO_MANIFEST) == []
+
+
+def test_workflow_distro_flags_mismatch(tmp_path):
+    _write_ros_ci(tmp_path, "target-ros2-distro: humble")
+    problems = drift.check_workflow_distro(tmp_path, _DISTRO_MANIFEST)
+    assert len(problems) == 1
+    assert "humble" in problems[0]
+    assert "jazzy" in problems[0]
+
+
+# --- R3-2: ARG-defaults guard spans both Dockerfiles + the full manifest-injected ARG set ----------
+
+
+def _write_dockerfiles(root: Path, sim: str, dev: str) -> None:
+    (root / "docker" / "sim").mkdir(parents=True, exist_ok=True)
+    (root / "docker" / "dev").mkdir(parents=True, exist_ok=True)
+    (root / "docker" / "sim" / "Dockerfile").write_text(sim)
+    (root / "docker" / "dev" / "Dockerfile").write_text(dev)
+
+
+def test_no_defaults_clean_for_defaultless_args_and_nonmanifest_default(tmp_path):
+    # A non-manifest ARG with a legitimate default (a GPG trust root) must NOT be flagged.
+    _write_dockerfiles(
+        tmp_path,
+        'ARG PX4_VERSION\nARG GZ_VERSION\nARG OSRF_GPG_FPRS="ABC123"\n',
+        "ARG ROS_BASE_IMAGE\nARG ROS_DISTRO\n",
+    )
+    assert drift.check_dockerfile_no_defaults(tmp_path) == []
+
+
+def test_no_defaults_flags_defaulted_manifest_arg_in_either_dockerfile(tmp_path):
+    _write_dockerfiles(
+        tmp_path,
+        "ARG XRCE_FASTDDS_COMMIT=deadbeef\n",  # newly-guarded transitive pin ARG
+        "ARG ROS_DISTRO=jazzy\n",  # dev Dockerfile now covered
+    )
+    problems = drift.check_dockerfile_no_defaults(tmp_path)
+    assert any("docker/sim/Dockerfile" in p and "XRCE_FASTDDS_COMMIT" in p for p in problems)
+    assert any("docker/dev/Dockerfile" in p and "ROS_DISTRO" in p for p in problems)
+
+
 def test_live_repo_has_no_manifest_drift():
     assert drift.run_checks(REPO_ROOT) == []
