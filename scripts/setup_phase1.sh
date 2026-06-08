@@ -64,10 +64,15 @@ ROS_APT_SOURCE_SHA256="$(manifest_get ros_apt_source.sha256)"
 UXRCE_AGENT_SOURCE="$(manifest_get bridge.uxrce_dds_agent_source)"
 UXRCE_AGENT_VERSION="$(manifest_get bridge.uxrce_dds_agent_version)"
 UXRCE_AGENT_COMMIT="$(manifest_get bridge.uxrce_dds_agent_commit)"
-# Transitive superbuild deps, pinned by commit + verified post-fetch in build_xrce_agent.sh (Medium #3)
+# Transitive superbuild deps, pinned by ref+commit and verified pre-build (ls-remote) AND post-build
+# (checkout HEAD) in build_xrce_agent.sh (Hermes Medium #1). Both the ref and the commit flow through.
+UXRCE_FASTCDR_REF="$(manifest_get bridge.uxrce_fastcdr_ref)"
 UXRCE_FASTCDR_COMMIT="$(manifest_get bridge.uxrce_fastcdr_commit)"
+UXRCE_FASTDDS_REF="$(manifest_get bridge.uxrce_fastdds_ref)"
 UXRCE_FASTDDS_COMMIT="$(manifest_get bridge.uxrce_fastdds_commit)"
+UXRCE_FOONATHAN_REF="$(manifest_get bridge.uxrce_foonathan_memory_ref)"
 UXRCE_FOONATHAN_COMMIT="$(manifest_get bridge.uxrce_foonathan_memory_commit)"
+UXRCE_SPDLOG_REF="$(manifest_get bridge.uxrce_spdlog_ref)"
 UXRCE_SPDLOG_COMMIT="$(manifest_get bridge.uxrce_spdlog_commit)"
 MCAP_PLUGIN="$(manifest_get bags.mcap_plugin)"          # rosbag2 MCAP storage plugin suffix (M7)
 UV_VERSION="$(manifest_get tools.uv_version)"
@@ -331,11 +336,12 @@ install_xrce_agent() {
   log "Building Micro XRCE-DDS Agent ${UXRCE_AGENT_VERSION} from source (${UXRCE_AGENT_SOURCE})..."
   # Shared recipe with the sim container (docker/sim/Dockerfile) — one source of the build steps,
   # so host and container agents can't drift. `sudo` here: /usr/local install needs root on the host.
-  # EXPECT_*_COMMIT pass the transitive pins through for the post-fetch verification (Medium #3).
-  if ! EXPECT_FASTCDR_COMMIT="${UXRCE_FASTCDR_COMMIT}" \
-       EXPECT_FASTDDS_COMMIT="${UXRCE_FASTDDS_COMMIT}" \
-       EXPECT_FOONATHAN_COMMIT="${UXRCE_FOONATHAN_COMMIT}" \
-       EXPECT_SPDLOG_COMMIT="${UXRCE_SPDLOG_COMMIT}" \
+  # EXPECT_*_REF + EXPECT_*_COMMIT pass the transitive pins through for the pre-build (ls-remote) and
+  # post-build (checkout) verification in build_xrce_agent.sh (Hermes Medium #1).
+  if ! EXPECT_FASTCDR_REF="${UXRCE_FASTCDR_REF}" EXPECT_FASTCDR_COMMIT="${UXRCE_FASTCDR_COMMIT}" \
+       EXPECT_FASTDDS_REF="${UXRCE_FASTDDS_REF}" EXPECT_FASTDDS_COMMIT="${UXRCE_FASTDDS_COMMIT}" \
+       EXPECT_FOONATHAN_REF="${UXRCE_FOONATHAN_REF}" EXPECT_FOONATHAN_COMMIT="${UXRCE_FOONATHAN_COMMIT}" \
+       EXPECT_SPDLOG_REF="${UXRCE_SPDLOG_REF}" EXPECT_SPDLOG_COMMIT="${UXRCE_SPDLOG_COMMIT}" \
        bash "${REPO_ROOT}/scripts/build_xrce_agent.sh" \
         "${UXRCE_AGENT_SOURCE}" "${UXRCE_AGENT_VERSION}" "${UXRCE_AGENT_COMMIT}" sudo; then
     # The PX4<->ROS 2 bridge is the core M2 deliverable, so a build failure is FATAL by default

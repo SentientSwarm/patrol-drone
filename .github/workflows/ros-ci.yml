@@ -26,6 +26,13 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+      # Tripwire (Hermes Medium #2): this job's `skip-tests: 'true'` below is a build-only gate.
+      # Fail loudly the day a first-party patrol_* package grows a test surface while that switch
+      # is still on, so real tests can't land silently un-run. Self-clears when skip-tests flips
+      # to 'false'. Pure stdlib python3 (present in the ROS toolchain image).
+      - name: First-party ROS test-gate guard
+        shell: bash
+        run: python3 scripts/check_ros_test_gate.py
       # Bootstrap guard: no ROS packages exist until M3. Skip the build cleanly so the
       # job is GREEN on the empty repo and auto-activates when the first package.xml lands.
       - id: pkgs
@@ -57,7 +64,8 @@ jobs:
           # are not this PR's concern: the vendored upstream's style (px4_ros_com: 598+
           # cpplint/copyright), the CI container's pytest vs our pyproject `minversion`, and
           # a flaky ament_xmllint package_format3.xsd fetch from download.ros.org. Real
-          # first-party tests + a stable lint config re-enable testing at M3.
+          # first-party tests + a stable lint config re-enable testing at M3. The "First-party ROS
+          # test-gate guard" step above fails CI if a first-party test lands while this stays 'true'.
           skip-tests: 'true'
       - if: ${{ always() && steps.pkgs.outputs.present == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

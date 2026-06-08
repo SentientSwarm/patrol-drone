@@ -38,10 +38,15 @@ def build_args(manifest: dict) -> dict[str, str]:
         "XRCE_AGENT_SOURCE": bridge["uxrce_dds_agent_source"],
         "XRCE_AGENT_VERSION": bridge["uxrce_dds_agent_version"],
         "XRCE_AGENT_COMMIT": bridge["uxrce_dds_agent_commit"],
-        # Transitive superbuild dep pins — verified post-fetch by build_xrce_agent.sh (Medium #3)
+        # Transitive superbuild dep pins — verified pre-build (ls-remote ref) AND post-build
+        # (checkout commit) by build_xrce_agent.sh (Hermes Medium #1). Both ref and commit flow through.
+        "XRCE_FASTCDR_REF": bridge["uxrce_fastcdr_ref"],
         "XRCE_FASTCDR_COMMIT": bridge["uxrce_fastcdr_commit"],
+        "XRCE_FASTDDS_REF": bridge["uxrce_fastdds_ref"],
         "XRCE_FASTDDS_COMMIT": bridge["uxrce_fastdds_commit"],
+        "XRCE_FOONATHAN_REF": bridge["uxrce_foonathan_memory_ref"],
         "XRCE_FOONATHAN_COMMIT": bridge["uxrce_foonathan_memory_commit"],
+        "XRCE_SPDLOG_REF": bridge["uxrce_spdlog_ref"],
         "XRCE_SPDLOG_COMMIT": bridge["uxrce_spdlog_commit"],
     }
 

@@ -63,12 +63,14 @@ uxrce_dds_agent_commit  = "155cfaaf8b7abac2e85d4a62d3649b09ace0be55"  # tag v3.0
 
 # Transitive deps the agent's CMake SUPERBUILD fetches, builds, and installs into /usr/local
 # (their .so files ship in the image). The agent commit above references these via the refs below
-# in cmake/SuperBuild.cmake + CMakeLists.txt. Pinned by COMMIT and verified post-fetch by
-# build_xrce_agent.sh (Hermes Medium #3) so a moved/compromised upstream ref cannot silently change
-# installed code. NB: Fast-CDR `2.2.x` and Fast-DDS `3.x` are MOVING BRANCHES upstream — the commit
-# pin is the tripwire: when eProsima advances the branch the build fails loudly and a human
-# re-resolves (`git ls-remote <repo> <ref>`) and bumps the commit here. The refs/commits are tied to
-# uxrce_dds_agent_version; re-capture all four when that pin moves.
+# in cmake/SuperBuild.cmake + CMakeLists.txt. Pinned by REF + COMMIT and verified by build_xrce_agent.sh
+# at TWO points (Hermes Medium #1): PRE-build via `git ls-remote <repo> <ref>` (before any dep code is
+# fetched/configured/built) and POST-build via the checked-out HEAD (before install) — so a
+# moved/compromised upstream ref cannot silently change built or installed code. NB: Fast-CDR `2.2.x`
+# and Fast-DDS `3.x` are MOVING BRANCHES upstream — the commit pin is the tripwire: when eProsima
+# advances the branch the build fails loudly and a human re-resolves (`git ls-remote <repo> <ref>`)
+# and bumps the commit here. The refs/commits are tied to uxrce_dds_agent_version; re-capture all four
+# when that pin moves.
 uxrce_fastcdr_ref             = "2.2.x"     # branch (moves)
 uxrce_fastcdr_commit          = "9821b82dea52b9393155daf9b5f1d5c125e7db46"
 uxrce_fastdds_ref             = "3.x"       # branch (moves)
