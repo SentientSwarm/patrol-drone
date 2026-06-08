@@ -32,16 +32,21 @@ WORKFLOW = Path(".github/workflows/ros-ci.yml")
 _TEST_FILE = re.compile(r"(^test_.*\.py$|_test\.py$|^test_.*\.(cpp|cc|cxx)$|_test\.(cpp|cc|cxx)$)")
 
 
+def _is_test_file(path: Path) -> bool:
+    """A runnable test entry point: a file whose name matches the ament/colcon test convention."""
+    return path.is_file() and bool(_TEST_FILE.search(path.name))
+
+
 def _has_test_surface(pkg_dir: Path) -> bool:
     """True if the package ships runnable tests (test files under a test/ or tests/ dir, or in-pkg)."""
+    # Direct children catch test files placed beside package.xml (some ament_cmake layouts); the
+    # test/ and tests/ dirs are walked recursively for the conventional ament_python layout.
+    candidates = list(pkg_dir.glob("*"))
     for sub in ("test", "tests"):
         test_dir = pkg_dir / sub
-        if test_dir.is_dir() and any(
-            f.is_file() and _TEST_FILE.search(f.name) for f in test_dir.rglob("*")
-        ):
-            return True
-    # Also catch test files placed directly beside package.xml (some ament_cmake layouts).
-    return any(f.is_file() and _TEST_FILE.search(f.name) for f in pkg_dir.glob("*"))
+        if test_dir.is_dir():
+            candidates.extend(test_dir.rglob("*"))
+    return any(_is_test_file(c) for c in candidates)
 
 
 def first_party_packages_with_tests(repo_root: Path) -> list[str]:
