@@ -211,8 +211,11 @@ _ROS_DISTRO_LITERAL = re.compile(rf"ros-(?:{'|'.join(_ROS2_DISTROS)})-")
 
 # A Gazebo metapackage pinned to a literal release (gz-fortress, gz-harmonic, …) instead of the
 # gz-${GZ_VERSION} variable. Value-agnostic, so a *wrong* version (gz-fortress) is caught too — the
-# specific blind spot Hermes flagged (`gz-${GZ_VERSION}` → `gz-fortress` stayed green).
-_GZ_LITERAL = re.compile(r"gz-(?!\$\{GZ_VERSION\})[a-z]")
+# specific blind spot Hermes flagged (`gz-${GZ_VERSION}` → `gz-fortress` stayed green). The
+# (?<!ros-) lookbehind exempts the ROS `ros-gz-*` integration metapackages (ros-gz-bridge/-image/
+# -sim), whose `gz-` substring is NOT a Gazebo version pin — without it an M3+ Dockerfile line like
+# `ros-${ROS_DISTRO}-ros-gz-bridge` would false-positive (Hermes Medium #1, latent today).
+_GZ_LITERAL = re.compile(r"(?<!ros-)gz-(?!\$\{GZ_VERSION\})[a-z]")
 
 
 def check_dockerfile_hardcoded_alternatives(repo_root: Path) -> list[str]:

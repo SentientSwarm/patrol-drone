@@ -126,10 +126,18 @@ verify_transitive "https://github.com/gabime/spdlog.git"     "${EXPECT_SPDLOG_CO
 # leaving an untracked spray of libraries on a developer host.
 installed=("/usr/local/bin/MicroXRCEAgent")
 "${sudo_cmd[@]}" install -m755 "${src}/build/MicroXRCEAgent" /usr/local/bin/MicroXRCEAgent
+# Dedupe by basename over a SORTED find (Hermes Medium #2): the superbuild tree can hold the same
+# .so basename under multiple subdirs; an unordered `cp` would be last-write-wins (non-deterministic)
+# and could install both a symlink and its target. First-wins over a stable sort makes the installed
+# set — and the xrce-agent.files manifest below — reproducible across builds.
+declare -A seen_so
 while IFS= read -r so; do
+  base="$(basename "${so}")"
+  [[ -n "${seen_so[${base}]:-}" ]] && continue
+  seen_so[${base}]=1
   "${sudo_cmd[@]}" cp -a "${so}" /usr/local/lib/
-  installed+=("/usr/local/lib/$(basename "${so}")")
-done < <(find "${src}/build" -name "*.so*")
+  installed+=("/usr/local/lib/${base}")
+done < <(find "${src}/build" -name "*.so*" | sort)
 "${sudo_cmd[@]}" ldconfig
 printf '%s\n' "${installed[@]}" | "${sudo_cmd[@]}" tee /usr/local/share/patrol-drone/xrce-agent.files > /dev/null
 

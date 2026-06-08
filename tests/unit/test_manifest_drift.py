@@ -150,6 +150,18 @@ def test_hardcoded_alternatives_flag_wrong_ros_distro(tmp_path):
     assert any("ROS distro" in p for p in problems)
 
 
+def test_hardcoded_alternatives_allow_ros_gz_integration_metapackages(tmp_path):
+    # Hermes Medium #1: the ros-gz-* integration metapackages embed a `gz-` substring that is NOT a
+    # Gazebo version pin. The _GZ_LITERAL (?<!ros-) lookbehind must exempt them so a legitimate
+    # `ros-${ROS_DISTRO}-ros-gz-bridge` (M3+) does not false-positive as a hardcoded Gazebo metapackage.
+    _write_sim_dockerfile(
+        tmp_path,
+        'RUN apt-get install -y "ros-${ROS_DISTRO}-ros-gz-bridge" '
+        '"ros-${ROS_DISTRO}-ros-gz-image" "ros-${ROS_DISTRO}-ros-gz-sim"\n',
+    )
+    assert drift.check_dockerfile_hardcoded_alternatives(tmp_path) == []
+
+
 # --- #5: vendored-subtree provenance tree-hash guard ----------------------------------------------
 
 
