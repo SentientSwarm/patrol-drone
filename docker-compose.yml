@@ -24,10 +24,19 @@ services:
         XRCE_AGENT_SOURCE: ${XRCE_AGENT_SOURCE}    # [bridge] uxrce_dds_agent_source (built from source)
         XRCE_AGENT_VERSION: ${XRCE_AGENT_VERSION}  # [bridge] uxrce_dds_agent_version
         XRCE_AGENT_COMMIT: ${XRCE_AGENT_COMMIT}    # [bridge] uxrce_dds_agent_commit (verified post-clone)
-        XRCE_FASTCDR_COMMIT: ${XRCE_FASTCDR_COMMIT}        # [bridge] transitive superbuild pins,
-        XRCE_FASTDDS_COMMIT: ${XRCE_FASTDDS_COMMIT}        #   verified post-fetch by build_xrce_agent.sh
-        XRCE_FOONATHAN_COMMIT: ${XRCE_FOONATHAN_COMMIT}    #   (Medium #3) — Fast-CDR/Fast-DDS/foonathan/
-        XRCE_SPDLOG_COMMIT: ${XRCE_SPDLOG_COMMIT}          #   spdlog commit tripwires
+        # Transitive superbuild pins. BOTH ref AND commit must flow through (Hermes High #1): the
+        # _REF drives build_xrce_agent.sh's PRE-build `git ls-remote` gate, the _COMMIT its POST-build
+        # checkout gate. Fast-CDR/Fast-DDS are MOVING branches, so dropping the refs here would leave
+        # the pre-build gate inert on this (the primary documented) compose build path — gen_build_args.py
+        # emits all eight keys; test_gen_build_args.py asserts compose forwards the full set.
+        XRCE_FASTCDR_REF: ${XRCE_FASTCDR_REF}
+        XRCE_FASTCDR_COMMIT: ${XRCE_FASTCDR_COMMIT}
+        XRCE_FASTDDS_REF: ${XRCE_FASTDDS_REF}
+        XRCE_FASTDDS_COMMIT: ${XRCE_FASTDDS_COMMIT}
+        XRCE_FOONATHAN_REF: ${XRCE_FOONATHAN_REF}
+        XRCE_FOONATHAN_COMMIT: ${XRCE_FOONATHAN_COMMIT}
+        XRCE_SPDLOG_REF: ${XRCE_SPDLOG_REF}
+        XRCE_SPDLOG_COMMIT: ${XRCE_SPDLOG_COMMIT}
     # INTENTIONAL, and scoped to `sim` ONLY (the `dev` service deliberately uses default bridge
     # networking). PX4's uxrce_dds_client and the in-container MicroXRCEAgent rendezvous over
     # UDP on localhost:8888 (design A1); host networking gives them that shared loopback and lets a

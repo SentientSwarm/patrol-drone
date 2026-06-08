@@ -23,7 +23,11 @@ set -eo pipefail
 SOURCE="${1:?source url required}"
 VERSION="${2:?version tag required}"
 COMMIT="${3:?expected commit required}"
-SUDO="${4:+sudo}"   # non-empty 4th arg → "sudo"; empty → "" (run as current user/root)
+# arg4 non-empty → prefix /usr/local installs with sudo (host); empty (Docker/root) → no prefix.
+# An ARRAY, not a ""${sudo_cmd[@]}"" scalar: the empty case expands to ZERO words with no word-splitting, so
+# ShellCheck SC2086 stays clean (the repo's action-shellcheck gate scans this first-party script).
+sudo_cmd=()
+[[ -n "${4:-}" ]] && sudo_cmd=(sudo)
 
 src="$(mktemp -d)"
 trap 'rm -rf "${src}"' EXIT
@@ -112,7 +116,7 @@ verify_transitive "https://github.com/eProsima/Fast-DDS.git" "${EXPECT_FASTDDS_C
 verify_transitive "https://github.com/foonathan/memory.git"  "${EXPECT_FOONATHAN_COMMIT:-}" "foonathan_memory"
 verify_transitive "https://github.com/gabime/spdlog.git"     "${EXPECT_SPDLOG_COMMIT:-}"    "spdlog"
 
-${SUDO} install -d -m755 /usr/local/share/patrol-drone
+"${sudo_cmd[@]}" install -d -m755 /usr/local/share/patrol-drone
 
 # Install the agent binary + the superbuild's shared libs into /usr/local, recording an explicit
 # installed-file MANIFEST (Hermes Medium #3). The superbuild has no top-level `install` target and its
@@ -121,15 +125,15 @@ ${SUDO} install -d -m755 /usr/local/share/patrol-drone
 # manifest makes that exact set auditable and reversible (rm $(cat xrce-agent.files)) instead of
 # leaving an untracked spray of libraries on a developer host.
 installed=("/usr/local/bin/MicroXRCEAgent")
-${SUDO} install -m755 "${src}/build/MicroXRCEAgent" /usr/local/bin/MicroXRCEAgent
+"${sudo_cmd[@]}" install -m755 "${src}/build/MicroXRCEAgent" /usr/local/bin/MicroXRCEAgent
 while IFS= read -r so; do
-  ${SUDO} cp -a "${so}" /usr/local/lib/
+  "${sudo_cmd[@]}" cp -a "${so}" /usr/local/lib/
   installed+=("/usr/local/lib/$(basename "${so}")")
 done < <(find "${src}/build" -name "*.so*")
-${SUDO} ldconfig
-printf '%s\n' "${installed[@]}" | ${SUDO} tee /usr/local/share/patrol-drone/xrce-agent.files > /dev/null
+"${sudo_cmd[@]}" ldconfig
+printf '%s\n' "${installed[@]}" | "${sudo_cmd[@]}" tee /usr/local/share/patrol-drone/xrce-agent.files > /dev/null
 
 # Record the installed commit so a rerun (host setup_phase1.sh::install_xrce_agent) can verify the
 # on-disk agent against the manifest pin instead of trusting any MicroXRCEAgent on PATH (Hermes
 # Medium #2). Same marker path on the host and in the sim container — they install the same tag.
-printf '%s\n' "${COMMIT}" | ${SUDO} tee /usr/local/share/patrol-drone/xrce-agent.commit > /dev/null
+printf '%s\n' "${COMMIT}" | "${sudo_cmd[@]}" tee /usr/local/share/patrol-drone/xrce-agent.commit > /dev/null
