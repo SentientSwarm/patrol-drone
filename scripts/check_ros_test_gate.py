@@ -38,15 +38,20 @@ def _is_test_file(path: Path) -> bool:
 
 
 def _has_test_surface(pkg_dir: Path) -> bool:
-    """True if the package ships runnable tests (test files under a test/ or tests/ dir, or in-pkg)."""
-    # Direct children catch test files placed beside package.xml (some ament_cmake layouts); the
-    # test/ and tests/ dirs are walked recursively for the conventional ament_python layout.
-    candidates = list(pkg_dir.glob("*"))
+    """True if the package ships runnable tests (any file under a test/ or tests/ dir, or in-pkg)."""
+    # Direct children beside package.xml (some ament_cmake layouts) must still match the
+    # test-filename convention, so a stray top-level source file is not a false positive.
+    if any(_is_test_file(c) for c in pkg_dir.glob("*")):
+        return True
+    # Inside a conventional test/ or tests/ dir, treat ANY file as a test surface regardless of
+    # name: ament/CMake registers test sources like tests/state_machine.cpp that match no
+    # test_*/*_test convention, and the filename-only check missed them (Hermes High #1). While
+    # skip-tests is on we err toward tripping the guard rather than letting such a test land unrun.
     for sub in ("test", "tests"):
         test_dir = pkg_dir / sub
-        if test_dir.is_dir():
-            candidates.extend(test_dir.rglob("*"))
-    return any(_is_test_file(c) for c in candidates)
+        if test_dir.is_dir() and any(c.is_file() for c in test_dir.rglob("*")):
+            return True
+    return False
 
 
 def first_party_packages_with_tests(repo_root: Path) -> list[str]:

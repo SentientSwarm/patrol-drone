@@ -45,6 +45,13 @@ def test_first_party_test_dir_is_detected(tmp_path: Path):
     assert gate.first_party_packages_with_tests(tmp_path) == ["ros2_ws/src/patrol_mission"]
 
 
+def test_unconventionally_named_test_under_tests_dir_is_detected(tmp_path: Path):
+    """Hermes High #1 probe: a test/ or tests/ file that matches no test_*/*_test convention
+    (e.g. an ament/CMake source `tests/state_machine.cpp`) must still count as a test surface."""
+    _make_pkg(tmp_path, "patrol_mission", test_files=["tests/state_machine.cpp"])
+    assert gate.first_party_packages_with_tests(tmp_path) == ["ros2_ws/src/patrol_mission"]
+
+
 def test_vendored_external_tests_are_ignored(tmp_path: Path):
     _make_pkg(tmp_path, "external/px4_ros_com", test_files=["test/test_demo.py"])
     assert gate.first_party_packages_with_tests(tmp_path) == []
