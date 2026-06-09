@@ -55,8 +55,39 @@ def _generated_keys() -> set[str]:
     return set(gen.build_args(_manifest()).keys())
 
 
+def _sim_build_args_block(text: str) -> str:
+    """Return only the `sim` service's `build.args:` lines from the compose text.
+
+    Scoped per Hermes Low #1: the contract this protects is specifically `sim.build.args`, so a
+    key dropped there but still present elsewhere in the file (the `dev` service, a future block)
+    must not mask the drop. Dependency-free (no pyyaml — see module docstring): walk indentation —
+    the args block is the run of lines indented deeper than the `args:` header, inside the
+    2-space `sim:` service, ending at the dedent back to/under `args:`.
+    """
+    in_sim = False
+    args_indent: int | None = None
+    out: list[str] = []
+    for line in text.splitlines():
+        if re.match(r"^  sim:\s*$", line):
+            in_sim = True
+            continue
+        if not in_sim:
+            continue
+        if re.match(r"^  \S", line):  # next 2-space top-level service ends the sim block
+            break
+        if args_indent is None:
+            header = re.match(r"^(\s*)args:\s*$", line)
+            if header:
+                args_indent = len(header.group(1))
+            continue
+        if line.strip() and (len(line) - len(line.lstrip())) <= args_indent:
+            break  # dedent to/under the `args:` header ends the args block
+        out.append(line)
+    return "\n".join(out)
+
+
 def _compose_arg_keys() -> set[str]:
-    return set(_COMPOSE_ARG.findall(_COMPOSE.read_text()))
+    return set(_COMPOSE_ARG.findall(_sim_build_args_block(_COMPOSE.read_text())))
 
 
 def _dockerfile_xrce_args() -> set[str]:
@@ -91,7 +122,21 @@ def test_dockerfile_declares_every_generated_xrce_arg():
     assert _xrce(_generated_keys()) <= _dockerfile_xrce_args()
 
 
-def test_env_output_is_key_value_lines():
-    # `--env` feeds `docker compose --env-file`; every line must be a parseable KEY=VALUE.
+def test_env_output_is_key_value_lines(capsys):
+    # `--env` feeds `docker compose --env-file`; every emitted line must be a parseable KEY=VALUE
+    # (Hermes Low #2: assert the actual stdout shape, not just the exit code — a malformed env
+    # line would still exit 0 and silently break `--env-file` substitution at build time).
     rc = gen.main(["--env"])
     assert rc == 0
+
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert lines, "--env emitted no KEY=VALUE lines"
+    parsed: dict[str, str] = {}
+    for ln in lines:
+        assert "=" in ln, f"line is not KEY=VALUE: {ln!r}"
+        key, _, value = ln.partition("=")
+        assert re.fullmatch(r"[A-Z][A-Z0-9_]*", key), f"malformed env key: {key!r}"
+        assert value != "", f"empty value for {key}"
+        parsed[key] = value
+    # The emitted pairs must round-trip the generator's build_args verbatim — no drops, no mangling.
+    assert parsed == gen.build_args(_manifest())
