@@ -42,7 +42,8 @@ pins = _load_pins()
 
 def _bridge() -> dict:
     with _MANIFEST.open("rb") as fh:
-        return tomllib.load(fh)["bridge"]
+        bridge: dict = tomllib.load(fh)["bridge"]
+    return bridge
 
 
 def test_all_transitive_refs_are_immutable_tags():

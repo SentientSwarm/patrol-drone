@@ -38,7 +38,8 @@ _DEP_URLS = {
 
 def load_bridge(repo_root: Path) -> dict:
     with (repo_root / "stack-manifest.toml").open("rb") as fh:
-        return tomllib.load(fh)["bridge"]
+        bridge: dict = tomllib.load(fh)["bridge"]
+    return bridge
 
 
 def pinned_refs(bridge: dict) -> list[tuple[str, str, str, str]]:
@@ -92,8 +93,8 @@ def check_pin(name: str, url: str, ref: str, expected: str) -> str | None:
     return None
 
 
-def main() -> int:
-    bridge = load_bridge(REPO_ROOT)
+def collect_problems(bridge: dict) -> list[str]:
+    """Check every pin; print an OK line per resolved pin, return one string per problem."""
     problems = []
     for name, url, ref, expected in pinned_refs(bridge):
         problem = check_pin(name, url, ref, expected)
@@ -101,17 +102,26 @@ def main() -> int:
             problems.append(problem)
         else:
             print(f"OK: {name} {ref} -> {expected}")
-    if problems:
-        print("\nuXRCE pin drift detected:", file=sys.stderr)
-        for problem in problems:
-            print(f"  - {problem}", file=sys.stderr)
-        print(
-            "\nRe-resolve (git ls-remote <repo> <ref>) and bump stack-manifest.toml [bridge], "
-            "or pin a different immutable tag (ADR-0007).",
-            file=sys.stderr,
-        )
-        return 1
-    return 0
+    return problems
+
+
+def report_drift(problems: list[str]) -> None:
+    print("\nuXRCE pin drift detected:", file=sys.stderr)
+    for problem in problems:
+        print(f"  - {problem}", file=sys.stderr)
+    print(
+        "\nRe-resolve (git ls-remote <repo> <ref>) and bump stack-manifest.toml [bridge], "
+        "or pin a different immutable tag (ADR-0007).",
+        file=sys.stderr,
+    )
+
+
+def main() -> int:
+    problems = collect_problems(load_bridge(REPO_ROOT))
+    if not problems:
+        return 0
+    report_drift(problems)
+    return 1
 
 
 if __name__ == "__main__":
