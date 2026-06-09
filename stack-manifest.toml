@@ -62,19 +62,23 @@ uxrce_dds_agent_version = "v3.0.1"
 uxrce_dds_agent_commit  = "155cfaaf8b7abac2e85d4a62d3649b09ace0be55"  # tag v3.0.1 dereferences here
 
 # Transitive deps the agent's CMake SUPERBUILD fetches, builds, and installs into /usr/local
-# (their .so files ship in the image). The agent commit above references these via the refs below
-# in cmake/SuperBuild.cmake + CMakeLists.txt. Pinned by REF + COMMIT and verified by build_xrce_agent.sh
-# at TWO points (Hermes Medium #1): PRE-build via `git ls-remote <repo> <ref>` (before any dep code is
-# fetched/configured/built) and POST-build via the checked-out HEAD (before install) — so a
-# moved/compromised upstream ref cannot silently change built or installed code. NB: Fast-CDR `2.2.x`
-# and Fast-DDS `3.x` are MOVING BRANCHES upstream — the commit pin is the tripwire: when eProsima
-# advances the branch the build fails loudly and a human re-resolves (`git ls-remote <repo> <ref>`)
-# and bumps the commit here. The refs/commits are tied to uxrce_dds_agent_version; re-capture all four
-# when that pin moves.
-uxrce_fastcdr_ref             = "2.2.x"     # branch (moves)
-uxrce_fastcdr_commit          = "9821b82dea52b9393155daf9b5f1d5c125e7db46"
-uxrce_fastdds_ref             = "3.x"       # branch (moves)
-uxrce_fastdds_commit          = "dff5a82fd74b95befe8b4dddd75f1a8830cdbf07"
+# (their .so files ship in the image). Upstream, the agent's cmake/CMakeLists.txt points Fast-DDS and
+# Fast-CDR at the MOVING branches `3.x` / `2.2.x` — so the superbuild fetch is non-reproducible and the
+# branch advancing breaks the pinned build (Hermes High, head 8b85069: `3.x` advanced dff5a82->9a31251
+# and the pre-build gate fail-closed). We pin ALL FOUR transitive deps to IMMUTABLE TAGS instead, and
+# build_xrce_agent.sh rewrites the agent's `_fastdds_tag`/`_fastcdr_tag` to these tags before configuring
+# (foonathan_memory/spdlog are already tags upstream) — so the superbuild fetches exactly these commits,
+# reproducibly. The tags match the agent v3.0.1's declared EXACT dep versions (Fast-DDS 3.1 -> latest
+# v3.1.x; Fast-CDR 2.2.4). REF + COMMIT are still verified by build_xrce_agent.sh at TWO points (Hermes
+# Medium #1): PRE-build via `git ls-remote <repo> <ref>` and POST-build via the checked-out HEAD, so a
+# force-pushed/retagged upstream cannot silently change built or installed code. A PR-CI job
+# (scripts/check_xrce_pins.py) runs the same ls-remote check so tampering/drift is caught before merge,
+# not only by the nightly reviewer. Re-capture all four when uxrce_dds_agent_version moves (use the dep
+# tags the new agent tag declares).
+uxrce_fastcdr_ref             = "v2.2.4"    # tag (immutable; agent v3.0.1 declares fastcdr 2.2.4 EXACT)
+uxrce_fastcdr_commit          = "c00d31c36375c3f4b5e0926d3046bfde5f63ff14"
+uxrce_fastdds_ref             = "v3.1.3"    # tag (immutable; latest v3.1.x — agent v3.0.1 declares fastdds 3.1)
+uxrce_fastdds_commit          = "111d2db89105abd1f707736e600e5a32779fa265"
 uxrce_foonathan_memory_ref    = "v0.7-3"    # tag
 uxrce_foonathan_memory_commit = "0f0775770fd1c506fa9c5ad566bd6ba59659db66"
 uxrce_spdlog_ref              = "v1.9.2"    # tag

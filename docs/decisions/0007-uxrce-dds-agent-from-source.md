@@ -45,11 +45,44 @@ the identical `MicroXRCEAgent` binary.
   `HEAD == uxrce_dds_agent_commit` (catches an upstream-moved tag), `cmake` build, `sudo cmake
   --install`, `sudo ldconfig`. Idempotent: skips when `MicroXRCEAgent` is already on `PATH`.
 
+## Transitive dependency pinning — immutable tags, not moving branches (2026-06-09)
+
+The agent's cmake superbuild fetches four transitive deps (Fast-CDR, Fast-DDS, foonathan_memory,
+spdlog). Upstream, the agent v3.0.1 `CMakeLists.txt` points Fast-DDS/Fast-CDR at the **moving
+branches** `set(_fastdds_tag 3.x)` / `set(_fastcdr_tag 2.2.x)`. We initially mirrored that —
+pinning each dep by branch ref + a tripwire commit in `stack-manifest.toml [bridge]`, with
+`build_xrce_agent.sh` failing closed when `git ls-remote <branch>` no longer matched the commit.
+
+That tripwire fired in practice: eProsima advanced `Fast-DDS 3.x` (`dff5a82…` → `9a31251…`) and the
+pinned build broke (Hermes High, head `8b85069`). A moving-branch pin is inherently
+non-reproducible — the superbuild fetch result depends on *when* you build — so the tripwire only
+converts silent drift into a recurring manual re-resolve.
+
+**Decision:** pin all four transitive deps to **immutable tags** matching the agent's declared EXACT
+dep versions (`Fast-DDS 3.1` → latest `v3.1.x` = `v3.1.3`; `Fast-CDR 2.2.4` → `v2.2.4`;
+foonathan_memory `v0.7-3` and spdlog `v1.9.2` are already tags). `build_xrce_agent.sh` rewrites the
+agent's `_fastdds_tag`/`_fastcdr_tag` to the manifest refs **before configuring** (fail-closed if the
+upstream `set(_<dep>_tag …)` line is absent), so the superbuild fetches exactly the pinned commit —
+reproducibly. The pre-build ls-remote gate and post-build checkout gate are retained as
+supply-chain checks (they now catch a *force-pushed/retagged* upstream, not routine branch motion).
+
+A standalone `scripts/check_xrce_pins.py` runs the same ls-remote resolution network-only (no clone /
+compile) as a PR-CI job (`xrce-pins` in `python-quality.yml`), so a drifted or tampered pin fails the
+PR rather than surfacing only in the nightly reviewer. A fast unit guard
+(`tests/unit/test_xrce_pins.py`) asserts every `[bridge]` transitive ref stays an immutable tag.
+
+**Re-pin procedure when bumping `uxrce_dds_agent_version`:** read the new agent tag's
+`CMakeLists.txt` for its declared `_fastdds_tag`/`_fastcdr_tag`/versions, pick the matching immutable
+dep tags, capture each tag's commit (`git ls-remote <repo> <tag>`), and update all eight `[bridge]`
+ref/commit fields. `check_xrce_pins.py` then verifies the capture.
+
 ## Consequences
 
 ### Positive
 - The bridge actually installs — the M2 exit criterion (live `/fmu/*`) is reachable on the host
   and in the container, by the same pinned source build.
+- The transitive superbuild fetch is now **reproducible** (immutable tags), and pin drift is caught
+  in PR CI, not just by the nightly reviewer.
 - Reproducible and supply-chain-consistent with ADR-0005/0006: a versioned, commit-verified
   source pin rather than an unpinned (and non-existent) apt name.
 

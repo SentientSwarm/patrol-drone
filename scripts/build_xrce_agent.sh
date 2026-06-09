@@ -36,9 +36,37 @@ git clone --depth 1 --branch "${VERSION}" "${SOURCE}" "${src}"
 # Verify the tag dereferences to the pinned commit (catches an upstream-moved tag).
 test "$(git -C "${src}" rev-parse HEAD)" = "${COMMIT}"
 
+# PIN THE SUPERBUILD TO IMMUTABLE TAGS (Hermes High, head 8b85069). Upstream, the agent's
+# CMakeLists.txt points Fast-DDS/Fast-CDR at the MOVING branches `set(_fastdds_tag 3.x)` /
+# `set(_fastcdr_tag 2.2.x)`, so the superbuild fetch is non-reproducible and breaks the pinned build
+# when eProsima advances the branch. We rewrite those two GIT_TAG vars to the manifest's immutable
+# tags (EXPECT_*_REF, stack-manifest.toml [bridge]) BEFORE configuring, so the superbuild fetches
+# exactly the pinned commit. foonathan_memory/spdlog are already tags upstream — no rewrite needed.
+# Fail CLOSED if the expected `set(_<dep>_tag ...)` line is absent (the upstream CMake layout changed
+# and our reproducibility assumption no longer holds — refuse rather than build a moving branch).
+pin_superbuild_tag() {
+  local var="$1" ref="$2" cml="${src}/CMakeLists.txt"
+  [[ -z "${ref}" ]] && return 0   # gate degrades gracefully when the caller omits the ref
+  if ! grep -Eq "^[[:space:]]*set\(${var} [^)]+\)" "${cml}"; then
+    echo "[xrce] ERROR (pin): '${var}' not found in the agent CMakeLists.txt — upstream superbuild" >&2
+    echo "[xrce]   layout changed; cannot pin it to the immutable tag '${ref}'. Refusing to build a" >&2
+    echo "[xrce]   moving branch. Re-check the agent ${VERSION} superbuild and update this script." >&2
+    return 1
+  fi
+  sed -i -E "s|^([[:space:]]*set\()${var} [^)]+(\).*)$|\1${var} ${ref}\2|" "${cml}"
+  grep -Eq "^[[:space:]]*set\(${var} ${ref}\)" "${cml}" || {
+    echo "[xrce] ERROR (pin): failed to rewrite '${var}' to '${ref}' in the agent CMakeLists.txt." >&2
+    return 1
+  }
+  echo "[xrce] OK (pin): superbuild ${var} pinned to immutable tag '${ref}'." >&2
+}
+pin_superbuild_tag "_fastcdr_tag" "${EXPECT_FASTCDR_REF:-}"
+pin_superbuild_tag "_fastdds_tag" "${EXPECT_FASTDDS_REF:-}"
+
 # PRE-BUILD supply-chain gate (Hermes Medium #1). The cmake superbuild fetches+builds the transitive
-# deps by upstream REF (Fast-CDR/Fast-DDS are MOVING branches), so a moved/compromised ref would
-# fetch+configure+BUILD that code before the post-build pin check below could catch it. Here we ask
+# deps by upstream REF (now pinned to immutable tags by pin_superbuild_tag above), so a retagged/
+# compromised ref would fetch+configure+BUILD that code before the post-build pin check below could
+# catch it. Here we ask
 # the REMOTE what each pinned ref resolves to RIGHT NOW (ls-remote fetches no code) and refuse to run
 # cmake at all if it no longer matches the manifest commit. Each EXPECT_<dep>_REF/_COMMIT is the
 # manifest pin (stack-manifest.toml [bridge]); a dep with an empty ref OR commit is skipped.
@@ -81,8 +109,8 @@ cmake --build "${src}/build" -j"$(nproc)"
 # Belt-and-suspenders with the pre-build gate above: this closes the TOCTOU window (the ref could move
 # between ls-remote and the superbuild's actual fetch) and catches the superbuild fetching a different
 # ref than we pre-verified — by comparing the ACTUALLY checked-out HEAD to the manifest pin. The cmake
-# superbuild fetches Fast-CDR/Fast-DDS/foonathan_memory/spdlog by upstream ref (two are MOVING
-# branches) and installs their .so into /usr/local; an unpinned ref could change installed code
+# superbuild fetches Fast-CDR/Fast-DDS/foonathan_memory/spdlog by upstream ref (all four now pinned to
+# immutable tags) and installs their .so into /usr/local; a retagged ref could change installed code
 # without tripping manifest drift. Each EXPECT_<dep>_COMMIT is the manifest pin (stack-manifest.toml
 # [bridge]); empty = not pinned -> skipped. A dep satisfied by a system package is not fetched (no
 # checkout) and is skipped with a note. Fail CLOSED on a mismatch — we've built but refuse to install.
