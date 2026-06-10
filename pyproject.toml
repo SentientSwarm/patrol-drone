@@ -58,7 +58,7 @@ exclude = [
     "^tests/integration/",             # live ROS env — Layer B / nightly only
     "^tests/replay/",
 ]
-# mypy_path = "ros2_ws/src/patrol_mission"   # enable at M3 so `import patrol_mission` resolves
+mypy_path = "ros2_ws/src/patrol_mission"   # M3: so `import patrol_mission` resolves for mypy
 
 # Tighten the ROS-free mission core (highest bug risk).
 [[tool.mypy.overrides]]
@@ -79,6 +79,8 @@ module = [
     "patrol_interfaces", "patrol_interfaces.*",
     "rosidl_runtime_py", "rosidl_runtime_py.*",
     "ament_index_python", "ament_index_python.*",
+    "launch", "launch.*",
+    "launch_ros", "launch_ros.*",
     "setuptools", "setuptools.*",      # every ament_python package's setup.py imports it (no stubs on Layer A)
 ]
 ignore_missing_imports = true

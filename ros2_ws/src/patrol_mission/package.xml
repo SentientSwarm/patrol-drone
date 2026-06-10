@@ -1,20 +1,23 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
 <package format="3">
-  <name>patrol_bringup</name>
+  <name>patrol_mission</name>
   <version>0.1.0</version>
   <description>
-    Launch files, configs, and params for the patrol-drone mission stack.
-    M2 ships this as an empty-but-buildable ament_python shell (design 01-platform C7);
-    02-mission-control (M3+) lands mission_basic.launch.py / mission_patrol.launch.py here.
+    Mission orchestration for the patrol-drone stack (docset 02-mission-control).
+    Hosts the ROS-free MissionStateMachine / FrameConversion / MissionConfig
+    decision layer and the thin PatrolMissionNode rclpy plumbing that drives PX4
+    offboard control over uXRCE-DDS. M3 lands the basic mission (arm/takeoff/
+    hover/land); M4 adds patrol/waypoints/abort.
   </description>
   <maintainer email="egemencankaya14@gmail.com">Egemen Cankaya</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <exec_depend>patrol_mission</exec_depend>
-  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>px4_msgs</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
