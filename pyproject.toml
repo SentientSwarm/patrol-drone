@@ -101,6 +101,11 @@ branch = true
 # Path-based source aligns with the M3 pytest pythonpath above; may switch to
 # source_pkgs = ["patrol_mission"] once an editable install lands (M3 spike).
 source = ["ros2_ws/src/patrol_mission/patrol_mission"]
+# T1.7 coverage-source resolution (design §4.4.4): node.py is the rclpy plumbing layer
+# (imports rclpy/px4_msgs) — it cannot run on the ROS-free Layer-A runner and is covered by
+# the SITL integration test (AC-5), not the unit suite. Omitting it keeps the ≥85% gate scoped
+# to the three rclpy-free modules {state_machine, frames, config} the gate is meant to guard.
+omit = ["ros2_ws/src/patrol_mission/patrol_mission/node.py"]
 
 [tool.coverage.report]
 show_missing = true
