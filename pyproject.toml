@@ -88,7 +88,7 @@ minversion = "9.0"
 testpaths = ["tests/unit"]
 norecursedirs = ["tests/integration", "tests/replay", "ros2_ws/src/external"]
 addopts = "-ra --strict-markers --strict-config"
-# pythonpath = ["ros2_ws/src/patrol_mission"]   # enable at M3 so `import patrol_mission` works
+pythonpath = ["ros2_ws/src/patrol_mission"]   # M3: makes `import patrol_mission` work for Layer-A unit tests
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
 ]
