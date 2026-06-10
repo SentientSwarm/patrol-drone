@@ -14,7 +14,8 @@ The deliverable of the current phase is **software, not flight time**. Hardware 
 
 - **M1 — toolchain installed, vanilla SITL flying. ✅ COMPLETE.** `make px4_sitl gz_x500` builds and launches, x500 spawns in Gazebo (NVIDIA-accelerated), QGC connects, and the exit criterion was met: stable 60 s hover via QGC Takeoff, then land.
 - M2 — ROS 2 Jazzy + uXRCE-DDS bridge (PX4 topics visible in ROS 2). **In progress** (`phase1/m2-bridge-bringup`): `px4_msgs`/`px4_ros_com` vendored, `patrol_*` shells + green `colcon build`, `sim`/`dev` containers + compose. Spike finding [ADR-0007](docs/decisions/0007-uxrce-dds-agent-from-source.md): the Micro XRCE-DDS Agent is built from source (no Jazzy apt package).
-- M3–M8 — Python mission node → multi-waypoint patrol → custom world + AprilTags → perception/image capture → rosbag2/MCAP logging → bag→DGX→Foxglove replay. See the Phase 1 plan for per-milestone goals and exit tests.
+- M3 — Python mission node, takeoff and land. **In progress** (`phase1/m3-mission-node`, stacked on M2): the ROS-free `MissionStateMachine` (hand-rolled, OQ-1) + `FrameConversion` (single ENU↔NED site, MC-7) + `MissionConfig` (fail-loud YAML) under `patrol_mission`, with a `PatrolMissionNode` driving PX4 offboard at 10 Hz over `/fmu/*` (keepalive per A-2) and `ros2 launch patrol_bringup mission_basic.launch.py`. Layer-A unit suite ≥85% (currently 100%) in <5 s with no ROS; the basic-mission SITL integration test runs in the nightly tier. Abort/waypoints/RTH are M4.
+- M4–M8 — multi-waypoint patrol → custom world + AprilTags → perception/image capture → rosbag2/MCAP logging → bag→DGX→Foxglove replay. See the Phase 1 plan for per-milestone goals and exit tests.
 
 Current branch convention: `phase1/m<n>-<slug>` (e.g. `phase1/m1-host-setup`), PR'd into `main`.
 
