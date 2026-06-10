@@ -6,22 +6,31 @@ executable consumers (setup script, Dockerfile) and the human-facing summaries (
 CLAUDE.md). This guard enforces that contract in CI:
 
   1. px4_msgs_ref sits on px4_version's release line     (Hermes Medium #1)
-  2. setup_phase1.sh derives versions, hardcodes none     (Hermes Medium #3)
+  2. setup_phase1.sh derives versions, hardcodes none     (Hermes Medium #3; incl. bridge agent + mcap)
   3. docker/sim/Dockerfile ARGs carry no version defaults  (Hermes Medium #3)
   4. README "Stack at a glance" carries no stale PX4 pin    (Hermes Low #1)
   5. CLAUDE.md summary table agrees with the manifest       (ADR-0004)
+  6. Dockerfile command bodies carry no hardcoded version/distro literals (round-3 Medium #1)
 
 Exit 0 = clean; exit 1 = drift, with one line per problem.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Vendored upstream subtrees (committed, not fetched) and their manifest tree-hash keys.
+VENDOR_TREES = {
+    "ros2_ws/src/external/px4_msgs": "px4_msgs_tree_sha",
+    "ros2_ws/src/external/px4_ros_com": "px4_ros_com_tree_sha",
+}
 
 
 def load_manifest(repo_root: Path) -> dict:
@@ -57,6 +66,18 @@ DERIVED_VARS = {
     "ROS_DISTRO": "middleware.ros_distro",
     "ROS_APT_SOURCE_VERSION": "ros_apt_source.version",
     "ROS_APT_SOURCE_SHA256": "ros_apt_source.sha256",
+    "UXRCE_AGENT_SOURCE": "bridge.uxrce_dds_agent_source",
+    "UXRCE_AGENT_VERSION": "bridge.uxrce_dds_agent_version",
+    "UXRCE_AGENT_COMMIT": "bridge.uxrce_dds_agent_commit",
+    "UXRCE_FASTCDR_REF": "bridge.uxrce_fastcdr_ref",
+    "UXRCE_FASTCDR_COMMIT": "bridge.uxrce_fastcdr_commit",
+    "UXRCE_FASTDDS_REF": "bridge.uxrce_fastdds_ref",
+    "UXRCE_FASTDDS_COMMIT": "bridge.uxrce_fastdds_commit",
+    "UXRCE_FOONATHAN_REF": "bridge.uxrce_foonathan_memory_ref",
+    "UXRCE_FOONATHAN_COMMIT": "bridge.uxrce_foonathan_memory_commit",
+    "UXRCE_SPDLOG_REF": "bridge.uxrce_spdlog_ref",
+    "UXRCE_SPDLOG_COMMIT": "bridge.uxrce_spdlog_commit",
+    "MCAP_PLUGIN": "bags.mcap_plugin",
     "UV_VERSION": "tools.uv_version",
     "UV_TARBALL_SHA256": "tools.uv_tarball_sha256",
     "QGC_VERSION": "apps.qgc_version",
@@ -90,13 +111,196 @@ def check_setup_derives(repo_root: Path) -> list[str]:
     return problems
 
 
+# Every ARG the Dockerfiles inject from the manifest (via gen_build_args.py) — none may carry a
+# default, or the image could silently reintroduce a duplicated version literal (ADR-0004/0005/0006).
+# NB: scoped to this set on purpose — a non-version ARG with a legitimate default (e.g. the
+# OSRF_GPG_FPRS trust root in docker/sim/Dockerfile) is NOT a manifest value and must not be flagged.
+_MANIFEST_ARGS = (
+    "PX4_VERSION",
+    "PX4_COMMIT",
+    "ROS_BASE_IMAGE",
+    "GZ_VERSION",
+    "ROS_DISTRO",
+    "XRCE_AGENT_SOURCE",
+    "XRCE_AGENT_VERSION",
+    "XRCE_AGENT_COMMIT",
+    "XRCE_FASTCDR_REF",
+    "XRCE_FASTCDR_COMMIT",
+    "XRCE_FASTDDS_REF",
+    "XRCE_FASTDDS_COMMIT",
+    "XRCE_FOONATHAN_REF",
+    "XRCE_FOONATHAN_COMMIT",
+    "XRCE_SPDLOG_REF",
+    "XRCE_SPDLOG_COMMIT",
+)
+
+
 def check_dockerfile_no_defaults(repo_root: Path) -> list[str]:
-    text = (repo_root / "docker" / "sim" / "Dockerfile").read_text()
+    problems = []
+    for rel in ("docker/sim/Dockerfile", "docker/dev/Dockerfile"):
+        path = repo_root / rel
+        if not path.exists():
+            continue
+        text = path.read_text()
+        problems += [
+            f"{rel} pins ARG {arg} with a default; inject it from the manifest"
+            for arg in _MANIFEST_ARGS
+            if re.search(rf"^ARG {arg}=", text, re.MULTILINE)
+        ]
+    return problems
+
+
+# A hardcoded PX4 clone tag — `--branch v1.17.0` / `--tag=v1.16` — that should be `${PX4_VERSION}`.
+# Anchored to the clone-arg so an unrelated version-shaped token (a `pip==1.2.3`, a `/v2.0/` URL
+# path, a soname) is NOT misflagged as the PX4 pin.
+_PX4_BRANCH_LITERAL = re.compile(r"--(?:branch|tag)[ =]v\d+\.\d+")
+
+
+def _dockerfile_command_body(text: str) -> str:
+    """Dockerfile text with comments removed: full-line comments AND whitespace-preceded trailing
+    `# ...` comments. (A `#` not preceded by whitespace — e.g. `${VAR#x}`, `sha256:...` — is kept.)
+    """
+    lines = []
+    for line in text.splitlines():
+        if re.match(r"\s*#", line):
+            continue  # full-line comment
+        lines.append(re.sub(r"\s#.*$", "", line))  # drop a trailing ` # ...` comment
+    return "\n".join(lines)
+
+
+def _literals_in_dockerfile(rel: str, path: Path, forbidden) -> list[str]:
+    """Forbidden version/distro literals found in one Dockerfile's command body."""
+    body = _dockerfile_command_body(path.read_text())
     return [
-        f"docker/sim/Dockerfile pins ARG {arg} with a default; inject it from the manifest"
-        for arg in ("PX4_VERSION", "PX4_COMMIT", "ROS_BASE_IMAGE")
-        if re.search(rf"^ARG {arg}=", text, re.MULTILINE)
+        f"{rel} contains {label} in a command body; derive it from the manifest"
+        for pattern, label in forbidden
+        if pattern.search(body)
     ]
+
+
+def check_dockerfile_no_literals(repo_root: Path, manifest: dict) -> list[str]:
+    """Reject hardcoded version/distro literals in Dockerfile command bodies (not just ARG defaults).
+
+    The forbidden distro/simulator words are DERIVED from the manifest (not hardcoded), so the gate
+    self-updates when the ros_distro / gazebo pin changes instead of guarding stale tokens.
+    """
+    forbidden = (
+        (_PX4_BRANCH_LITERAL, "a hardcoded PX4 version (use ${PX4_VERSION})"),
+        (
+            re.compile(rf"\b{re.escape(manifest['middleware']['ros_distro'])}\b"),
+            "a hardcoded ROS distro (use ${ROS_DISTRO})",
+        ),
+        (
+            re.compile(rf"\b{re.escape(manifest['simulator']['gazebo'])}\b"),
+            "a hardcoded Gazebo version (use ${GZ_VERSION})",
+        ),
+    )
+    problems = []
+    for rel in ("docker/sim/Dockerfile", "docker/dev/Dockerfile"):
+        path = repo_root / rel
+        if path.exists():
+            problems += _literals_in_dockerfile(rel, path, forbidden)
+    return problems
+
+
+# ROS 2 distro codenames — lets the gate reject a *hardcoded* distro package in a Dockerfile command
+# body even when it isn't the current manifest distro (the manifest-word check only catches the
+# current one, leaving `ros-humble-…` as a blind spot — Hermes Medium #8).
+_ROS2_DISTROS = ("foxy", "galactic", "humble", "iron", "jazzy", "kilted", "rolling")
+_ROS_DISTRO_LITERAL = re.compile(rf"ros-(?:{'|'.join(_ROS2_DISTROS)})-")
+
+# A Gazebo metapackage pinned to a literal release (gz-fortress, gz-harmonic, …) instead of the
+# gz-${GZ_VERSION} variable. Value-agnostic, so a *wrong* version (gz-fortress) is caught too — the
+# specific blind spot Hermes flagged (`gz-${GZ_VERSION}` → `gz-fortress` stayed green). The
+# (?<!ros-) lookbehind exempts the ROS `ros-gz-*` integration metapackages (ros-gz-bridge/-image/
+# -sim), whose `gz-` substring is NOT a Gazebo version pin — without it an M3+ Dockerfile line like
+# `ros-${ROS_DISTRO}-ros-gz-bridge` would false-positive (Hermes Medium #1, latent today).
+_GZ_LITERAL = re.compile(r"(?<!ros-)gz-(?!\$\{GZ_VERSION\})[a-z]")
+
+
+def check_dockerfile_hardcoded_alternatives(repo_root: Path) -> list[str]:
+    """Reject hardcoded Gazebo/ROS-distro *alternatives*, not only the current manifest token.
+
+    The existing manifest-word guard catches a literal of the CURRENT pin (e.g. `harmonic`); this
+    closes the complementary gap where a literal *wrong* value (`gz-fortress`, `ros-humble-…`) slips
+    through because it is not the guarded token (Hermes Medium #8).
+    """
+    problems = []
+    for rel in ("docker/sim/Dockerfile", "docker/dev/Dockerfile"):
+        path = repo_root / rel
+        if not path.exists():
+            continue
+        body = _dockerfile_command_body(path.read_text())
+        if _GZ_LITERAL.search(body):
+            problems.append(f"{rel} pins a literal Gazebo metapackage; use gz-${{GZ_VERSION}}")
+        if _ROS_DISTRO_LITERAL.search(body):
+            problems.append(f"{rel} pins a literal ROS distro package; use ros-${{ROS_DISTRO}}-…")
+    return problems
+
+
+def _vendor_tree_sha(repo_root: Path, rel: str) -> str | None:
+    """sha256 of `git ls-files -s <rel>` (file mode + git blob SHA + path per tracked file).
+
+    Deterministic and offline — reuses git's own content-addressed blob hashes. None when the path
+    has no git-tracked files (so the caller can flag a missing/empty vendored subtree).
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-files", "-s", rel],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout:
+        return None
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def check_vendor_provenance(repo_root: Path, manifest: dict) -> list[str]:
+    """Verify each vendored subtree's content fingerprint against its manifest pin (Hermes Medium #5).
+
+    The *_commit pins in [flight_stack] only *document* upstream provenance; this recomputes a
+    tree-hash over the committed copy and compares, so any local edit to the vendored upstream source
+    trips CI offline instead of drifting silently from its stated provenance.
+    """
+    flight = manifest["flight_stack"]
+    problems = []
+    for rel, key in VENDOR_TREES.items():
+        expected = flight.get(key)
+        if not expected:
+            problems.append(
+                f"stack-manifest.toml [flight_stack] is missing vendor tree hash {key!r}"
+            )
+            continue
+        actual = _vendor_tree_sha(repo_root, rel)
+        if actual is None:
+            problems.append(f"vendored subtree {rel} has no git-tracked files to fingerprint")
+        elif actual != expected:
+            problems.append(
+                f"vendored subtree {rel} drifted from its recorded provenance: "
+                f"tree sha {actual} != manifest {key}={expected}"
+            )
+    return problems
+
+
+def check_workflow_distro(repo_root: Path, manifest: dict) -> list[str]:
+    """ROS CI's `target-ros2-distro` must equal the manifest ROS distro (Hermes round-3 Medium #1).
+
+    The required ROS CI is a manifest consumer like the setup script and Dockerfiles: a distro bump
+    in stack-manifest.toml must flow here too, or CI would keep building the old distro while the
+    rest of the toolchain moved.
+    """
+    path = repo_root / ".github" / "workflows" / "ros-ci.yml"
+    if not path.exists():
+        return [".github/workflows/ros-ci.yml is missing"]
+    expected = manifest["middleware"]["ros_distro"]
+    match = re.search(r"^\s*target-ros2-distro:\s*(\S+)", path.read_text(), re.MULTILINE)
+    if not match:
+        return ["ros-ci.yml has no target-ros2-distro to validate against the manifest"]
+    actual = match.group(1).strip("\"'")
+    if actual != expected:
+        return [
+            f"ros-ci.yml target-ros2-distro={actual!r} != manifest middleware.ros_distro={expected!r}"
+        ]
+    return []
 
 
 def _stale_px4_tokens(text: str, release_line: str) -> list[str]:
@@ -135,6 +339,10 @@ def run_checks(repo_root: Path) -> list[str]:
     problems += check_px4_msgs_alignment(manifest)
     problems += check_setup_derives(repo_root)
     problems += check_dockerfile_no_defaults(repo_root)
+    problems += check_dockerfile_no_literals(repo_root, manifest)
+    problems += check_dockerfile_hardcoded_alternatives(repo_root)
+    problems += check_vendor_provenance(repo_root, manifest)
+    problems += check_workflow_distro(repo_root, manifest)
     problems += check_readme(repo_root, manifest)
     problems += check_claudemd(repo_root, manifest)
     return problems

@@ -6,8 +6,8 @@ manifest by this script, so an OQ-3 pin change in `stack-manifest.toml` flows in
 with no duplicated literal to update by hand.
 
 Usage:
-    docker build $(scripts/gen_build_args.py) --target px4-build -t patrol-sim:px4-build docker/sim
-    scripts/gen_build_args.py --env > docker/sim/.env   # KEY=VALUE form for `docker compose`
+    docker build $(scripts/gen_build_args.py) --target px4-build -t patrol-sim:px4-build .
+    scripts/gen_build_args.py --env > .env.build   # KEY=VALUE for `docker compose --env-file .env.build`
 """
 
 from __future__ import annotations
@@ -25,11 +25,29 @@ def build_args(manifest: dict) -> dict[str, str]:
     """Map manifest values to the Docker build ARGs the sim/dev images consume."""
     container = manifest["container"]
     flight = manifest["flight_stack"]
+    simulator = manifest["simulator"]
+    middleware = manifest["middleware"]
+    bridge = manifest["bridge"]
     ros_base = f"{container['ros_base_image']}@{container['ros_base_digest']}"
     return {
         "ROS_BASE_IMAGE": ros_base,
         "PX4_VERSION": flight["px4_version"],
         "PX4_COMMIT": flight["px4_commit"],
+        "GZ_VERSION": simulator["gazebo"],
+        "ROS_DISTRO": middleware["ros_distro"],
+        "XRCE_AGENT_SOURCE": bridge["uxrce_dds_agent_source"],
+        "XRCE_AGENT_VERSION": bridge["uxrce_dds_agent_version"],
+        "XRCE_AGENT_COMMIT": bridge["uxrce_dds_agent_commit"],
+        # Transitive superbuild dep pins — verified pre-build (ls-remote ref) AND post-build
+        # (checkout commit) by build_xrce_agent.sh (Hermes Medium #1). Both ref and commit flow through.
+        "XRCE_FASTCDR_REF": bridge["uxrce_fastcdr_ref"],
+        "XRCE_FASTCDR_COMMIT": bridge["uxrce_fastcdr_commit"],
+        "XRCE_FASTDDS_REF": bridge["uxrce_fastdds_ref"],
+        "XRCE_FASTDDS_COMMIT": bridge["uxrce_fastdds_commit"],
+        "XRCE_FOONATHAN_REF": bridge["uxrce_foonathan_memory_ref"],
+        "XRCE_FOONATHAN_COMMIT": bridge["uxrce_foonathan_memory_commit"],
+        "XRCE_SPDLOG_REF": bridge["uxrce_spdlog_ref"],
+        "XRCE_SPDLOG_COMMIT": bridge["uxrce_spdlog_commit"],
     }
 
 
@@ -38,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--env",
         action="store_true",
-        help="emit KEY=VALUE lines (for docker/sim/.env) instead of --build-arg flags",
+        help="emit KEY=VALUE lines (for .env.build) instead of --build-arg flags",
     )
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
     args = parser.parse_args(argv)

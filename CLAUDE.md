@@ -13,7 +13,7 @@ The deliverable of the current phase is **software, not flight time**. Hardware 
 8-phase plan; we are in **Phase 1 — pre-hardware simulation foundation** (no hardware yet). Phase 1 has 8 milestones (M1–M8), each ~a week, strictly ordered — each produces an artifact the next consumes. **Do not skip ahead.**
 
 - **M1 — toolchain installed, vanilla SITL flying. ✅ COMPLETE.** `make px4_sitl gz_x500` builds and launches, x500 spawns in Gazebo (NVIDIA-accelerated), QGC connects, and the exit criterion was met: stable 60 s hover via QGC Takeoff, then land.
-- M2 — ROS 2 Jazzy + uXRCE-DDS bridge (PX4 topics visible in ROS 2). **Not started.**
+- M2 — ROS 2 Jazzy + uXRCE-DDS bridge (PX4 topics visible in ROS 2). **In progress** (`phase1/m2-bridge-bringup`): `px4_msgs`/`px4_ros_com` vendored, `patrol_*` shells + green `colcon build`, `sim`/`dev` containers + compose. Spike finding [ADR-0007](docs/decisions/0007-uxrce-dds-agent-from-source.md): the Micro XRCE-DDS Agent is built from source (no Jazzy apt package).
 - M3–M8 — Python mission node → multi-waypoint patrol → custom world + AprilTags → perception/image capture → rosbag2/MCAP logging → bag→DGX→Foxglove replay. See the Phase 1 plan for per-milestone goals and exit tests.
 
 Current branch convention: `phase1/m<n>-<slug>` (e.g. `phase1/m1-host-setup`), PR'd into `main`.
@@ -27,9 +27,9 @@ The **canonical pinned stack manifest is [`stack-manifest.toml`](stack-manifest.
 | OS | Ubuntu 24.04 LTS (Noble) | 24.04.4 LTS ✓ |
 | Middleware | ROS 2 Jazzy Jalisco (LTS; `ros-jazzy-desktop`) | by `setup_phase1.sh` (re-run pending on this host) |
 | Build tool | colcon (`python3-colcon-common-extensions`, ROS 2 Jazzy apt) | by `setup_phase1.sh`; in-workspace `colcon build` is M2 work |
-| Flight stack | PX4-Autopilot **v1.17.0** (`px4_msgs` **release/1.17**) — latest stable; **provisional pin pending [OQ-3](docs/phase1/01-platform/prd.md)** (the exact tag + matching `px4_msgs` branch settle in the M1–M2 integration spike) | **v1.17.0** at `~/PX4-Autopilot` ✓ |
+| Flight stack | PX4-Autopilot **v1.17.0** (`px4_msgs` **release/1.17**) — latest stable; **[OQ-3](docs/phase1/01-platform/prd.md) resolved at M2**: pin proven by the green `colcon build` + live bridge; `px4_msgs`/`px4_ros_com` vendored under `ros2_ws/src/external/` | **v1.17.0** at `~/PX4-Autopilot` ✓; vendored msgs build green ✓ |
 | Simulator | Gazebo Harmonic (gz-sim 8.x) | gz sim 8.11.0 ✓ |
-| PX4↔ROS 2 bridge | uXRCE-DDS — Micro XRCE-DDS Agent (`ros-jazzy-micro-xrce-dds-agent`, ROS 2 apt; matches the sim container), native (**not MAVROS**) | agent by `setup_phase1.sh`; bridge proven in M2 |
+| PX4↔ROS 2 bridge | uXRCE-DDS — Micro XRCE-DDS Agent (**built from source** at the pinned eProsima tag; no Jazzy apt package — [ADR-0007](docs/decisions/0007-uxrce-dds-agent-from-source.md)), native (**not MAVROS**) | agent built by `setup_phase1.sh` (host) + the sim container; bridge proven in M2 |
 | Mission orchestration | Python 3.12 | 3.12.3 ✓ |
 | Bags | rosbag2 + **MCAP** plugin (`ros-jazzy-rosbag2-storage-mcap`; sqlite is legacy) | plugin by `setup_phase1.sh`; M7 work |
 | Visualization | Foxglove Studio (desktop) | by `setup_phase1.sh`; M8 work |

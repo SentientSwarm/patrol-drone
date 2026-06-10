@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>patrol_interfaces</name>
+  <version>0.1.0</version>
+  <description>
+    Custom messages/services/actions for the patrol-drone stack. M2 ships this as an
+    empty-but-buildable ament_cmake IDL-host shell (design 01-platform C8). The CheckpointCapture
+    message fields are owned by 04-perception (M6, OQ-8) — this shell defines no fields, only the
+    landing slot and the dependencies that message will need so 04's drop-in is a one-file add.
+  </description>
+  <maintainer email="egemencankaya14@gmail.com">Egemen Cankaya</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <!-- Dependencies the OQ-8 CheckpointCapture message will need (04 drops the .msg in). -->
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

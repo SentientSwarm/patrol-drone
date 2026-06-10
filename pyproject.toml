@@ -79,6 +79,7 @@ module = [
     "patrol_interfaces", "patrol_interfaces.*",
     "rosidl_runtime_py", "rosidl_runtime_py.*",
     "ament_index_python", "ament_index_python.*",
+    "setuptools", "setuptools.*",      # every ament_python package's setup.py imports it (no stubs on Layer A)
 ]
 ignore_missing_imports = true
 

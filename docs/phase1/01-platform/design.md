@@ -1,8 +1,8 @@
 # Platform & Simulation Foundation — System Design Working Document
 
 **Status:** Approved (combined review 2026-06-03; bootstrapped to Linear)
-**Version:** 0.3.0
-**Date:** 2026-06-03
+**Version:** 0.4.2
+**Date:** 2026-06-07
 **Projects:** Autonomous Drone Patrol — Phase 1 Docset 01 (Platform & Simulation Foundation)
 **Authors:** jxstanford@wemodulate.energy (solo dev / DRI)
 
@@ -228,32 +228,42 @@ Every C1–C10 inventory row appears as a node above; every node traces back to 
 **Location:** `docker/sim/Dockerfile`, `docker/sim/entrypoint.sh`
 **Dependencies:** C9 (version pins), C6 (vendored messages built into the workspace), C5 (the workspace)
 
-Multi-stage Dockerfile (OQ-2 resolution: build-from-source, slim runtime):
+Multi-stage Dockerfile (OQ-2 resolution: build PX4 + the bridge agent from source). As-built per
+the M2 integration spike (see the v0.4.1 / v0.4.0 changelog and [ADR-0007](../../decisions/0007-uxrce-dds-agent-from-source.md)) — the
+runtime stage derives `FROM px4-build` (not a slim `${ROS_BASE_IMAGE}` copy) because the entrypoint's
+`make px4_sitl gz_x500` and the agent's cmake superbuild both need the PX4 source + toolchain at
+runtime; the slim-runtime image-size optimization is deferred to MZ (§6.5). All version literals are
+manifest-injected ARGs (no defaults) via `scripts/gen_build_args.py` — the snippet shows `${VAR}`s:
 
 ```dockerfile
 # ── Stage 1: px4-build ───────────────────────────────────────────────
 # Pinned base (C9: ros_distro=jazzy → osrf/ros:jazzy-desktop on Ubuntu 24.04)
 FROM ${ROS_BASE_IMAGE} AS px4-build
 ARG PX4_VERSION            # C9: px4_version (OQ-3 edit point)
+ARG GZ_VERSION             # C9: gazebo (installed BEFORE the px4 build so gz_bridge compiles in)
+RUN apt-get update && apt-get install -y --no-install-recommends "gz-${GZ_VERSION}"
 RUN git clone --recurse-submodules --branch ${PX4_VERSION} \
         https://github.com/PX4/PX4-Autopilot.git /opt/PX4-Autopilot \
  && bash /opt/PX4-Autopilot/Tools/setup/ubuntu.sh --no-nuttx \
  && make -C /opt/PX4-Autopilot px4_sitl gz_x500   # compiles SITL + gz target
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────
-FROM ${ROS_BASE_IMAGE} AS runtime
-ARG GZ_VERSION             # C9: gazebo=harmonic
-# Gazebo Harmonic + Micro XRCE-DDS Agent + headless software-render deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        gz-${GZ_VERSION} \
-        ros-jazzy-micro-xrce-dds-agent \
-        mesa-utils libgl1-mesa-dri \              # llvmpipe software render
+# FROM px4-build (NOT a slim base): the launch path + agent superbuild need PX4 source + toolchain.
+FROM px4-build AS runtime
+ARG ROS_DISTRO
+ARG XRCE_AGENT_SOURCE      # C9: bridge.* — agent pin + transitive (Fast-DDS/Fast-CDR/…) commit pins
+ARG XRCE_AGENT_VERSION
+ARG XRCE_AGENT_COMMIT
+# Micro XRCE-DDS Agent — built FROM SOURCE at the pinned eProsima tag (ADR-0007): there is NO
+# `ros-${ROS_DISTRO}-micro-xrce-dds-agent` apt package in the Jazzy repo. ONE recipe shared with the
+# host (scripts/build_xrce_agent.sh) so host + container agents can't drift; it verifies the agent +
+# transitive-dep commit pins post-fetch and records a commit marker under /usr/local/share.
+RUN apt-get update && apt-get install -y --no-install-recommends mesa-utils libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
-# Copy only the built SITL artifacts from the build stage (no source toolchain)
-COPY --from=px4-build /opt/PX4-Autopilot/build /opt/PX4-Autopilot/build
-COPY --from=px4-build /opt/PX4-Autopilot/Tools /opt/PX4-Autopilot/Tools
+COPY scripts/build_xrce_agent.sh /tmp/build_xrce_agent.sh
+RUN bash /tmp/build_xrce_agent.sh "${XRCE_AGENT_SOURCE}" "${XRCE_AGENT_VERSION}" "${XRCE_AGENT_COMMIT}"
 COPY ros2_ws /opt/ros2_ws
-RUN . /opt/ros/jazzy/setup.sh && colcon build --base-paths /opt/ros2_ws
+RUN . "/opt/ros/${ROS_DISTRO}/setup.sh" && colcon build --base-paths /opt/ros2_ws
 COPY docker/sim/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 ```
@@ -364,17 +374,19 @@ services:
 **Location:** `docker/sim/entrypoint.sh` (process start); contract documented in C10 README + this section.
 **Dependencies:** C1 (host process), C6 (the `px4_msgs` types the topics carry)
 
-Owned topic contract (the surface 02/05 build against):
+Owned topic contract (the surface 02/05 build against). As-built (M2 spike): PX4 v1.17 advertises the
+topics with a message-version suffix `_v1` — M3/02 must subscribe to the `_v1` names (27 `/fmu/out/*`,
+38 addressable `/fmu/in/*` measured live):
 
 | Topic | Type (`px4_msgs/…`) | Direction | Rate | Consumer |
 |-------|---------------------|-----------|------|----------|
-| `/fmu/out/vehicle_local_position` | `VehicleLocalPosition` | PX4→ROS 2 | steady ~50 Hz (PX4 SITL default) over 60 s | 02 (offboard), 05 (record) |
-| `/fmu/out/vehicle_status` | `VehicleStatus` | PX4→ROS 2 | event/periodic | 02, 05 |
-| `/fmu/out/battery_status` | `BatteryStatus` | PX4→ROS 2 | periodic | 02 (low-battery abort), 05 |
-| `/fmu/out/*` (full set) | various `px4_msgs/*` | PX4→ROS 2 | per topic | 05 (broad record) |
-| `/fmu/in/*` (e.g. `vehicle_command`, `offboard_control_mode`, `trajectory_setpoint`) | various `px4_msgs/*` | ROS 2→PX4 | command-driven | 02 (offboard control) |
+| `/fmu/out/vehicle_local_position_v1` | `VehicleLocalPosition` | PX4→ROS 2 | steady 50.0 Hz (PX4 SITL default) over 60 s | 02 (offboard), 05 (record) |
+| `/fmu/out/vehicle_status_v1` | `VehicleStatus` | PX4→ROS 2 | event/periodic | 02, 05 |
+| `/fmu/out/battery_status_v1` | `BatteryStatus` | PX4→ROS 2 | periodic | 02 (low-battery abort), 05 |
+| `/fmu/out/*_v1` (full set) | various `px4_msgs/*` | PX4→ROS 2 | per topic | 05 (broad record) |
+| `/fmu/in/*_v1` (e.g. `vehicle_command`, `offboard_control_mode`, `trajectory_setpoint`) | various `px4_msgs/*` | ROS 2→PX4 | command-driven | 02 (offboard control) |
 
-Transport: UDP-localhost (`udp4 -p 8888`); the PX4-side `uxrce_dds_client` auto-starts in SITL (A1). The platform's only acceptance obligation (PLAT-2) is that `ros2 topic list | grep fmu` returns the topics and `/fmu/out/vehicle_local_position` holds a steady ~50 Hz over a 60 s window, with `/fmu/in/*` present and addressable.
+Transport: UDP-localhost (`udp4 -p 8888`); the PX4-side `uxrce_dds_client` auto-starts in SITL (A1). The platform's only acceptance obligation (PLAT-2) is that `ros2 topic list | grep fmu` returns the topics and `/fmu/out/vehicle_local_position_v1` holds a steady 50.0 Hz over a 60 s window, with `/fmu/in/*` present and addressable.
 
 **Failure mode (the #1 stage failure):** if `ros2 topic list | grep fmu` returns nothing, the agent or `uxrce_dds_client` is down — detection and recovery are in §4.4.5.
 
@@ -900,6 +912,8 @@ MZ adds no new platform capability; it absorbs work surfaced during M1–M2 that
 | Pin exact PX4 v1.16.x tag + matching `px4_msgs` branch (OQ-3 spike) | §2 OQ-3; COMBINED-REVIEW #10 | Settled by the M1–M2 integration spike (falsification gate for H2); retrofit the manifest (C9) `px4_version`/`px4_msgs_ref` + docs |
 | Finalize the ≤20-command README budget across docsets (OQ-6) | §2 OQ-6; COMBINED-REVIEW | Needs sibling (02–05) run-step counts; platform spine budgeted ≤12 — allocate the remainder |
 | e2e/integration test-suite expansion | DoD §4 AC-9; Linear MZ convention | Broaden the SITL/integration tier the `sim` container enables (owned by 02/05) without blocking platform |
+| Slim the `sim` runtime — drop the make-at-runtime launch path (`runtime FROM px4-build`) | Hermes R3 Low #3; §4.2.1 / v0.4.0 changelog | M2 derives the runtime from the build stage so the entrypoint's `make px4_sitl gz_x500` + agent superbuild have the toolchain; revisit a build/-only runtime to cut image size + attack surface |
+| Re-enable ROS-side tests/lint + coverage in ros-ci.yml | Hermes R3 (build-gate scope) | M2 ROS CI is a build-only gate (`skip-tests`); restore `colcon test` + a `coverage-ignore-pattern` once first-party packages carry real tests and a stable lint config (M3) |
 | Documentation + test consolidation (final true-up) | Linear MZ convention | Comprehensive final PRD/Design/DoD/README + test reconciliation |
 
 **Exit:** MZ reviewed and cleared, or items explicitly punted to Phase 2.
@@ -907,6 +921,79 @@ MZ adds no new platform capability; it absorbs work surfaced during M1–M2 that
 ---
 
 ## 7. Changelog
+
+### v0.4.2 — 2026-06-07 (M2 review true-up — Hermes round 3 + ROS CI build gate)
+
+**Milestone:** M2 review follow-ups on `phase1/m2-bridge-bringup`. No design-contract change:
+
+- **ROS CI is now a build gate** (`skip-tests` in `.github/workflows/ros-ci.yml`): `colcon build`
+  still compiles the whole workspace (the M2 proof), but premature ament lints on skeleton packages
+  (and a flaky `ament_xmllint` schema fetch + the container-pytest/`minversion` clash) no longer gate
+  the PR. ROS-side tests/lint/coverage re-enable at M3 (tracked in §6.5 MZ).
+- **Manifest-drift guard extended** (Hermes round-3): `target-ros2-distro` in ros-ci.yml is now
+  verified against `middleware.ros_distro`, and the ARG-defaults check spans both Dockerfiles and the
+  full manifest-injected ARG set.
+- **§6.5 MZ** gains explicit rows for the slim-runtime debt and the ROS-test re-enable; `sim` host
+  networking comment expanded to document it as an intentional, `sim`-scoped exception.
+
+### v0.4.1 — 2026-06-07 (M2 review true-up — Hermes round 2)
+
+**Milestone:** M2 review follow-ups on `phase1/m2-bridge-bringup`. The authoritative §4.2 sections
+were brought in line with the as-built contract *in place* (Hermes Medium #6), so a future
+contributor no longer reads a stale normative sketch:
+
+- **§4.2.1 Dockerfile** now shows the runtime stage `FROM px4-build` and the source-built XRCE agent
+  via `scripts/build_xrce_agent.sh` (was a slim `FROM ${ROS_BASE_IMAGE}` + `apt install
+  ros-jazzy-micro-xrce-dds-agent`). The v0.4.0 notes below remain as the historical *why*.
+- **§4.2.4 topic table** now names the `_v1`-suffixed topics PX4 v1.17 actually advertises
+  (`/fmu/out/vehicle_local_position_v1`, …) at the measured 50.0 Hz.
+- Supply-chain + bootstrap hardening landed alongside (no design-contract change): the agent's
+  transitive superbuild deps (Fast-DDS/Fast-CDR/foonathan/spdlog) are commit-pinned in
+  `stack-manifest.toml [bridge]` and verified post-fetch; a failed agent build is now fatal to host
+  setup (opt-out `--allow-missing-xrce`); the `dev` container dropped host networking; and the
+  manifest-drift guard gained a vendored-subtree tree-hash check + a value-agnostic Dockerfile
+  literal guard.
+
+**Codebase drift:** docs + scripts only; C1–C10 unchanged in substance.
+
+### v0.4.0 — 2026-06-05 (M2 implementation true-up)
+
+**Milestone:** M2 implemented on `phase1/m2-bridge-bringup`. Two design realities diverged from
+the v0.3.0 sketch during the integration spike. As of v0.4.1 the §4.2 sections are corrected in
+place; these notes are kept as the historical record of what changed and why:
+
+- **uXRCE-DDS Agent — built from source, not apt ([ADR-0007](../../decisions/0007-uxrce-dds-agent-from-source.md)).**
+  §4.2.1's `apt install ros-${ROS_DISTRO}-micro-xrce-dds-agent` does not exist: there is **no
+  `micro-xrce-dds-agent` package** in the ROS 2 Jazzy apt repo (verified on the host and in the
+  `osrf/ros:jazzy-desktop` base). The sim container and `setup_phase1.sh` now build the agent
+  from the pinned eProsima tag (`stack-manifest.toml [bridge]` — `uxrce_dds_agent_version`/
+  `_commit`, v3.0.1), the PX4-canonical method. The superbuild emits the binary in `build/`
+  with no top-level `install` target, so the binary + its `temp_install` shared libs are copied
+  into `/usr/local` + `ldconfig`. OQ-1 (agent as an in-container process) and the C4 topic
+  contract are unchanged.
+- **`sim` runtime stage derives `FROM px4-build`, not a slim `FROM ${ROS_BASE_IMAGE}` copy.**
+  `make px4_sitl gz_x500` (the entrypoint launch) needs the PX4 Makefile + source + build system
+  at runtime, which a build/+Tools/-only copy lacks; the agent's cmake superbuild also needs the
+  toolchain. Deriving from `px4-build` keeps launch correct-by-construction (identical to the
+  proven host path). The slim-runtime image-size optimization is deferred to MZ (§6.5).
+- **`gen_build_args.py` extended** to emit `GZ_VERSION`, `ROS_DISTRO`, `XRCE_AGENT_VERSION`,
+  `XRCE_AGENT_COMMIT` (per the §4.2.1 TODO / ADR-0006), so the runtime stage carries no version
+  literal. `docker/dev/Dockerfile`, `docker-compose.yml`, `.env.example`, and `.dockerignore`
+  landed as designed (C2/C3); compose reads `--env-file .env.build` to keep build args out of
+  the secret-bearing root `./.env`.
+- **C4 topic naming — `_v1` suffix (PX4 message versioning).** Proven against gz_x500 SITL, the
+  live topics carry the message-version suffix: `/fmu/out/vehicle_local_position_v1` (steady
+  **50.0 Hz** over the measured window), `/fmu/out/vehicle_status_v1`, `/fmu/out/battery_status_v1`,
+  etc. (27 `/fmu/out/*`, 38 addressable `/fmu/in/*`). The §4.2.4 contract table names the
+  unversioned topics; M3/02 must subscribe to the `_v1` names PX4 v1.17 actually advertises.
+- **OQ-3 resolved:** `v1.17.0` ↔ `px4_msgs release/1.17` proven by a green single `colcon build`
+  (host + in-container) over the vendored `px4_msgs`/`px4_ros_com` + the `patrol_*` shells, plus
+  a live `/fmu/*` bridge. Manifest status flipped DRAFT → FINAL; vendored commit SHAs recorded.
+  `px4_ros_com` has no upstream `release/1.17` branch (latest is `release/1.16` == `main`); it is
+  pinned to that commit.
+
+**Codebase drift:** implemented — see `phase1/m2-bridge-bringup`. No FR or component-inventory
+change (C1–C10 unchanged in substance); these are realization details + ADR-0007.
 
 ### v0.3.0 — 2026-06-03
 

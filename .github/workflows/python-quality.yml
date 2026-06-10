@@ -138,6 +138,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          # Vendored upstream scripts (eProsima px4_ros_com) are out of our control and not part
+          # of our shell surface — lint only first-party scripts.
+          ignore_paths: ros2_ws/src/external
 
   manifest-drift:
     # Enforces the ADR-0004 contract: stack-manifest.toml is the single source of truth and no
@@ -151,3 +155,18 @@ jobs:
           persist-credentials: false
       - name: Manifest drift gate
         run: python3 scripts/check_manifest_drift.py
+
+  xrce-pins:
+    # Network-only supply-chain gate: every pinned uXRCE-DDS git ref (agent + 4 transitive superbuild
+    # deps) must still resolve to its stack-manifest.toml [bridge] commit. Runs the SAME ls-remote
+    # check as build_xrce_agent.sh's pre-build gate, but standalone (no clone/compile), so a drifted
+    # or force-pushed upstream ref fails the PR — not only the nightly reviewer (Hermes High, 8b85069).
+    # Pure stdlib on the runner's python3.12 + git; needs network egress to GitHub.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: uXRCE transitive pin gate
+        run: python3 scripts/check_xrce_pins.py

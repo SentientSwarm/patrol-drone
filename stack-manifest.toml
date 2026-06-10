@@ -6,10 +6,13 @@
 # else. CLAUDE.md's "Stack (pinned)" table is a human-facing summary of this file
 # and must be kept in sync (see ADR-0004).
 #
-# Status: M1 DRAFT. Finalized at M2 (T2.7 / SWM-11). The px4_version / px4_msgs_ref
-# pair is the single edit point for OQ-3 — the exact PX4 tag + matching px4_msgs
-# branch are settled by the M1–M2 integration spike (tracked in MZ / §6.5), not
-# pinned on paper. Design reference: docs/phase1/01-platform/design.md §4.2.9 (C9).
+# Status: FINAL as of M2 (T2.7 / SWM-11). OQ-3 RESOLVED — the px4_version / px4_msgs_ref
+# pair is no longer provisional: the M1–M2 integration spike confirmed v1.17.0 ↔ release/1.17
+# as a known-good combination. Evidence: PX4 v1.17.0 (at px4_commit) installed on the host;
+# px4_msgs release/1.17 + px4_ros_com vendored and built green by a single `colcon build`
+# (all 4 workspace packages); live /fmu/* bridge proven against gz_x500 SITL. The
+# px4_version / px4_msgs_ref pair remains the single edit point should the pin ever move.
+# Design reference: docs/phase1/01-platform/design.md §4.2.9 (C9); OQ-3 tracked in MZ / §6.5.
 
 [os]
 ubuntu        = "24.04"                      # Noble Numbat (ADR-0001)
@@ -26,19 +29,60 @@ version = "1.2.0"
 sha256  = "0804d9b13db770eb87019be414cd78378835228ad5fa801fc88758596dd8f7e5"
 
 [flight_stack]
-px4_version   = "v1.17.0"                      # ← OQ-3 edit point. PROVISIONAL: host-installed
-                                               #   reality (latest stable); final pin from the M1–M2 spike.
+px4_version   = "v1.17.0"                      # ← OQ-3 edit point (FINAL). Latest stable; proven by M2.
 px4_commit    = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4"  # commit the v1.17.0 tag dereferences to;
-                                               #   setup_phase1.sh verifies HEAD matches this post-checkout.
-px4_msgs_ref  = "release/1.17"                 # ← OQ-3 edit point. PROVISIONAL: matched to px4_version's
-                                               #   release line (release/1.17 ↔ v1.17.0); final pair is the spike's output.
+                                               #   setup_phase1.sh + docker/sim/Dockerfile verify HEAD matches this.
+px4_msgs_ref  = "release/1.17"                 # ← OQ-3 edit point (FINAL). Matches px4_version's release
+                                               #   line (release/1.17 ↔ v1.17.0); built green at M2.
+# Exact commits of the vendored copies under ros2_ws/src/external/ (committed, not fetched at
+# build time — design C6/H3). Recorded for reproducibility; bump alongside px4_msgs_ref.
+px4_msgs_commit    = "86d8239e962f6939e05c3737784f60c02fa884db"  # px4_msgs @ release/1.17
+px4_ros_com_commit = "86e9aeb20e55a4673fa8a9f1c29ea06a6c5ad1af"  # px4_ros_com @ main (no release/1.17
+                                               #   branch cut upstream; main == release/1.16 at this commit)
+# Deterministic content fingerprint of each vendored subtree: sha256 of `git ls-files -s <path>`
+# (file mode + git blob SHA + path per tracked file). The drift checker (check_vendor_provenance)
+# recomputes and compares — so any local edit to the committed upstream copies trips CI offline,
+# enforcing the recorded provenance the *_commit pins above only document (Hermes Medium #5).
+# Regenerate alongside a deliberate px4_msgs_ref bump: git ls-files -s <path> | sha256sum.
+px4_msgs_tree_sha    = "71bb476465ab0519a9bfcef4b5cd0ccd35e1e63e0f5fbff2f9b7e2a4f8d9d252"
+px4_ros_com_tree_sha = "3dd5271afe558fb7ab176094d407005e5854374ce25d3379260a162699064a13"
 
 [simulator]
-gazebo        = "harmonic"                     # gz-sim 8.x (8.12.0 installed)
+gazebo        = "harmonic"                     # gz-sim 8.x (host patch version tracked in CLAUDE.md)
 
 [bridge]
-uxrce_dds     = "ros-jazzy-micro-xrce-dds-agent"  # Micro XRCE-DDS Agent via ROS 2 apt
-                                                  #   (matches the sim container + setup_phase1.sh; not MAVROS)
+# Micro XRCE-DDS Agent — the native PX4<->ROS 2 bridge (NOT MAVROS). M2 integration-spike
+# finding (ADR-0007): there is NO `ros-${ROS_DISTRO}-micro-xrce-dds-agent` apt package in the
+# ROS 2 Jazzy repo (verified on the host and in the osrf/ros:jazzy-desktop base). The agent is
+# built FROM SOURCE at a pinned eProsima tag — the PX4-canonical method. The sim container
+# (docker/sim/Dockerfile) and setup_phase1.sh both build this exact tag; both produce the
+# `MicroXRCEAgent` binary used by the bridge (`MicroXRCEAgent udp4 -p 8888`).
+uxrce_dds_agent_source  = "https://github.com/eProsima/Micro-XRCE-DDS-Agent.git"
+uxrce_dds_agent_version = "v3.0.1"
+uxrce_dds_agent_commit  = "155cfaaf8b7abac2e85d4a62d3649b09ace0be55"  # tag v3.0.1 dereferences here
+
+# Transitive deps the agent's CMake SUPERBUILD fetches, builds, and installs into /usr/local
+# (their .so files ship in the image). Upstream, the agent's cmake/CMakeLists.txt points Fast-DDS and
+# Fast-CDR at the MOVING branches `3.x` / `2.2.x` — so the superbuild fetch is non-reproducible and the
+# branch advancing breaks the pinned build (Hermes High, head 8b85069: `3.x` advanced dff5a82->9a31251
+# and the pre-build gate fail-closed). We pin ALL FOUR transitive deps to IMMUTABLE TAGS instead, and
+# build_xrce_agent.sh rewrites the agent's `_fastdds_tag`/`_fastcdr_tag` to these tags before configuring
+# (foonathan_memory/spdlog are already tags upstream) — so the superbuild fetches exactly these commits,
+# reproducibly. The tags match the agent v3.0.1's declared EXACT dep versions (Fast-DDS 3.1 -> latest
+# v3.1.x; Fast-CDR 2.2.4). REF + COMMIT are still verified by build_xrce_agent.sh at TWO points (Hermes
+# Medium #1): PRE-build via `git ls-remote <repo> <ref>` and POST-build via the checked-out HEAD, so a
+# force-pushed/retagged upstream cannot silently change built or installed code. A PR-CI job
+# (scripts/check_xrce_pins.py) runs the same ls-remote check so tampering/drift is caught before merge,
+# not only by the nightly reviewer. Re-capture all four when uxrce_dds_agent_version moves (use the dep
+# tags the new agent tag declares).
+uxrce_fastcdr_ref             = "v2.2.4"    # tag (immutable; agent v3.0.1 declares fastcdr 2.2.4 EXACT)
+uxrce_fastcdr_commit          = "c00d31c36375c3f4b5e0926d3046bfde5f63ff14"
+uxrce_fastdds_ref             = "v3.1.3"    # tag (immutable; latest v3.1.x — agent v3.0.1 declares fastdds 3.1)
+uxrce_fastdds_commit          = "111d2db89105abd1f707736e600e5a32779fa265"
+uxrce_foonathan_memory_ref    = "v0.7-3"    # tag
+uxrce_foonathan_memory_commit = "0f0775770fd1c506fa9c5ad566bd6ba59659db66"
+uxrce_spdlog_ref              = "v1.9.2"    # tag
+uxrce_spdlog_commit           = "eb3220622e73a4889eee355ffa37972b3cac3df5"
 
 [bags]
 mcap_plugin   = "rosbag2-storage-mcap"         # rosbag2 MCAP storage plugin (05 records; sqlite is legacy)

@@ -7,6 +7,7 @@ The module is loaded by path because scripts/ is intentionally not a Python pack
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,208 @@ def test_missing_derivations_flags_inlined_literal():
     assert len(problems) == 1
     assert "QGC_SHA256" in problems[0]
     assert "apps.qgc_sha256" in problems[0]
+
+
+def _write_sim_dockerfile(root: Path, contents: str) -> None:
+    sim = root / "docker" / "sim"
+    sim.mkdir(parents=True, exist_ok=True)
+    (sim / "Dockerfile").write_text(contents)
+
+
+# Minimal manifest the literal check derives its forbidden distro/sim words from.
+_LITERAL_MANIFEST = {"middleware": {"ros_distro": "jazzy"}, "simulator": {"gazebo": "harmonic"}}
+
+
+def test_dockerfile_literals_clean_when_args_used(tmp_path):
+    _write_sim_dockerfile(
+        tmp_path,
+        "ARG PX4_VERSION\n"
+        "RUN git clone --branch ${PX4_VERSION} https://example/PX4.git\n"
+        'RUN apt-get install -y "gz-${GZ_VERSION}" "ros-${ROS_DISTRO}-foo"\n',
+    )
+    assert drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST) == []
+
+
+def test_dockerfile_literals_clean_with_inline_comment_mentioning_tokens(tmp_path):
+    # Trailing inline comments mentioning harmonic / a version must NOT trip the gate.
+    _write_sim_dockerfile(
+        tmp_path,
+        'RUN apt-get install -y "gz-${GZ_VERSION}"   # the gz-harmonic metapackage, pinned v1.17.0\n'
+        "RUN git clone --branch ${PX4_VERSION} https://example/PX4.git   # jazzy-era PX4\n",
+    )
+    assert drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST) == []
+
+
+def test_dockerfile_literals_clean_for_unrelated_version_token(tmp_path):
+    # A non-PX4 version-shaped token (a pinned pip dep, a URL path) must NOT be misflagged.
+    _write_sim_dockerfile(
+        tmp_path,
+        "RUN pip install foo==1.2.3 && curl -fsSL https://example/v2.0/key.gpg -o /k.gpg\n",
+    )
+    assert drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST) == []
+
+
+def test_dockerfile_literals_flag_hardcoded_px4_branch(tmp_path):
+    _write_sim_dockerfile(
+        tmp_path,
+        "ARG PX4_VERSION\nRUN git clone --branch v9.99.0 https://example/PX4.git\n",
+    )
+    problems = drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST)
+    assert len(problems) == 1
+    assert "docker/sim/Dockerfile" in problems[0]
+    assert "PX4 version" in problems[0]
+
+
+def test_dockerfile_literals_flag_hardcoded_distro_and_sim(tmp_path):
+    _write_sim_dockerfile(
+        tmp_path,
+        'RUN apt-get install -y gz-harmonic "ros-jazzy-foo"\n',
+    )
+    problems = drift.check_dockerfile_no_literals(tmp_path, _LITERAL_MANIFEST)
+    assert any("ROS distro" in p for p in problems)
+    assert any("Gazebo version" in p for p in problems)
+
+
+# --- #8: hardcoded Gazebo/ROS-distro *alternatives* (not just the current manifest token) ----------
+
+
+def test_hardcoded_alternatives_clean_when_vars_used(tmp_path):
+    _write_sim_dockerfile(
+        tmp_path,
+        'RUN apt-get install -y "gz-${GZ_VERSION}" "ros-${ROS_DISTRO}-foo"\n',
+    )
+    assert drift.check_dockerfile_hardcoded_alternatives(tmp_path) == []
+
+
+def test_hardcoded_alternatives_flag_wrong_gazebo(tmp_path):
+    # The Hermes mutation probe: gz-${GZ_VERSION} -> gz-fortress must fail even though `fortress`
+    # is not the current manifest Gazebo word.
+    _write_sim_dockerfile(tmp_path, 'RUN apt-get install -y "gz-fortress"\n')
+    problems = drift.check_dockerfile_hardcoded_alternatives(tmp_path)
+    assert any("Gazebo metapackage" in p for p in problems)
+
+
+def test_hardcoded_alternatives_flag_wrong_ros_distro(tmp_path):
+    _write_sim_dockerfile(tmp_path, "RUN apt-get install -y ros-humble-rmw-cyclonedds-cpp\n")
+    problems = drift.check_dockerfile_hardcoded_alternatives(tmp_path)
+    assert any("ROS distro" in p for p in problems)
+
+
+def test_hardcoded_alternatives_allow_ros_gz_integration_metapackages(tmp_path):
+    # Hermes Medium #1: the ros-gz-* integration metapackages embed a `gz-` substring that is NOT a
+    # Gazebo version pin. The _GZ_LITERAL (?<!ros-) lookbehind must exempt them so a legitimate
+    # `ros-${ROS_DISTRO}-ros-gz-bridge` (M3+) does not false-positive as a hardcoded Gazebo metapackage.
+    _write_sim_dockerfile(
+        tmp_path,
+        'RUN apt-get install -y "ros-${ROS_DISTRO}-ros-gz-bridge" '
+        '"ros-${ROS_DISTRO}-ros-gz-image" "ros-${ROS_DISTRO}-ros-gz-sim"\n',
+    )
+    assert drift.check_dockerfile_hardcoded_alternatives(tmp_path) == []
+
+
+# --- #5: vendored-subtree provenance tree-hash guard ----------------------------------------------
+
+
+def _git(root: Path, *args: str) -> None:
+
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+def _init_repo_with_vendor(tmp_path: Path) -> Path:
+    """A throwaway git repo with one vendored file, committed so git ls-files can fingerprint it."""
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    vendored = tmp_path / "ros2_ws" / "src" / "external" / "px4_msgs"
+    vendored.mkdir(parents=True)
+    (vendored / "msg.idl").write_text("struct A { long x; };\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "vendor")
+    return tmp_path
+
+
+def test_vendor_provenance_passes_when_hash_matches(tmp_path):
+    root = _init_repo_with_vendor(tmp_path)
+    actual = drift._vendor_tree_sha(root, "ros2_ws/src/external/px4_msgs")
+    manifest = {"flight_stack": {"px4_msgs_tree_sha": actual, "px4_ros_com_tree_sha": "x"}}
+    # Only the px4_msgs subtree exists in this throwaway repo; px4_ros_com flags as untracked.
+    problems = drift.check_vendor_provenance(root, manifest)
+    assert all("px4_msgs/" not in p or "drifted" not in p for p in problems)
+    assert not any(
+        p.startswith("vendored subtree ros2_ws/src/external/px4_msgs drifted") for p in problems
+    )
+
+
+def test_vendor_provenance_flags_local_edit(tmp_path):
+    root = _init_repo_with_vendor(tmp_path)
+    good = drift._vendor_tree_sha(root, "ros2_ws/src/external/px4_msgs")
+    # Mutate + re-stage the vendored file: its git blob SHA changes -> tree hash changes.
+    (root / "ros2_ws/src/external/px4_msgs/msg.idl").write_text("struct A { long y; };\n")
+    _git(root, "add", "-A")
+    manifest = {"flight_stack": {"px4_msgs_tree_sha": good, "px4_ros_com_tree_sha": "x"}}
+    problems = drift.check_vendor_provenance(root, manifest)
+    assert any("px4_msgs drifted" in p for p in problems)
+
+
+def test_vendor_provenance_flags_missing_manifest_key(tmp_path):
+    root = _init_repo_with_vendor(tmp_path)
+    problems = drift.check_vendor_provenance(root, {"flight_stack": {}})
+    assert any("missing vendor tree hash" in p for p in problems)
+
+
+# --- R3-1: ROS CI target-ros2-distro must track the manifest ROS distro ---------------------------
+
+_DISTRO_MANIFEST = {"middleware": {"ros_distro": "jazzy"}}
+
+
+def _write_ros_ci(root: Path, distro_line: str) -> None:
+    wf = root / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "ros-ci.yml").write_text(f"jobs:\n  build:\n    with:\n      {distro_line}\n")
+
+
+def test_workflow_distro_clean_when_matching(tmp_path):
+    _write_ros_ci(tmp_path, "target-ros2-distro: jazzy")
+    assert drift.check_workflow_distro(tmp_path, _DISTRO_MANIFEST) == []
+
+
+def test_workflow_distro_flags_mismatch(tmp_path):
+    _write_ros_ci(tmp_path, "target-ros2-distro: humble")
+    problems = drift.check_workflow_distro(tmp_path, _DISTRO_MANIFEST)
+    assert len(problems) == 1
+    assert "humble" in problems[0]
+    assert "jazzy" in problems[0]
+
+
+# --- R3-2: ARG-defaults guard spans both Dockerfiles + the full manifest-injected ARG set ----------
+
+
+def _write_dockerfiles(root: Path, sim: str, dev: str) -> None:
+    (root / "docker" / "sim").mkdir(parents=True, exist_ok=True)
+    (root / "docker" / "dev").mkdir(parents=True, exist_ok=True)
+    (root / "docker" / "sim" / "Dockerfile").write_text(sim)
+    (root / "docker" / "dev" / "Dockerfile").write_text(dev)
+
+
+def test_no_defaults_clean_for_defaultless_args_and_nonmanifest_default(tmp_path):
+    # A non-manifest ARG with a legitimate default (a GPG trust root) must NOT be flagged.
+    _write_dockerfiles(
+        tmp_path,
+        'ARG PX4_VERSION\nARG GZ_VERSION\nARG OSRF_GPG_FPRS="ABC123"\n',
+        "ARG ROS_BASE_IMAGE\nARG ROS_DISTRO\n",
+    )
+    assert drift.check_dockerfile_no_defaults(tmp_path) == []
+
+
+def test_no_defaults_flags_defaulted_manifest_arg_in_either_dockerfile(tmp_path):
+    _write_dockerfiles(
+        tmp_path,
+        "ARG XRCE_FASTDDS_COMMIT=deadbeef\n",  # newly-guarded transitive pin ARG
+        "ARG ROS_DISTRO=jazzy\n",  # dev Dockerfile now covered
+    )
+    problems = drift.check_dockerfile_no_defaults(tmp_path)
+    assert any("docker/sim/Dockerfile" in p and "XRCE_FASTDDS_COMMIT" in p for p in problems)
+    assert any("docker/dev/Dockerfile" in p and "ROS_DISTRO" in p for p in problems)
 
 
 def test_live_repo_has_no_manifest_drift():
