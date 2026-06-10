@@ -57,6 +57,14 @@ exclude = [
     "^ros2_ws/src/external/",          # vendored px4_msgs / px4_ros_com
     "^tests/integration/",             # live ROS env — Layer B / nightly only
     "^tests/replay/",
+    # ament_python `setup.py` shims share the basename `setup` across packages, which mypy
+    # rejects as a duplicate module ("found twice under different module names"). They are
+    # trivial setuptools boilerplate (no first-party logic); exclude them from type-checking.
+    "^ros2_ws/src/[^/]+/setup\\.py$",
+    # Launch files are ROS-runtime wiring (no first-party logic) and import `launch`/`launch_ros`,
+    # which are not installed on the Layer-A runner. Like tests/integration, they belong to the
+    # live-ROS tier (verified by `colcon build` + the SITL nightly), not Layer-A type-checking.
+    "^ros2_ws/src/[^/]+/launch/.*\\.py$",
 ]
 mypy_path = "ros2_ws/src/patrol_mission"   # M3: so `import patrol_mission` resolves for mypy
 
@@ -82,6 +90,7 @@ module = [
     "launch", "launch.*",
     "launch_ros", "launch_ros.*",
     "setuptools", "setuptools.*",      # every ament_python package's setup.py imports it (no stubs on Layer A)
+    "yaml", "yaml.*",                  # PyYAML ships no PEP 561 stubs; system dep (design §3.5 row 6)
 ]
 ignore_missing_imports = true
 
