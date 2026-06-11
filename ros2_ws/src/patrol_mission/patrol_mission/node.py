@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
+from patrol_mission import topics
 from patrol_mission.config import load_mission_config
 from patrol_mission.frames import Point, to_ned_from_origin
 from patrol_mission.state_machine import Command, MissionState, MissionStateMachine, Telemetry
@@ -59,21 +60,18 @@ class PatrolMissionNode(Node):
             raise ValueError("parameter 'mission_yaml' is required (path to the mission YAML)")
         self._cfg = load_mission_config(mission_yaml)
 
-        # PX4 v1.17 advertises message-versioned topic names with a `_v1` suffix — M3/02 must
-        # use the `_v1` names (01-platform design §4.2.4, as-built M2 spike). The unversioned
-        # names from the vendored v1.16-era px4_ros_com example do NOT exist on this bridge.
+        # Topic names are the PX4 v1.17 `_v1`-suffixed contract, defined once in
+        # patrol_mission.topics (01-platform design §4.2.4) and pinned by a Layer-A test.
         qos = _px4_qos()
         self._pub_ctrl = self.create_publisher(
-            OffboardControlMode, "/fmu/in/offboard_control_mode_v1", qos
+            OffboardControlMode, topics.OFFBOARD_CONTROL_MODE, qos
         )
-        self._pub_sp = self.create_publisher(
-            TrajectorySetpoint, "/fmu/in/trajectory_setpoint_v1", qos
-        )
-        self._pub_cmd = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command_v1", qos)
+        self._pub_sp = self.create_publisher(TrajectorySetpoint, topics.TRAJECTORY_SETPOINT, qos)
+        self._pub_cmd = self.create_publisher(VehicleCommand, topics.VEHICLE_COMMAND, qos)
         self.create_subscription(
-            VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", self._on_pos, qos
+            VehicleLocalPosition, topics.VEHICLE_LOCAL_POSITION, self._on_pos, qos
         )
-        self.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", self._on_status, qos)
+        self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
 
         self._pos = VehicleLocalPosition()
         self._status = VehicleStatus()

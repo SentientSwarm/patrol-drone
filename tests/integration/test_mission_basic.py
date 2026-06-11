@@ -30,6 +30,8 @@ from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
+from patrol_mission import topics
+
 pytestmark = pytest.mark.ros
 
 TAKEOFF_ALT_M = 5.0
@@ -67,10 +69,10 @@ class _TelemetryWatcher(Node):
         self.was_armed = False
         self.reached_altitude = False
         self.disarmed_after_arm = False
-        # PX4 v1.17 advertises `_v1`-suffixed topic names (01-platform design §4.2.4).
-        self.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", self._on_status, qos)
+        # Topic names come from the shared patrol_mission.topics contract (PX4 v1.17 _v1).
+        self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
         self.create_subscription(
-            VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", self._on_pos, qos
+            VehicleLocalPosition, topics.VEHICLE_LOCAL_POSITION, self._on_pos, qos
         )
 
     def _on_status(self, msg: VehicleStatus) -> None:
