@@ -22,8 +22,10 @@ HOVER_TIME = 10.0
 TOL = 0.5
 HOLD = 2.0
 HOME_NED = (0.0, 0.0, -2.0)
-# Takeoff target in NED: home xy, at takeoff altitude (down is negative for "up").
-TAKEOFF_NED = (0.0, 0.0, -TAKEOFF_ALT)
+# Takeoff target in NED: home xy, takeoff_alt_m AGL above home (down increases downward, so "up"
+# subtracts from home's own down coordinate). Derived from HOME_NED so it tracks the AGL-from-home
+# computation rather than assuming home sits at z=0 (Hermes Low #3).
+TAKEOFF_NED = (HOME_NED[0], HOME_NED[1], HOME_NED[2] - TAKEOFF_ALT)
 
 
 def _config() -> MissionConfig:
@@ -186,6 +188,14 @@ def test_full_basic_mission_sequence():
         MissionState.LANDING,
         MissionState.DONE,
     ]
+
+
+# M3 (Hermes Low #3): the takeoff target is takeoff_alt_m AGL above home — it incorporates home's
+# own NED-down altitude, so it is correct even when home does not sit at the EKF-origin ground.
+def test_takeoff_target_is_takeoff_alt_above_home():
+    sm = MissionStateMachine(_config(), waypoints_ned=[], home_ned=(1.0, 2.0, -3.0))
+    _, cmd = sm.tick(MissionState.IDLE, _telem())
+    assert cmd.setpoint_ned == (1.0, 2.0, -3.0 - TAKEOFF_ALT)
 
 
 # M3 (Hermes Medium #1): the basic machine consumes no waypoints — a non-empty list (a patrol
