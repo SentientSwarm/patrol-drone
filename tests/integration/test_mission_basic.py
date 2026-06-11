@@ -74,10 +74,13 @@ class _TelemetryWatcher(Node):
         self.was_armed = False
         self.reached_altitude = False
         self.disarmed_after_arm = False
-        # First/last monotonic times observed at/above takeoff altitude — their span is how long
-        # the drone actually held altitude (proves the hover phase, not just a momentary touch).
-        self._first_at_alt_s: float | None = None
-        self._last_at_alt_s: float | None = None
+        # Continuous-hold tracking: the longest *uninterrupted* window observed at/above takeoff
+        # altitude. _hold_start_s marks when the current window began (None = currently below the
+        # band); any drop resets it, mirroring the state machine's continuous-hold logic
+        # (state_machine._within_tolerance_for_hold). A momentary touch or a dip mid-hover can't
+        # accumulate into a passing window — only a real hover can.
+        self._hold_start_s: float | None = None
+        self._max_continuous_hold_s = 0.0
         # Topic names come from the shared patrol_mission.topics contract (PX4 v1.17 _v1).
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
         self.create_subscription(
@@ -92,19 +95,19 @@ class _TelemetryWatcher(Node):
             self.disarmed_after_arm = True
 
     def _on_pos(self, msg: VehicleLocalPosition) -> None:
-        if msg.z <= ALT_REACHED_NED_Z:
-            self.reached_altitude = True
-            now = time.monotonic()
-            if self._first_at_alt_s is None:
-                self._first_at_alt_s = now
-            self._last_at_alt_s = now
+        now = time.monotonic()
+        if msg.z > ALT_REACHED_NED_Z:
+            self._hold_start_s = None  # below the band — break the continuous-hold window
+            return
+        self.reached_altitude = True
+        if self._hold_start_s is None:
+            self._hold_start_s = now  # window starts on the first sample back in the band
+        self._max_continuous_hold_s = max(self._max_continuous_hold_s, now - self._hold_start_s)
 
     @property
-    def at_altitude_span_s(self) -> float:
-        """Seconds between the first and last samples observed at/above takeoff altitude."""
-        if self._first_at_alt_s is None or self._last_at_alt_s is None:
-            return 0.0
-        return self._last_at_alt_s - self._first_at_alt_s
+    def continuous_hold_s(self) -> float:
+        """Longest *uninterrupted* window observed at/above takeoff altitude (resets on any drop)."""
+        return self._max_continuous_hold_s
 
     @property
     def mission_complete(self) -> bool:
@@ -112,7 +115,7 @@ class _TelemetryWatcher(Node):
             self.was_armed
             and self.reached_altitude
             and self.disarmed_after_arm
-            and self.at_altitude_span_s >= HOVER_MIN_OBSERVED_S
+            and self.continuous_hold_s >= HOVER_MIN_OBSERVED_S
         )
 
 
@@ -127,10 +130,10 @@ def test_basic_mission_arms_climbs_and_lands() -> None:
 
         assert watcher.was_armed, "drone never armed"
         assert watcher.reached_altitude, f"drone never reached ~{TAKEOFF_ALT_M} m AGL"
-        assert watcher.at_altitude_span_s >= HOVER_MIN_OBSERVED_S, (
-            f"drone held altitude only {watcher.at_altitude_span_s:.1f} s "
+        assert watcher.continuous_hold_s >= HOVER_MIN_OBSERVED_S, (
+            f"drone held altitude continuously only {watcher.continuous_hold_s:.1f} s "
             f"(< {HOVER_MIN_OBSERVED_S} s of the {HOVER_TIME_S} s hover window) — "
-            "it must hover, not climb-and-immediately-land"
+            "it must hover continuously, not climb-and-immediately-land or dip mid-hover"
         )
         assert watcher.disarmed_after_arm, "drone never disarmed (landing) after the mission"
     finally:
