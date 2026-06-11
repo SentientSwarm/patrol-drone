@@ -59,16 +59,21 @@ class PatrolMissionNode(Node):
             raise ValueError("parameter 'mission_yaml' is required (path to the mission YAML)")
         self._cfg = load_mission_config(mission_yaml)
 
+        # PX4 v1.17 advertises message-versioned topic names with a `_v1` suffix — M3/02 must
+        # use the `_v1` names (01-platform design §4.2.4, as-built M2 spike). The unversioned
+        # names from the vendored v1.16-era px4_ros_com example do NOT exist on this bridge.
         qos = _px4_qos()
         self._pub_ctrl = self.create_publisher(
-            OffboardControlMode, "/fmu/in/offboard_control_mode", qos
+            OffboardControlMode, "/fmu/in/offboard_control_mode_v1", qos
         )
-        self._pub_sp = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", qos)
-        self._pub_cmd = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", qos)
+        self._pub_sp = self.create_publisher(
+            TrajectorySetpoint, "/fmu/in/trajectory_setpoint_v1", qos
+        )
+        self._pub_cmd = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command_v1", qos)
         self.create_subscription(
-            VehicleLocalPosition, "/fmu/out/vehicle_local_position", self._on_pos, qos
+            VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", self._on_pos, qos
         )
-        self.create_subscription(VehicleStatus, "/fmu/out/vehicle_status", self._on_status, qos)
+        self.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", self._on_status, qos)
 
         self._pos = VehicleLocalPosition()
         self._status = VehicleStatus()
@@ -117,11 +122,14 @@ class PatrolMissionNode(Node):
         """Translate a decision-layer Command into /fmu/in/* messages."""
         if cmd.setpoint_ned is not None:
             self._publish_setpoint(cmd.setpoint_ned, cmd.yaw)
-        if cmd.arm:
-            self._send_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
-        # Engage offboard only once the setpoint stream is established (A-2).
-        if cmd.set_offboard and self._warmup >= _OFFBOARD_STREAM_WARMUP_TICKS:
-            self._send_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
+        # Only command mode/arming once the keepalive stream is established (A-2). Engage offboard
+        # BEFORE arming — PX4 rejects arming outside offboard, so this is the proven
+        # px4_ros_com offboard_control.py order (engage_offboard_mode() then arm()).
+        if self._warmup >= _OFFBOARD_STREAM_WARMUP_TICKS:
+            if cmd.set_offboard:
+                self._send_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
+            if cmd.arm:
+                self._send_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
         if cmd.land:
             self._send_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
 

@@ -45,7 +45,7 @@ jobs:
             if docker exec "$CID" bash -lc '
                 source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
                 source /opt/ros2_ws/install/setup.bash
-                ros2 topic list 2>/dev/null | grep -q /fmu/out/vehicle_status'; then
+                ros2 topic list 2>/dev/null | grep -q /fmu/out/vehicle_status_v1'; then
               echo "bridge up after ${i}0s"; exit 0
             fi
             sleep 10
@@ -55,6 +55,13 @@ jobs:
       - name: Run the basic-mission integration test (AC-5 / MC-10)
         run: |
           CID=$(docker compose --env-file .env.build ps -q sim)
+          # The sim image carries the runtime + ROS + the built ws, but not the test harness.
+          # launch_pytest drives the launch file; pytest runs the assertions (both via apt, no pip).
+          docker exec "$CID" bash -lc '
+            apt-get update && apt-get install -y --no-install-recommends \
+              python3-pytest \
+              ros-${ROS_DISTRO:-jazzy}-launch-testing \
+              ros-${ROS_DISTRO:-jazzy}-launch-pytest'
           docker cp tests "$CID:/opt/tests"
           docker exec "$CID" bash -lc '
             source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash

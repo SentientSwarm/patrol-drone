@@ -67,9 +67,10 @@ class _TelemetryWatcher(Node):
         self.was_armed = False
         self.reached_altitude = False
         self.disarmed_after_arm = False
-        self.create_subscription(VehicleStatus, "/fmu/out/vehicle_status", self._on_status, qos)
+        # PX4 v1.17 advertises `_v1`-suffixed topic names (01-platform design §4.2.4).
+        self.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", self._on_status, qos)
         self.create_subscription(
-            VehicleLocalPosition, "/fmu/out/vehicle_local_position", self._on_pos, qos
+            VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", self._on_pos, qos
         )
 
     def _on_status(self, msg: VehicleStatus) -> None:
