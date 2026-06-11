@@ -84,6 +84,9 @@ class _TelemetryWatcher(Node):
         self.was_armed = False
         self.reached_altitude = False
         self.disarmed_after_arm = False
+        # This PR is specifically about Offboard mission control, so prove the vehicle actually
+        # entered OFFBOARD nav_state — not merely that it armed and climbed (Hermes Low #1).
+        self.saw_offboard = False
         # Continuous-hold tracking: the longest *uninterrupted* window observed at/above takeoff
         # altitude. _hold_start_s marks when the current window began (None = currently below the
         # band); any drop resets it, mirroring the state machine's continuous-hold logic
@@ -98,6 +101,8 @@ class _TelemetryWatcher(Node):
         )
 
     def _on_status(self, msg: VehicleStatus) -> None:
+        if msg.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+            self.saw_offboard = True
         armed = msg.arming_state == VehicleStatus.ARMING_STATE_ARMED
         if armed:
             self.was_armed = True
@@ -123,6 +128,7 @@ class _TelemetryWatcher(Node):
     def mission_complete(self) -> bool:
         return (
             self.was_armed
+            and self.saw_offboard
             and self.reached_altitude
             and self.disarmed_after_arm
             and self.continuous_hold_s >= HOVER_MIN_OBSERVED_S
@@ -139,6 +145,7 @@ def test_basic_mission_arms_climbs_and_lands() -> None:
             rclpy.spin_once(watcher, timeout_sec=0.5)
 
         assert watcher.was_armed, "drone never armed"
+        assert watcher.saw_offboard, "vehicle never entered OFFBOARD nav_state"
         assert watcher.reached_altitude, f"drone never reached ~{TAKEOFF_ALT_M} m AGL"
         assert watcher.continuous_hold_s >= HOVER_MIN_OBSERVED_S, (
             f"drone held altitude continuously only {watcher.continuous_hold_s:.1f} s "
