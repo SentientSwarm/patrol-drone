@@ -34,7 +34,13 @@ from patrol_mission import topics
 from patrol_mission.commands import Px4CommandKind, build_vehicle_commands
 from patrol_mission.config import load_mission_config
 from patrol_mission.frames import Point, to_ned_from_origin
-from patrol_mission.state_machine import Command, MissionState, MissionStateMachine, Telemetry
+from patrol_mission.state_machine import (
+    Command,
+    MissionState,
+    MissionStateMachine,
+    Telemetry,
+    local_position_usable,
+)
 
 # PX4 needs a continuous setpoint + offboard-mode stream established before it will
 # accept the offboard-mode switch (A-2). Hold the stream this many ticks first.
@@ -119,6 +125,8 @@ class PatrolMissionNode(Node):
         pos, status = self._pos, self._status
         if pos is None or status is None:
             return  # no telemetry yet — keep the heartbeat alive but do not progress/arm on defaults
+        if not local_position_usable(pos.xy_valid, pos.z_valid):
+            return  # EKF position estimate not yet valid — heartbeat stays alive, don't arm on it
         telem = self._build_telemetry(pos, status)
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)

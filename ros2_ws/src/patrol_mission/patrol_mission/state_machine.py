@@ -71,6 +71,18 @@ class _Progress:
     inside_since_s: float | None = None  # first time continuously inside tolerance (MC-5)
 
 
+def local_position_usable(xy_valid: bool, z_valid: bool) -> bool:
+    """Precondition for trusting a PX4 ``VehicleLocalPosition`` fix this tick.
+
+    PX4 publishes ``xy_valid`` / ``z_valid`` (VehicleLocalPosition.msg) to flag
+    when the EKF's horizontal / vertical estimate is converged. The node must not
+    feed position into the machine — i.e. must not begin offboard/arm sequencing —
+    until both are true, or the mission could arm on an unconverged estimate. Pure
+    (no rclpy) so the gate is Layer-A testable without ROS.
+    """
+    return xy_valid and z_valid
+
+
 def _distance(a: Point, b: Point) -> float:
     return math.dist(a, b)
 

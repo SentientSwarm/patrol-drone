@@ -8,11 +8,13 @@ M1 scope is the basic happy path: IDLE -> ARMING -> TAKEOFF -> HOVER -> LANDING 
 Abort guards, WAYPOINT/DWELL, and RTH are M2 (plan M4).
 """
 
+import pytest
 from patrol_mission.config import AbortConfig, Completion, MissionConfig
 from patrol_mission.state_machine import (
     MissionState,
     MissionStateMachine,
     Telemetry,
+    local_position_usable,
 )
 
 TAKEOFF_ALT = 5.0
@@ -191,3 +193,13 @@ def test_command_mission_state_matches_returned_state():
     for state in (MissionState.IDLE, MissionState.LANDING, MissionState.DONE):
         nxt, cmd = sm.tick(state, _telem(armed=True))
         assert cmd.mission_state == nxt.name
+
+
+# M1 (Hermes Medium #1): a position fix is usable only when PX4 reports BOTH the
+# horizontal and vertical EKF estimate valid — the node's precondition for arming.
+@pytest.mark.parametrize(
+    ("xy_valid", "z_valid", "expected"),
+    [(True, True, True), (True, False, False), (False, True, False), (False, False, False)],
+)
+def test_local_position_usable_requires_both_flags(xy_valid, z_valid, expected):
+    assert local_position_usable(xy_valid, z_valid) is expected
