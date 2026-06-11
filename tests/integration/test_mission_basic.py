@@ -36,6 +36,11 @@ pytestmark = pytest.mark.ros
 
 TAKEOFF_ALT_M = 5.0
 ALT_REACHED_NED_Z = -4.5  # within 0.5 m of the -5 m takeoff setpoint counts as "reached"
+HOVER_TIME_S = 10.0  # mission_basic.yaml hover_time_s — the window the drone must HOLD altitude
+# Require most of the hover window to be observed at altitude before accepting the mission as
+# complete. Below HOVER_TIME_S to tolerate climb-settle and 2 Hz sampling jitter — its purpose is
+# to reject a climb->immediate-disarm/failsafe run that never actually hovered.
+HOVER_MIN_OBSERVED_S = 8.0
 MISSION_TIMEOUT_S = 120.0
 
 
@@ -69,6 +74,10 @@ class _TelemetryWatcher(Node):
         self.was_armed = False
         self.reached_altitude = False
         self.disarmed_after_arm = False
+        # First/last monotonic times observed at/above takeoff altitude — their span is how long
+        # the drone actually held altitude (proves the hover phase, not just a momentary touch).
+        self._first_at_alt_s: float | None = None
+        self._last_at_alt_s: float | None = None
         # Topic names come from the shared patrol_mission.topics contract (PX4 v1.17 _v1).
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
         self.create_subscription(
@@ -85,10 +94,26 @@ class _TelemetryWatcher(Node):
     def _on_pos(self, msg: VehicleLocalPosition) -> None:
         if msg.z <= ALT_REACHED_NED_Z:
             self.reached_altitude = True
+            now = time.monotonic()
+            if self._first_at_alt_s is None:
+                self._first_at_alt_s = now
+            self._last_at_alt_s = now
+
+    @property
+    def at_altitude_span_s(self) -> float:
+        """Seconds between the first and last samples observed at/above takeoff altitude."""
+        if self._first_at_alt_s is None or self._last_at_alt_s is None:
+            return 0.0
+        return self._last_at_alt_s - self._first_at_alt_s
 
     @property
     def mission_complete(self) -> bool:
-        return self.was_armed and self.reached_altitude and self.disarmed_after_arm
+        return (
+            self.was_armed
+            and self.reached_altitude
+            and self.disarmed_after_arm
+            and self.at_altitude_span_s >= HOVER_MIN_OBSERVED_S
+        )
 
 
 @pytest.mark.launch(fixture=mission_launch)
@@ -102,6 +127,11 @@ def test_basic_mission_arms_climbs_and_lands() -> None:
 
         assert watcher.was_armed, "drone never armed"
         assert watcher.reached_altitude, f"drone never reached ~{TAKEOFF_ALT_M} m AGL"
+        assert watcher.at_altitude_span_s >= HOVER_MIN_OBSERVED_S, (
+            f"drone held altitude only {watcher.at_altitude_span_s:.1f} s "
+            f"(< {HOVER_MIN_OBSERVED_S} s of the {HOVER_TIME_S} s hover window) — "
+            "it must hover, not climb-and-immediately-land"
+        )
         assert watcher.disarmed_after_arm, "drone never disarmed (landing) after the mission"
     finally:
         watcher.destroy_node()
