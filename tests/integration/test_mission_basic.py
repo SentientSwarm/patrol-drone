@@ -17,15 +17,18 @@ Runs in the nightly SITL tier only — never a required per-PR check (OQ-5). Mar
 """
 
 import time
+from pathlib import Path
 
 import launch_pytest
 import pytest
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from patrol_mission.config import load_mission_config
 from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -34,13 +37,20 @@ from patrol_mission import topics
 
 pytestmark = pytest.mark.ros
 
-TAKEOFF_ALT_M = 5.0
-ALT_REACHED_NED_Z = -4.5  # within 0.5 m of the -5 m takeoff setpoint counts as "reached"
-HOVER_TIME_S = 10.0  # mission_basic.yaml hover_time_s — the window the drone must HOLD altitude
+# Derive thresholds from the SAME mission YAML the launch file feeds the node, so the test can
+# never drift from the flown config (Hermes Low #1). Resolved via the installed package share,
+# matching mission_basic.launch.py's FindPackageShare("patrol_bringup").
+_CFG = load_mission_config(
+    str(Path(get_package_share_directory("patrol_bringup")) / "config" / "mission_basic.yaml")
+)
+TAKEOFF_ALT_M = _CFG.takeoff_alt_m
+HOVER_TIME_S = _CFG.hover_time_s  # the window the drone must HOLD altitude
+# "Reached altitude" = within the completion tolerance of the -takeoff_alt_m NED setpoint.
+ALT_REACHED_NED_Z = -(TAKEOFF_ALT_M - _CFG.completion.tolerance_m)
 # Require most of the hover window to be observed at altitude before accepting the mission as
 # complete. Below HOVER_TIME_S to tolerate climb-settle and 2 Hz sampling jitter — its purpose is
 # to reject a climb->immediate-disarm/failsafe run that never actually hovered.
-HOVER_MIN_OBSERVED_S = 8.0
+HOVER_MIN_OBSERVED_S = HOVER_TIME_S - 2.0
 MISSION_TIMEOUT_S = 120.0
 
 
