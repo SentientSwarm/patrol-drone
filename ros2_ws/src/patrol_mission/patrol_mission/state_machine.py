@@ -95,7 +95,15 @@ class MissionStateMachine:
         home_ned: Point,
     ) -> None:
         self._cfg = config
-        self._wps = waypoints_ned  # unused in M1 (basic mission); WAYPOINT sequencing is M4
+        # Basic mission (M3) flies takeoff -> hover -> land and consumes no waypoints. Fail loud
+        # rather than silently ignore them: config parses inline waypoints as M4 forward-schema, so
+        # a non-empty list reaching here means a patrol mission was handed to the basic machine.
+        # WAYPOINT/DWELL sequencing thickens this machine in M4 and removes this guard.
+        if waypoints_ned:
+            raise ValueError(
+                f"basic mission (M3) accepts no waypoints, got {len(waypoints_ned)}; "
+                "WAYPOINT sequencing lands in M4"
+            )
         self._home = home_ned
         self._p = _Progress()
         # Basic-mission takeoff target: home x/y at takeoff altitude (NED down is negative).

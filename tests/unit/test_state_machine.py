@@ -188,6 +188,13 @@ def test_full_basic_mission_sequence():
     ]
 
 
+# M3 (Hermes Medium #1): the basic machine consumes no waypoints — a non-empty list (a patrol
+# mission handed to the basic machine) must fail loud at construction, never be silently ignored.
+def test_basic_mission_rejects_waypoints():
+    with pytest.raises(ValueError, match="no waypoints"):
+        MissionStateMachine(_config(), waypoints_ned=[(1.0, 2.0, -3.0)], home_ned=HOME_NED)
+
+
 def test_command_mission_state_matches_returned_state():
     sm = _sm()
     for state in (MissionState.IDLE, MissionState.LANDING, MissionState.DONE):
