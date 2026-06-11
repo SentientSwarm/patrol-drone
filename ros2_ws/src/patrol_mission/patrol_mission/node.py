@@ -83,8 +83,12 @@ class PatrolMissionNode(Node):
         )
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
 
-        self._pos = VehicleLocalPosition()
-        self._status = VehicleStatus()
+        # Init to None (not a default-constructed message): a default VehicleStatus reports
+        # disarmed-at-origin, which is indistinguishable from "no telemetry has arrived yet".
+        # _on_tick gates state-machine progression behind receipt of BOTH streams so the node
+        # never publishes arm/offboard intent on stale defaults before observability is confirmed.
+        self._pos: VehicleLocalPosition | None = None
+        self._status: VehicleStatus | None = None
         self._state = MissionState.IDLE
         self._warmup = 0
 
@@ -111,19 +115,22 @@ class PatrolMissionNode(Node):
     # --- 10 Hz control loop -------------------------------------------------
 
     def _on_tick(self) -> None:
-        self._publish_keepalive()  # A-2: heartbeat every tick, before and during offboard
-        telem = self._build_telemetry()
+        self._publish_keepalive()  # A-2: heartbeat every tick, even before telemetry/offboard
+        pos, status = self._pos, self._status
+        if pos is None or status is None:
+            return  # no telemetry yet — keep the heartbeat alive but do not progress/arm on defaults
+        telem = self._build_telemetry(pos, status)
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)
         if self._warmup < _OFFBOARD_STREAM_WARMUP_TICKS:
             self._warmup += 1
 
-    def _build_telemetry(self) -> Telemetry:
+    def _build_telemetry(self, pos: VehicleLocalPosition, status: VehicleStatus) -> Telemetry:
         return Telemetry(
             now_s=self.get_clock().now().nanoseconds / 1e9,
-            position_ned=(float(self._pos.x), float(self._pos.y), float(self._pos.z)),
-            armed=self._status.arming_state == VehicleStatus.ARMING_STATE_ARMED,
-            offboard_active=self._status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD,
+            position_ned=(float(pos.x), float(pos.y), float(pos.z)),
+            armed=status.arming_state == VehicleStatus.ARMING_STATE_ARMED,
+            offboard_active=status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD,
         )
 
     def _issue(self, cmd: Command) -> None:
