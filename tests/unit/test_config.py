@@ -21,6 +21,12 @@ from patrol_mission.config import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MISSION_BASIC = REPO_ROOT / "ros2_ws/src/patrol_bringup/config/mission_basic.yaml"
 
+# Shared YAML building blocks — kept here once so the tests vary only the part under test
+# (and don't repeat the scaffold, which trips duplication detectors).
+_HEAD = "takeoff_alt_m: 5\nhover_time_s: 10\n"
+_HOME_ENU = "home: {position: {x: 0, y: 0, z: 2}, frame: enu}\n"
+_NO_WAYPOINTS = "waypoints: []\n"
+
 
 def _write(tmp_path: Path, text: str) -> str:
     p = tmp_path / "mission.yaml"
@@ -41,42 +47,25 @@ def test_shipped_mission_basic_loads():
 
 # TS-9: completion/abort defaults (OQ-4 / OQ-6) apply when omitted.
 def test_defaults_applied_when_sections_omitted(tmp_path):
-    cfg = load_mission_config(
-        _write(
-            tmp_path,
-            "takeoff_alt_m: 3.0\nhover_time_s: 4.0\n"
-            "home: {position: {x: 0, y: 0, z: 1}, frame: ned}\nwaypoints: []\n",
-        )
-    )
+    cfg = load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _NO_WAYPOINTS))
     assert cfg.completion == Completion(tolerance_m=0.5, hold_time_s=2.0)
     assert cfg.abort == AbortConfig(low_battery_threshold=0.20)
 
 
 # TS-9: explicit completion/abort values override the defaults.
 def test_explicit_overrides(tmp_path):
-    cfg = load_mission_config(
-        _write(
-            tmp_path,
-            "takeoff_alt_m: 5\nhover_time_s: 10\n"
-            "completion: {tolerance_m: 0.25, hold_time_s: 3.0}\n"
-            "abort: {low_battery_threshold: 0.35}\n"
-            "home: {position: {x: 0, y: 0, z: 2}, frame: enu}\nwaypoints: []\n",
-        )
+    overrides = (
+        "completion: {tolerance_m: 0.25, hold_time_s: 3.0}\nabort: {low_battery_threshold: 0.35}\n"
     )
+    cfg = load_mission_config(_write(tmp_path, _HEAD + overrides + _HOME_ENU + _NO_WAYPOINTS))
     assert cfg.completion.tolerance_m == 0.25
     assert cfg.abort.low_battery_threshold == 0.35
 
 
 # TS-9: an inline waypoint parses with its frame and dwell.
 def test_inline_waypoint(tmp_path):
-    cfg = load_mission_config(
-        _write(
-            tmp_path,
-            "takeoff_alt_m: 5\nhover_time_s: 10\n"
-            "home: {position: {x: 0, y: 0, z: 2}, frame: enu}\n"
-            "waypoints:\n  - position: {x: -10, y: 0, z: 2}\n    frame: enu\n    dwell_s: 3.0\n",
-        )
-    )
+    waypoints = "waypoints:\n  - position: {x: -10, y: 0, z: 2}\n    frame: enu\n    dwell_s: 3.0\n"
+    cfg = load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + waypoints))
     assert len(cfg.waypoints) == 1
     wp = cfg.waypoints[0]
     assert wp.position_enu == (-10.0, 0.0, 2.0)
@@ -85,50 +74,31 @@ def test_inline_waypoint(tmp_path):
     assert wp.checkpoint_id is None
 
 
-# TS-9: fail loud on a missing required top-level field.
-def test_missing_required_field_raises(tmp_path):
-    with pytest.raises((KeyError, ValueError)):
-        load_mission_config(
-            _write(
-                tmp_path,
-                "hover_time_s: 10\nhome: {position: {x: 0, y: 0, z: 2}, frame: enu}\nwaypoints: []\n",
-            )
-        )
-
-
-# TS-9: fail loud on an unknown waypoint frame.
-def test_unknown_waypoint_frame_raises(tmp_path):
-    with pytest.raises(ValueError, match="frame"):
-        load_mission_config(
-            _write(
-                tmp_path,
-                "takeoff_alt_m: 5\nhover_time_s: 10\n"
-                "home: {position: {x: 0, y: 0, z: 2}, frame: enu}\n"
-                "waypoints:\n  - position: {x: 1, y: 1, z: 1}\n    frame: lla\n    dwell_s: 1.0\n",
-            )
-        )
-
-
-# TS-9: a checkpoint_id waypoint fails loud in M1 (resolution lands in M4).
-def test_checkpoint_id_waypoint_deferred_m4(tmp_path):
-    with pytest.raises((ValueError, NotImplementedError), match="checkpoint_id"):
-        load_mission_config(
-            _write(
-                tmp_path,
-                "takeoff_alt_m: 5\nhover_time_s: 10\n"
-                "home: {position: {x: 0, y: 0, z: 2}, frame: enu}\n"
-                "waypoints:\n  - checkpoint_id: cp_north\n    dwell_s: 3.0\n",
-            )
-        )
-
-
-# TS-9: fail loud on an unknown home frame.
-def test_unknown_home_frame_raises(tmp_path):
-    with pytest.raises(ValueError, match="frame"):
-        load_mission_config(
-            _write(
-                tmp_path,
-                "takeoff_alt_m: 5\nhover_time_s: 10\n"
-                "home: {position: {x: 0, y: 0, z: 2}, frame: lla}\nwaypoints: []\n",
-            )
-        )
+# TS-9: fail-loud paths — missing field, unknown frame (waypoint + home), and the M1
+# checkpoint_id guard (resolution lands in M4). Each must raise at load time.
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("hover_time_s: 10\n" + _HOME_ENU + _NO_WAYPOINTS, "takeoff_alt_m"),
+        (
+            _HEAD
+            + _HOME_ENU
+            + "waypoints:\n  - position: {x: 1, y: 1, z: 1}\n    frame: lla\n    dwell_s: 1.0\n",
+            "frame",
+        ),
+        (
+            _HEAD + _HOME_ENU + "waypoints:\n  - checkpoint_id: cp_north\n    dwell_s: 3.0\n",
+            "checkpoint_id",
+        ),
+        (_HEAD + "home: {position: {x: 0, y: 0, z: 2}, frame: lla}\n" + _NO_WAYPOINTS, "frame"),
+    ],
+    ids=[
+        "missing_required_field",
+        "unknown_waypoint_frame",
+        "checkpoint_id_deferred_m4",
+        "unknown_home_frame",
+    ],
+)
+def test_fail_loud(tmp_path, body, match):
+    with pytest.raises((KeyError, ValueError, NotImplementedError), match=match):
+        load_mission_config(_write(tmp_path, body))

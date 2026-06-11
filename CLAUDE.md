@@ -102,6 +102,7 @@ Most dirs are scaffolding (`.gitkeep`) until their milestone lands. Single monor
 - **Tests before merge.** Unit tests for new state-machine logic (London-style TDD: the `MissionStateMachine` is plain Python, testable without ROS); integration suite must pass; bag-producing changes get a replay regression. Target >80% state-machine coverage, unit suite <5 s.
 - **Write down non-obvious decisions** as a short ADR in `docs/decisions/` (context / decision / consequences). The bar is low.
 - Code style: `ruff` (line-length 100, py312 target, rules E/F/I/UP/B).
+- **CodeScene code-health gate (PR check, beyond ADR-0002's CI).** Every PR runs a CodeScene "Clean Code Collective" delta review that **fails when a new/changed file scores below 10.0**. It is stricter than `ruff`/`xenon` and trips most often on the *first* PR of a milestone. Recurring offenders here: **Code Duplication** — repeated literal blocks across tests (M3); fix by `@pytest.mark.parametrize` or extracting shared fixtures/builders/constants, not copy-paste — and **Bumpy Road / Complex Method / Complex Conditional** — nested conditional logic in one function (M2); fix by flattening with early returns and extracting helpers (xenon already caps per-function CC ≤10, but CodeScene also penalizes *shape*/nesting). Self-check before opening a PR: any test or function that repeats a near-identical block, or nests conditionals more than ~2 deep, will likely drop a file below 10.0. Suppressing a finding in CodeScene is a last resort, not the default.
 
 ## Where to look
 
