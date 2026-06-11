@@ -120,11 +120,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mesa-utils libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
 
-# Pinned SITL test layer: the harness the nightly integration test (AC-5 / MC-10) drives —
-# launch_pytest + pytest. Baked into the image (not apt-installed live at test time) so the test
-# environment is reproducible from the digest-pinned base + manifest-pinned ROS_DISTRO alone. These
-# are unversioned ROS/distro apt names (no manifest version literal), so the manifest-drift gate is
-# unaffected. Installed via apt (no pip), matching the rest of the ROS toolchain.
+# Baked-in SITL test layer: the harness the nightly integration test (AC-5 / MC-10) drives —
+# launch_pytest + pytest. Built into the image (not apt-installed live at test time) so the test
+# environment ships with the image rather than being assembled per-run. These are unversioned
+# ROS/distro apt names (no manifest version literal), so the manifest-drift gate is unaffected.
+# Reproducibility caveat: the names are unpinned, so the EXACT package versions float with the
+# upstream ROS apt repo at build time — the layer is reproducible up to that apt-repo drift, not
+# bit-for-bit from the digest-pinned base + manifest ROS_DISTRO alone. Installed via apt (no pip),
+# matching the rest of the ROS toolchain; pinning ROS apt versions here is brittle (distro-managed)
+# and deferred — a frozen apt snapshot would be the way to close the residual drift (MZ).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pytest \
         "ros-${ROS_DISTRO}-launch-testing" \
