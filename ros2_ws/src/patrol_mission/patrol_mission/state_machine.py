@@ -87,6 +87,8 @@ class MissionStateMachine:
         self._home = home_ned
         self._p = _Progress()
         # Basic-mission takeoff target: home x/y at takeoff altitude (NED down is negative).
+        # takeoff_alt_m is AGL above home; home_ned[2] (home's own altitude) is intentionally not
+        # used by the basic takeoff target — the mission YAML ships home at z=0.0 to match.
         self._takeoff_ned: Point = (home_ned[0], home_ned[1], -config.takeoff_alt_m)
         self._dispatch: dict[MissionState, Callable[[Telemetry], tuple[MissionState, Command]]] = {
             MissionState.IDLE: self._idle,

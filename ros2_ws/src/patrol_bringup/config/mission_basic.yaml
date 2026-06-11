@@ -5,5 +5,7 @@ takeoff_alt_m: 5.0
 hover_time_s: 10.0
 completion: { tolerance_m: 0.5, hold_time_s: 2.0 }   # OQ-4 defaults (overridable)
 abort: { low_battery_threshold: 0.20 }               # OQ-6 (battery_status.remaining fraction); parsed now, enforced in M4
-home: { position: { x: 0.0, y: 0.0, z: 2.0 }, frame: "enu" }
+# home at the EKF-origin ground plane (z: 0.0); takeoff_alt_m is AGL above home. The basic-mission
+# takeoff target is home x/y at -takeoff_alt_m, so home z is not used for takeoff here (M4 RTH may).
+home: { position: { x: 0.0, y: 0.0, z: 0.0 }, frame: "enu" }
 waypoints: []

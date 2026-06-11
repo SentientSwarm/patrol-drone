@@ -42,7 +42,7 @@ def test_shipped_mission_basic_loads():
     assert cfg.hover_time_s == 10.0
     assert cfg.waypoints == ()
     assert cfg.home_frame == "enu"
-    assert cfg.home_position == (0.0, 0.0, 2.0)
+    assert cfg.home_position == (0.0, 0.0, 0.0)
 
 
 # TS-9: completion/abort defaults (OQ-4 / OQ-6) apply when omitted.
