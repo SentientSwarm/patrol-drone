@@ -4,6 +4,6 @@
 takeoff_alt_m: 5.0
 hover_time_s: 10.0
 completion: { tolerance_m: 0.5, hold_time_s: 2.0 }   # OQ-4 defaults (overridable)
-abort: { low_battery_threshold: 0.20 }               # OQ-6 (battery_status.remaining fraction)
+abort: { low_battery_threshold: 0.20 }               # OQ-6 (battery_status.remaining fraction); parsed now, enforced in M4
 home: { position: { x: 0.0, y: 0.0, z: 2.0 }, frame: "enu" }
 waypoints: []

@@ -125,14 +125,24 @@ class MissionStateMachine:
     # --- per-state handlers -------------------------------------------------
 
     def _idle(self, _telem: Telemetry) -> tuple[MissionState, Command]:
-        return MissionState.ARMING, self._cmd(MissionState.ARMING, arm=True)
+        # Carry the takeoff setpoint from the very first tick: PX4 only accepts the offboard
+        # switch once it has seen BOTH the OffboardControlMode stream AND a TrajectorySetpoint
+        # stream during warmup (A-2). The node gates arm/set-offboard behind the warmup window
+        # but streams this setpoint immediately, so the dual stream is established before arm.
+        return MissionState.ARMING, self._cmd(
+            MissionState.ARMING, arm=True, setpoint_ned=self._takeoff_ned
+        )
 
     def _arming(self, telem: Telemetry) -> tuple[MissionState, Command]:
         if telem.armed and telem.offboard_active:
             return MissionState.TAKEOFF, self._cmd(
                 MissionState.TAKEOFF, setpoint_ned=self._takeoff_ned
             )
-        return MissionState.ARMING, self._cmd(MissionState.ARMING, arm=True, set_offboard=True)
+        # Keep streaming the takeoff setpoint while waiting for arm+offboard confirmation, so the
+        # pre-offboard setpoint stream PX4 requires (A-2) is never interrupted.
+        return MissionState.ARMING, self._cmd(
+            MissionState.ARMING, arm=True, set_offboard=True, setpoint_ned=self._takeoff_ned
+        )
 
     def _takeoff(self, telem: Telemetry) -> tuple[MissionState, Command]:
         if self._within_tolerance_for_hold(telem, self._takeoff_ned):

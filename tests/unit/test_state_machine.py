@@ -48,21 +48,25 @@ def _telem(
     )
 
 
-# TS-1: IDLE issues arm and advances to ARMING.
+# TS-1: IDLE issues arm and advances to ARMING, streaming the takeoff setpoint from tick 0 so
+# PX4's pre-offboard setpoint stream (A-2) is established before mode/arm.
 def test_idle_issues_arm_and_advances_to_arming():
     nxt, cmd = _sm().tick(MissionState.IDLE, _telem())
     assert nxt is MissionState.ARMING
     assert cmd.arm is True
+    assert cmd.setpoint_ned == TAKEOFF_NED
     assert cmd.mission_state == "ARMING"
 
 
-# TS-2: ARMING keeps requesting arm + offboard until both confirmed, then -> TAKEOFF.
+# TS-2: ARMING keeps requesting arm + offboard (and keeps streaming the setpoint, A-2) until both
+# are confirmed, then -> TAKEOFF.
 def test_arming_waits_for_armed_and_offboard():
     sm = _sm()
     nxt, cmd = sm.tick(MissionState.ARMING, _telem(armed=False, offboard_active=False))
     assert nxt is MissionState.ARMING
     assert cmd.arm is True
     assert cmd.set_offboard is True
+    assert cmd.setpoint_ned == TAKEOFF_NED
 
 
 def test_arming_advances_to_takeoff_when_armed_and_offboard():

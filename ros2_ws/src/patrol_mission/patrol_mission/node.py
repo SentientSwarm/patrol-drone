@@ -31,6 +31,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from patrol_mission import topics
+from patrol_mission.commands import Px4CommandKind, build_vehicle_commands
 from patrol_mission.config import load_mission_config
 from patrol_mission.frames import Point, to_ned_from_origin
 from patrol_mission.state_machine import Command, MissionState, MissionStateMachine, Telemetry
@@ -40,6 +41,15 @@ from patrol_mission.state_machine import Command, MissionState, MissionStateMach
 _OFFBOARD_STREAM_WARMUP_TICKS = 10
 _TIMER_PERIOD_S = 0.1  # 10 Hz (A-2 keepalive rate)
 _EKF_ORIGIN_NED: Point = (0.0, 0.0, 0.0)  # SITL local position is already origin-relative NED
+
+# The ONE site that binds the pure Px4CommandKind symbols (patrol_mission.commands) to their
+# px4_msgs MAVLink IDs. Referencing the VehicleCommand.* constants directly means the IDs can't
+# drift; the pure builder stays rclpy-free and Layer-A testable.
+_VEHICLE_CMD_ID: dict[Px4CommandKind, int] = {
+    Px4CommandKind.SET_OFFBOARD: VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
+    Px4CommandKind.ARM: VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
+    Px4CommandKind.LAND: VehicleCommand.VEHICLE_CMD_NAV_LAND,
+}
 
 
 def _px4_qos() -> QoSProfile:
@@ -117,19 +127,18 @@ class PatrolMissionNode(Node):
         )
 
     def _issue(self, cmd: Command) -> None:
-        """Translate a decision-layer Command into /fmu/in/* messages."""
+        """Translate a decision-layer Command into /fmu/in/* messages.
+
+        The setpoint is published first so the offboard setpoint stream is established before any
+        mode/arm command (A-2). Which VehicleCommands to send — gated on the warmup window and
+        ordered offboard-before-arm — is decided by the pure ``build_vehicle_commands`` builder
+        (Layer-A tested); here we only map each kind to its px4_msgs ID and publish it.
+        """
         if cmd.setpoint_ned is not None:
             self._publish_setpoint(cmd.setpoint_ned, cmd.yaw)
-        # Only command mode/arming once the keepalive stream is established (A-2). Engage offboard
-        # BEFORE arming — PX4 rejects arming outside offboard, so this is the proven
-        # px4_ros_com offboard_control.py order (engage_offboard_mode() then arm()).
-        if self._warmup >= _OFFBOARD_STREAM_WARMUP_TICKS:
-            if cmd.set_offboard:
-                self._send_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
-            if cmd.arm:
-                self._send_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
-        if cmd.land:
-            self._send_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+        warmup_elapsed = self._warmup >= _OFFBOARD_STREAM_WARMUP_TICKS
+        for pc in build_vehicle_commands(cmd, warmup_elapsed):
+            self._send_command(_VEHICLE_CMD_ID[pc.kind], param1=pc.param1, param2=pc.param2)
 
     # --- /fmu/in publishers -------------------------------------------------
 

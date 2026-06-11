@@ -33,6 +33,9 @@ class Completion:
 
 @dataclass(frozen=True)
 class AbortConfig:
+    # Parsed and validated now so the mission file carries the full schema, but NOT yet enforced:
+    # the abort/RTH state + battery_status telemetry that consume this land in M4. Until then this
+    # is forward-declared config, not live behavior.
     low_battery_threshold: float = 0.20  # OQ-6 default (battery_status.remaining)
 
 
