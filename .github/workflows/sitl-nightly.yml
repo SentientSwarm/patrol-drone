@@ -32,15 +32,18 @@ jobs:
       - name: Generate build args from stack-manifest.toml
         run: python3 scripts/gen_build_args.py --env > .env.build
 
+      # docker-compose.ci.yml overrides the `sim` service onto default bridge networking: CI runs
+      # PX4, the agent, AND pytest inside the one container (docker exec), so it needs no host
+      # network namespace (Hermes Medium #2). Both -f files flow through EVERY compose call below.
       - name: Build sim image (PX4 SITL + Gazebo + uXRCE-DDS agent)
-        run: docker compose --env-file .env.build build sim
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build build sim
 
       - name: Bring up SITL (agent + PX4 gz_x500, headless)
-        run: docker compose --env-file .env.build up -d sim
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build up -d sim
 
       - name: Wait for the live /fmu/* bridge
         run: |
-          CID=$(docker compose --env-file .env.build ps -q sim)
+          CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
           for i in $(seq 1 60); do
             if docker exec "$CID" bash -lc '
                 source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
@@ -54,7 +57,7 @@ jobs:
 
       - name: Run the basic-mission integration test (AC-5 / MC-10)
         run: |
-          CID=$(docker compose --env-file .env.build ps -q sim)
+          CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
           # The sim image already carries the runtime + ROS + the built ws AND the pinned test
           # harness (python3-pytest + launch_pytest, baked into docker/sim/Dockerfile's runtime
           # stage) — nothing is installed live here. launch_pytest drives the launch file; pytest
@@ -67,8 +70,8 @@ jobs:
 
       - name: Sim container logs (always)
         if: always()
-        run: docker compose --env-file .env.build logs --no-color sim || true
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build logs --no-color sim || true
 
       - name: Tear down
         if: always()
-        run: docker compose --env-file .env.build down -v || true
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build down -v || true
