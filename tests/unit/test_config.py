@@ -68,7 +68,7 @@ def test_inline_waypoint(tmp_path):
     cfg = load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + waypoints))
     assert len(cfg.waypoints) == 1
     wp = cfg.waypoints[0]
-    assert wp.position_enu == (-10.0, 0.0, 2.0)
+    assert wp.position == (-10.0, 0.0, 2.0)
     assert wp.frame == "enu"
     assert wp.dwell_s == 3.0
     assert wp.checkpoint_id is None

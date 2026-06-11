@@ -102,8 +102,7 @@ class PatrolMissionNode(Node):
             self._cfg.home_position, self._cfg.home_frame, _EKF_ORIGIN_NED
         )
         waypoints_ned = [
-            to_ned_from_origin(w.position_enu, w.frame, _EKF_ORIGIN_NED)
-            for w in self._cfg.waypoints
+            to_ned_from_origin(w.position, w.frame, _EKF_ORIGIN_NED) for w in self._cfg.waypoints
         ]
         self._sm = MissionStateMachine(self._cfg, waypoints_ned, home_ned)
 

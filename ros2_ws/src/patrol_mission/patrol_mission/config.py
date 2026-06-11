@@ -41,8 +41,8 @@ class AbortConfig:
 
 @dataclass(frozen=True)
 class Waypoint:
-    position_enu: Point  # source position (from inline `position` or, M4, a checkpoint_id)
-    frame: str  # "enu" | "ned"
+    position: Point  # source position (from inline `position` or, M4, a checkpoint_id)
+    frame: str  # "enu" | "ned" — the frame `position` is expressed in (NOT necessarily ENU)
     dwell_s: float
     checkpoint_id: str | None = None  # set when resolved from checkpoints.yaml (M4)
 
@@ -83,7 +83,7 @@ def _parse_waypoint(w: dict) -> Waypoint:
             "checkpoint_id resolution lands in M4 (basic mission uses inline waypoints only)"
         )
     frame = _validate_frame(w["frame"], "waypoint")
-    return Waypoint(position_enu=_point(w["position"]), frame=frame, dwell_s=float(w["dwell_s"]))
+    return Waypoint(position=_point(w["position"]), frame=frame, dwell_s=float(w["dwell_s"]))
 
 
 def load_mission_config(mission_yaml_path: str) -> MissionConfig:
