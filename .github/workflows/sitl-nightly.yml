@@ -55,13 +55,10 @@ jobs:
       - name: Run the basic-mission integration test (AC-5 / MC-10)
         run: |
           CID=$(docker compose --env-file .env.build ps -q sim)
-          # The sim image carries the runtime + ROS + the built ws, but not the test harness.
-          # launch_pytest drives the launch file; pytest runs the assertions (both via apt, no pip).
-          docker exec "$CID" bash -lc '
-            apt-get update && apt-get install -y --no-install-recommends \
-              python3-pytest \
-              ros-${ROS_DISTRO:-jazzy}-launch-testing \
-              ros-${ROS_DISTRO:-jazzy}-launch-pytest'
+          # The sim image already carries the runtime + ROS + the built ws AND the pinned test
+          # harness (python3-pytest + launch_pytest, baked into docker/sim/Dockerfile's runtime
+          # stage) — nothing is installed live here. launch_pytest drives the launch file; pytest
+          # runs the assertions.
           docker cp tests "$CID:/opt/tests"
           docker exec "$CID" bash -lc '
             source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash

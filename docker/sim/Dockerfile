@@ -120,6 +120,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mesa-utils libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
 
+# Pinned SITL test layer: the harness the nightly integration test (AC-5 / MC-10) drives —
+# launch_pytest + pytest. Baked into the image (not apt-installed live at test time) so the test
+# environment is reproducible from the digest-pinned base + manifest-pinned ROS_DISTRO alone. These
+# are unversioned ROS/distro apt names (no manifest version literal), so the manifest-drift gate is
+# unaffected. Installed via apt (no pip), matching the rest of the ROS toolchain.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pytest \
+        "ros-${ROS_DISTRO}-launch-testing" \
+        "ros-${ROS_DISTRO}-launch-pytest" \
+ && rm -rf /var/lib/apt/lists/*
+
 # Micro XRCE-DDS Agent — the native bridge (NOT MAVROS). M2 spike finding (ADR-0007): there is
 # no `ros-${ROS_DISTRO}-micro-xrce-dds-agent` apt package in the Jazzy repo, so build it from
 # source at the pinned eProsima tag (the PX4-canonical method). The build toolchain is already
