@@ -102,3 +102,62 @@ def test_inline_waypoint(tmp_path):
 def test_fail_loud(tmp_path, body, match):
     with pytest.raises((KeyError, ValueError, NotImplementedError), match=match):
         load_mission_config(_write(tmp_path, body))
+
+
+# Shared completion/abort/waypoint scaffolds so the range cases vary only the field under test.
+def _completion(tolerance_m: float, hold_time_s: float) -> str:
+    return f"completion: {{tolerance_m: {tolerance_m}, hold_time_s: {hold_time_s}}}\n"
+
+
+def _waypoint(dwell_s: float) -> str:
+    return (
+        f"waypoints:\n  - position: {{x: 1, y: 1, z: 1}}\n    frame: enu\n    dwell_s: {dwell_s}\n"
+    )
+
+
+# TS-9 (Hermes Medium #2): a numerically well-typed but semantically impossible value fails loud at
+# load time — a config that would immediately land, never complete, or carry an out-of-range future
+# abort threshold must never reach the node.
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("takeoff_alt_m: 0\nhover_time_s: 10\n" + _HOME_ENU + _NO_WAYPOINTS, "takeoff_alt_m"),
+        ("takeoff_alt_m: -5\nhover_time_s: 10\n" + _HOME_ENU + _NO_WAYPOINTS, "takeoff_alt_m"),
+        ("takeoff_alt_m: 5\nhover_time_s: -1\n" + _HOME_ENU + _NO_WAYPOINTS, "hover_time_s"),
+        (_HEAD + _completion(0, 2.0) + _HOME_ENU + _NO_WAYPOINTS, "tolerance_m"),
+        (_HEAD + _completion(0.5, -1) + _HOME_ENU + _NO_WAYPOINTS, "hold_time_s"),
+        (_HEAD + "abort: {low_battery_threshold: 1.5}\n" + _HOME_ENU + _NO_WAYPOINTS, "battery"),
+        (_HEAD + "abort: {low_battery_threshold: -0.1}\n" + _HOME_ENU + _NO_WAYPOINTS, "battery"),
+        (_HEAD + _HOME_ENU + _waypoint(-1), "dwell_s"),
+    ],
+    ids=[
+        "takeoff_alt_zero",
+        "takeoff_alt_negative",
+        "hover_time_negative",
+        "tolerance_zero",
+        "hold_time_negative",
+        "battery_threshold_above_one",
+        "battery_threshold_below_zero",
+        "dwell_negative",
+    ],
+)
+def test_fail_loud_out_of_range(tmp_path, body, match):
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, body))
+
+
+# Boundary values that ARE valid must load: zero hover/hold (no wait) and the [0, 1] battery
+# threshold endpoints are accepted — the guard rejects out-of-range, not the legal boundary.
+@pytest.mark.parametrize(
+    "body",
+    [
+        "takeoff_alt_m: 5\nhover_time_s: 0\n" + _HOME_ENU + _NO_WAYPOINTS,
+        _HEAD + _completion(0.5, 0) + _HOME_ENU + _NO_WAYPOINTS,
+        _HEAD + "abort: {low_battery_threshold: 0.0}\n" + _HOME_ENU + _NO_WAYPOINTS,
+        _HEAD + "abort: {low_battery_threshold: 1.0}\n" + _HOME_ENU + _NO_WAYPOINTS,
+        _HEAD + _HOME_ENU + _waypoint(0),
+    ],
+    ids=["hover_zero", "hold_zero", "battery_zero", "battery_one", "dwell_zero"],
+)
+def test_valid_boundaries_load(tmp_path, body):
+    assert isinstance(load_mission_config(_write(tmp_path, body)), MissionConfig)

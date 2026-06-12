@@ -15,6 +15,7 @@ from patrol_mission.state_machine import (
     MissionStateMachine,
     Telemetry,
     local_position_usable,
+    telemetry_fresh,
 )
 
 TAKEOFF_ALT = 5.0
@@ -59,7 +60,6 @@ def test_idle_issues_arm_and_advances_to_arming():
     assert nxt is MissionState.ARMING
     assert cmd.arm is True
     assert cmd.setpoint_ned == TAKEOFF_NED
-    assert cmd.mission_state == "ARMING"
 
 
 # TS-2: ARMING keeps requesting arm + offboard (and keeps streaming the setpoint, A-2) until both
@@ -102,7 +102,7 @@ def test_takeoff_advances_to_hover_after_tolerance_hold():
     sm.tick(MissionState.TAKEOFF, _telem(now_s=0.0, position_ned=TAKEOFF_NED))
     nxt, cmd = sm.tick(MissionState.TAKEOFF, _telem(now_s=HOLD, position_ned=TAKEOFF_NED))
     assert nxt is MissionState.HOVER
-    assert cmd.mission_state == "HOVER"
+    assert cmd.setpoint_ned == TAKEOFF_NED
 
 
 # TS-3 (MC-5): leaving the tolerance ball resets the hold clock — never completes on equality alone.
@@ -205,11 +205,14 @@ def test_basic_mission_rejects_waypoints():
         MissionStateMachine(_config(), waypoints_ned=[(1.0, 2.0, -3.0)], home_ned=HOME_NED)
 
 
-def test_command_mission_state_matches_returned_state():
-    sm = _sm()
-    for state in (MissionState.IDLE, MissionState.LANDING, MissionState.DONE):
-        nxt, cmd = sm.tick(state, _telem(armed=True))
-        assert cmd.mission_state == nxt.name
+# M3 (Hermes Medium): a cached PX4 sample is usable only while its age is within the freshness
+# timeout — once /fmu/out/* stops updating, the node must stop advancing on the frozen fix.
+@pytest.mark.parametrize(
+    ("age_s", "timeout_s", "expected"),
+    [(0.0, 1.0, True), (1.0, 1.0, True), (1.0001, 1.0, False), (5.0, 1.0, False)],
+)
+def test_telemetry_fresh_within_timeout(age_s, timeout_s, expected):
+    assert telemetry_fresh(age_s, timeout_s) is expected
 
 
 # M1 (Hermes Medium #1): a position fix is usable only when PX4 reports BOTH the

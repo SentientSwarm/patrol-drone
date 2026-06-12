@@ -71,6 +71,38 @@ def _validate_frame(frame: str, where: str) -> str:
     return frame
 
 
+def _positive(value: float, name: str) -> None:
+    if value <= 0:
+        raise ValueError(f"{name} must be > 0, got {value}")
+
+
+def _non_negative(value: float, name: str) -> None:
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0, got {value}")
+
+
+def _unit_interval(value: float, name: str) -> None:
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be in [0, 1], got {value}")
+
+
+def _validate_semantics(cfg: MissionConfig) -> None:
+    """Fail loud on a numerically well-typed but semantically impossible mission (Hermes Medium).
+
+    Casting in the loader guarantees the fields are floats; it does NOT stop a config that would
+    immediately land (``takeoff_alt_m <= 0``), never complete (``tolerance_m <= 0`` so the machine
+    never settles within tolerance), or carry an out-of-range future-abort threshold. Guard those
+    invariants here, at the same fail-loud boundary as the missing-field / unknown-frame checks.
+    """
+    _positive(cfg.takeoff_alt_m, "takeoff_alt_m")
+    _non_negative(cfg.hover_time_s, "hover_time_s")
+    _positive(cfg.completion.tolerance_m, "completion.tolerance_m")
+    _non_negative(cfg.completion.hold_time_s, "completion.hold_time_s")
+    _unit_interval(cfg.abort.low_battery_threshold, "abort.low_battery_threshold")
+    for i, wp in enumerate(cfg.waypoints):
+        _non_negative(wp.dwell_s, f"waypoints[{i}].dwell_s")
+
+
 def _point(p: dict) -> Point:
     return (float(p["x"]), float(p["y"]), float(p["z"]))
 
@@ -93,8 +125,9 @@ def load_mission_config(mission_yaml_path: str) -> MissionConfig:
         mission_yaml_path: path to the mission YAML to load.
 
     Raises:
-        ValueError: on a missing required field, an unknown frame, or (M1) a
-            ``checkpoint_id`` waypoint.
+        ValueError: on a missing required field, an unknown frame, an
+            out-of-range numeric field (see :func:`_validate_semantics`), or
+            (M1) a ``checkpoint_id`` waypoint.
 
     M4 (T2.2) adds a ``checkpoints_yaml_path`` parameter (default
     ``sim/config/checkpoints.yaml``, the OQ-2 file location, kept behind a
@@ -107,7 +140,7 @@ def load_mission_config(mission_yaml_path: str) -> MissionConfig:
     home = _require(raw, "home")
     waypoints = tuple(_parse_waypoint(w) for w in _require(raw, "waypoints"))
 
-    return MissionConfig(
+    cfg = MissionConfig(
         takeoff_alt_m=float(_require(raw, "takeoff_alt_m")),
         hover_time_s=float(_require(raw, "hover_time_s")),
         completion=Completion(**raw.get("completion", {})),
@@ -116,3 +149,5 @@ def load_mission_config(mission_yaml_path: str) -> MissionConfig:
         home_frame=_validate_frame(home["frame"], "home"),
         waypoints=waypoints,
     )
+    _validate_semantics(cfg)
+    return cfg

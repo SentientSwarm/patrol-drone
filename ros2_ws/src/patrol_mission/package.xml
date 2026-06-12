@@ -23,6 +23,14 @@
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <!-- The SITL integration test (tests/integration/test_mission_basic.py) is a launch_pytest
+       test that imports launch / launch_ros / launch_pytest and resolves the node via
+       ament_index_python. Declared here so `colcon test` / rosdep resolves them in any
+       environment, not only the bespoke sim image (Hermes Low). -->
+  <test_depend>launch</test_depend>
+  <test_depend>launch_ros</test_depend>
+  <test_depend>launch_pytest</test_depend>
+  <test_depend>ament_index_python</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

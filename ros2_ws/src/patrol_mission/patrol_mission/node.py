@@ -40,6 +40,7 @@ from patrol_mission.state_machine import (
     MissionStateMachine,
     Telemetry,
     local_position_usable,
+    telemetry_fresh,
 )
 
 # PX4 needs a continuous setpoint + offboard-mode stream established before it will
@@ -47,6 +48,10 @@ from patrol_mission.state_machine import (
 _OFFBOARD_STREAM_WARMUP_TICKS = 10
 _TIMER_PERIOD_S = 0.1  # 10 Hz (A-2 keepalive rate)
 _EKF_ORIGIN_NED: Point = (0.0, 0.0, 0.0)  # SITL local position is already origin-relative NED
+# Max age (s) of a cached /fmu/out/* sample before the node stops advancing the mission on it
+# (Hermes Medium). Sized well above the slowest /fmu/out cadence (vehicle_status) so normal jitter
+# never trips it; its job is to catch a STOPPED stream (age grows unbounded), not to police latency.
+_TELEMETRY_TIMEOUT_S = 2.0
 
 # The ONE site that binds the pure Px4CommandKind symbols (patrol_mission.commands) to their
 # px4_msgs MAVLink IDs. Referencing the VehicleCommand.* constants directly means the IDs can't
@@ -95,6 +100,10 @@ class PatrolMissionNode(Node):
         # never publishes arm/offboard intent on stale defaults before observability is confirmed.
         self._pos: VehicleLocalPosition | None = None
         self._status: VehicleStatus | None = None
+        # Receipt time (node clock, s) of the latest sample on each stream — None until first arrival.
+        # _on_tick uses these to refuse to advance the mission on a frozen fix (Hermes Medium).
+        self._pos_rx_s: float | None = None
+        self._status_rx_s: float | None = None
         self._state = MissionState.IDLE
         self._warmup = 0
 
@@ -113,9 +122,11 @@ class PatrolMissionNode(Node):
 
     def _on_pos(self, msg: VehicleLocalPosition) -> None:
         self._pos = msg
+        self._pos_rx_s = self._clock_s()
 
     def _on_status(self, msg: VehicleStatus) -> None:
         self._status = msg
+        self._status_rx_s = self._clock_s()
 
     # --- 10 Hz control loop -------------------------------------------------
 
@@ -126,19 +137,42 @@ class PatrolMissionNode(Node):
             return  # no telemetry yet — keep the heartbeat alive but do not progress/arm on defaults
         if not local_position_usable(pos.xy_valid, pos.z_valid):
             return  # EKF position estimate not yet valid — heartbeat stays alive, don't arm on it
-        telem = self._build_telemetry(pos, status)
+        now_s = self._clock_s()
+        if self._telemetry_stale(now_s):
+            # A /fmu/out stream stopped after a valid sample: keep the heartbeat alive (so PX4's own
+            # failsafe governs) but do NOT advance the mission on the frozen fix (Hermes Medium).
+            self.get_logger().warning(
+                "stale /fmu/out telemetry — pausing mission progression", throttle_duration_sec=1.0
+            )
+            return
+        telem = self._build_telemetry(pos, status, now_s)
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)
         if self._warmup < _OFFBOARD_STREAM_WARMUP_TICKS:
             self._warmup += 1
 
-    def _build_telemetry(self, pos: VehicleLocalPosition, status: VehicleStatus) -> Telemetry:
+    def _telemetry_stale(self, now_s: float) -> bool:
+        """True if either required /fmu/out stream's latest sample is older than the freshness timeout."""
+        # Each rx time is set in the same callback as its message, so once _on_tick has confirmed
+        # both _pos and _status are non-None neither rx is None here; the `is None` arm is the
+        # type-narrowing guard (rx_s is float | None) and a belt-and-braces "unknown age == stale".
+        for rx_s in (self._pos_rx_s, self._status_rx_s):
+            if rx_s is None or not telemetry_fresh(now_s - rx_s, _TELEMETRY_TIMEOUT_S):
+                return True
+        return False
+
+    def _build_telemetry(
+        self, pos: VehicleLocalPosition, status: VehicleStatus, now_s: float
+    ) -> Telemetry:
         return Telemetry(
-            now_s=self.get_clock().now().nanoseconds / 1e9,
+            now_s=now_s,
             position_ned=(float(pos.x), float(pos.y), float(pos.z)),
             armed=status.arming_state == VehicleStatus.ARMING_STATE_ARMED,
             offboard_active=status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD,
         )
+
+    def _clock_s(self) -> float:
+        return self.get_clock().now().nanoseconds / 1e9
 
     def _issue(self, cmd: Command) -> None:
         """Translate a decision-layer Command into /fmu/in/* messages.
