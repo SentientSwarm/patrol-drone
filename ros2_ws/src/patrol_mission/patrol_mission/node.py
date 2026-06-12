@@ -172,7 +172,9 @@ class PatrolMissionNode(Node):
         )
 
     def _clock_s(self) -> float:
-        return self.get_clock().now().nanoseconds / 1e9
+        # float() so mypy sees a float return even where rclpy is untyped (nanoseconds -> Any on the
+        # Layer-A runner, which has no rclpy); mirrors _now_us's int() cast. Without it: no-any-return.
+        return float(self.get_clock().now().nanoseconds / 1e9)
 
     def _issue(self, cmd: Command) -> None:
         """Translate a decision-layer Command into /fmu/in/* messages.
