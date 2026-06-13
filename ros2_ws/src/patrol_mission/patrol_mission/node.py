@@ -12,9 +12,11 @@ The single ENU->NED conversion happens at exactly one site
 ``VehicleLocalPosition`` frame is already EKF-origin-relative NED, so the origin
 offset is zero; M4 captures a live origin if needed.
 
-This module imports rclpy + px4_msgs and is therefore **not** exercised by the
-Layer-A unit suite; it is covered by ``colcon build`` and the SITL integration
-test (T1.7 / AC-5).
+This module imports rclpy + px4_msgs, so it is not part of the ≥85% Layer-A
+coverage gate. Its glue logic is still guarded fast and per-PR by
+``tests/unit/test_node_glue.py`` (which stubs rclpy/px4_msgs so the branch logic
+runs ROS-free); ``colcon build`` and the SITL integration test (T1.7 / AC-5)
+remain the live-environment end-to-end checks.
 """
 
 from __future__ import annotations

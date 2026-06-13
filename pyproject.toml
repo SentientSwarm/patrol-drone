@@ -111,9 +111,12 @@ branch = true
 # source_pkgs = ["patrol_mission"] once an editable install lands (M3 spike).
 source = ["ros2_ws/src/patrol_mission/patrol_mission"]
 # T1.7 coverage-source resolution (design §4.4.4): node.py is the rclpy plumbing layer
-# (imports rclpy/px4_msgs) — it cannot run on the ROS-free Layer-A runner and is covered by
-# the SITL integration test (AC-5), not the unit suite. Omitting it keeps the ≥85% gate scoped
-# to the three rclpy-free modules {state_machine, frames, config} the gate is meant to guard.
+# (imports rclpy/px4_msgs). Its glue (telemetry/EKF gating, the stale-telemetry pause, tick
+# dispatch, _issue ID mapping, warmup mutation) now has a fast PR-level guard —
+# tests/unit/test_node_glue.py stubs rclpy/px4_msgs so the branch logic runs ROS-free — with full
+# SITL (AC-5) as the end-to-end check. It stays OMITTED from the percentage gate by design: the
+# ≥85% floor scopes to the three rclpy-free modules {state_machine, frames, config}, and node.py's
+# publishers/main() still only execute under SITL, so measuring it as a percentage would mislead.
 omit = ["ros2_ws/src/patrol_mission/patrol_mission/node.py"]
 
 [tool.coverage.report]
