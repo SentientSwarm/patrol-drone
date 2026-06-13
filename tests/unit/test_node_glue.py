@@ -72,10 +72,10 @@ class _RecordingLogger:
     def __init__(self) -> None:
         self.warnings: list[str] = []
 
-    def info(self, *_a: Any, **_k: Any) -> None: ...
+    def info(self, _msg: object) -> None: ...
 
-    def warning(self, msg: str, *_a: Any, **_k: Any) -> None:
-        self.warnings.append(msg)
+    def warning(self, msg: str, **_kw: Any) -> None:
+        self.warnings.append(msg)  # node throttles via throttle_duration_sec= (swallowed by **_kw)
 
 
 class _FakeNode:
@@ -98,7 +98,7 @@ class _FakeNode:
         self.pubs[topic] = pub
         return pub
 
-    def create_subscription(self, *_a: Any, **_k: Any) -> None: ...
+    def create_subscription(self, *_a: Any) -> None: ...  # node calls this positionally only
 
     def create_timer(self, period: float, callback: Any) -> None:
         self.timers.append((period, callback))
