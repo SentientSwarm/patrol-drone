@@ -1,14 +1,77 @@
-name: SITL (scaffold)
-# Manual-only for now. The nightly `schedule:` returns in M3 once there is a real
-# SITL job to run — until then a nightly cron would just produce daily no-op runs.
+name: SITL nightly
+# The canonical SITL integration tier (OQ-5, MC-10): build the sim container (PX4 SITL +
+# Gazebo Harmonic + the uXRCE-DDS agent, from source at the pinned manifest tags), bring it
+# up headless, and run the canonical mission integration test against the live /fmu/* bridge.
+#
+# NEVER a required per-PR check (it is slow and SITL can flake): nightly cron + manual dispatch
+# only. Per the M2 scaffold's own note, the nightly `schedule:` returns in M3 now that there is
+# a real job to run. Budget is provisional (≤8 min/scenario, design OQ-5); MZ.1 re-measures.
 on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC nightly
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: sitl-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   sitl_integration:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    # container: ghcr.io/sentientswarm/patrol-drone-sim:latest  # docker/sim image (M3+)
+    # PX4 + the agent are compiled from source in the image build (cached across runs), then a
+    # full arm->takeoff->hover->land mission runs. 90 min covers a cold build + the scenario.
+    timeout-minutes: 90
     steps:
-      - run: 'echo "TODO M3+: PX4 SITL + Gazebo Harmonic, run canonical mission, assert on bag"'
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      # Build ARGs (PX4/agent/Gazebo pins) come from the canonical stack-manifest.toml — never
+      # duplicated in the workflow (ADR-0004/0005/0006).
+      - name: Generate build args from stack-manifest.toml
+        run: python3 scripts/gen_build_args.py --env > .env.build
+
+      # docker-compose.ci.yml overrides the `sim` service onto default bridge networking: CI runs
+      # PX4, the agent, AND pytest inside the one container (docker exec), so it needs no host
+      # network namespace (Hermes Medium #2). Both -f files flow through EVERY compose call below.
+      - name: Build sim image (PX4 SITL + Gazebo + uXRCE-DDS agent)
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build build sim
+
+      - name: Bring up SITL (agent + PX4 gz_x500, headless)
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build up -d sim
+
+      - name: Wait for the live /fmu/* bridge
+        run: |
+          CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
+          for i in $(seq 1 60); do
+            if docker exec "$CID" bash -lc '
+                source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
+                source /opt/ros2_ws/install/setup.bash
+                ros2 topic list 2>/dev/null | grep -q /fmu/out/vehicle_status_v1'; then
+              echo "bridge up after ${i}0s"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::/fmu/* bridge did not come up within 10 min"; exit 1
+
+      - name: Run the basic-mission integration test (AC-5 / MC-10)
+        run: |
+          CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
+          # The sim image already carries the runtime + ROS + the built ws AND the pinned test
+          # harness (python3-pytest + launch_pytest, baked into docker/sim/Dockerfile's runtime
+          # stage) — nothing is installed live here. launch_pytest drives the launch file; pytest
+          # runs the assertions.
+          docker cp tests "$CID:/opt/tests"
+          docker exec "$CID" bash -lc '
+            source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
+            source /opt/ros2_ws/install/setup.bash
+            python3 -m pytest /opt/tests/integration -m ros -o markers=ros -ra'
+
+      - name: Sim container logs (always)
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build logs --no-color sim || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build down -v || true

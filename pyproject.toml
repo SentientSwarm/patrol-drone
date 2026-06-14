@@ -57,8 +57,16 @@ exclude = [
     "^ros2_ws/src/external/",          # vendored px4_msgs / px4_ros_com
     "^tests/integration/",             # live ROS env — Layer B / nightly only
     "^tests/replay/",
+    # ament_python `setup.py` shims share the basename `setup` across packages, which mypy
+    # rejects as a duplicate module ("found twice under different module names"). They are
+    # trivial setuptools boilerplate (no first-party logic); exclude them from type-checking.
+    "^ros2_ws/src/[^/]+/setup\\.py$",
+    # Launch files are ROS-runtime wiring (no first-party logic) and import `launch`/`launch_ros`,
+    # which are not installed on the Layer-A runner. Like tests/integration, they belong to the
+    # live-ROS tier (verified by `colcon build` + the SITL nightly), not Layer-A type-checking.
+    "^ros2_ws/src/[^/]+/launch/.*\\.py$",
 ]
-# mypy_path = "ros2_ws/src/patrol_mission"   # enable at M3 so `import patrol_mission` resolves
+mypy_path = "ros2_ws/src/patrol_mission"   # M3: so `import patrol_mission` resolves for mypy
 
 # Tighten the ROS-free mission core (highest bug risk).
 [[tool.mypy.overrides]]
@@ -79,8 +87,18 @@ module = [
     "patrol_interfaces", "patrol_interfaces.*",
     "rosidl_runtime_py", "rosidl_runtime_py.*",
     "ament_index_python", "ament_index_python.*",
+    "launch", "launch.*",
+    "launch_ros", "launch_ros.*",
     "setuptools", "setuptools.*",      # every ament_python package's setup.py imports it (no stubs on Layer A)
+    "yaml", "yaml.*",                  # PyYAML ships no PEP 561 stubs; system dep (design §3.5 row 6)
 ]
+ignore_missing_imports = true
+
+# The shared M3 acceptance module lives under tests/integration/ (a live-ROS, mypy-EXCLUDED dir, so
+# it ships to the nightly container via `docker cp tests`). scripts/verify_mission.py — which mypy
+# DOES check — imports it after a sys.path bootstrap mypy can't follow, so treat it as missing-stubs.
+[[tool.mypy.overrides]]
+module = ["mission_acceptance"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -88,7 +106,7 @@ minversion = "9.0"
 testpaths = ["tests/unit"]
 norecursedirs = ["tests/integration", "tests/replay", "ros2_ws/src/external"]
 addopts = "-ra --strict-markers --strict-config"
-# pythonpath = ["ros2_ws/src/patrol_mission"]   # enable at M3 so `import patrol_mission` works
+pythonpath = ["ros2_ws/src/patrol_mission"]   # M3: makes `import patrol_mission` work for Layer-A unit tests
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
 ]
@@ -99,6 +117,14 @@ branch = true
 # Path-based source aligns with the M3 pytest pythonpath above; may switch to
 # source_pkgs = ["patrol_mission"] once an editable install lands (M3 spike).
 source = ["ros2_ws/src/patrol_mission/patrol_mission"]
+# T1.7 coverage-source resolution (design §4.4.4): node.py is the rclpy plumbing layer
+# (imports rclpy/px4_msgs). Its glue (telemetry/EKF gating, the stale-telemetry pause, tick
+# dispatch, _issue ID mapping, warmup mutation) now has a fast PR-level guard —
+# tests/unit/test_node_glue.py stubs rclpy/px4_msgs so the branch logic runs ROS-free — with full
+# SITL (AC-5) as the end-to-end check. It stays OMITTED from the percentage gate by design: the
+# ≥85% floor scopes to the three rclpy-free modules {state_machine, frames, config}, and node.py's
+# publishers/main() still only execute under SITL, so measuring it as a percentage would mislead.
+omit = ["ros2_ws/src/patrol_mission/patrol_mission/node.py"]
 
 [tool.coverage.report]
 show_missing = true

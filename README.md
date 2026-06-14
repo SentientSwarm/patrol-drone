@@ -81,6 +81,29 @@ docker compose --env-file .env.build run --rm dev colcon build             #  8 
 > — there is no `ros-jazzy-micro-xrce-dds-agent` apt package in the ROS 2 Jazzy repo. Both the sim
 > container and `setup_phase1.sh` build the same pinned version, so the host and container agree.
 
+## Quickstart — M3 bring-up (basic mission: takeoff & land)
+
+**M3** lands the first mission node. With a SITL drone + the M2 bridge up, one launch command
+arms the drone, climbs to 5 m AGL, hovers 10 s, and lands:
+
+```bash
+# with `docker compose ... up -d sim` running (M2 bridge live), in a sourced shell:
+ros2 launch patrol_bringup mission_basic.launch.py                         # arm → 5 m → hover 10 s → land
+```
+
+The mission *decisions* live in a ROS-free `MissionStateMachine` (plain Python, hand-rolled), so
+every transition is unit-tested in <5 s with no ROS/Gazebo/PX4 — run the Layer-A suite directly:
+
+```bash
+uv run pytest tests/unit                                                   # mission core, ≥85% coverage
+```
+
+The thin `PatrolMissionNode` owns the ROS plumbing (the 10 Hz offboard keepalive + `/fmu/*`
+pub/sub) and drives `tick()`; the route/params come from the checked-in
+[`mission_basic.yaml`](ros2_ws/src/patrol_bringup/config/mission_basic.yaml) (no route data in
+source). The full arm→takeoff→hover→land run against live SITL is exercised by the nightly SITL
+job (never a per-PR gate).
+
 ## Stack at a glance
 
 | Layer | Choice |

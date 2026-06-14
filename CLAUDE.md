@@ -14,7 +14,8 @@ The deliverable of the current phase is **software, not flight time**. Hardware 
 
 - **M1 — toolchain installed, vanilla SITL flying. ✅ COMPLETE.** `make px4_sitl gz_x500` builds and launches, x500 spawns in Gazebo (NVIDIA-accelerated), QGC connects, and the exit criterion was met: stable 60 s hover via QGC Takeoff, then land.
 - M2 — ROS 2 Jazzy + uXRCE-DDS bridge (PX4 topics visible in ROS 2). **In progress** (`phase1/m2-bridge-bringup`): `px4_msgs`/`px4_ros_com` vendored, `patrol_*` shells + green `colcon build`, `sim`/`dev` containers + compose. Spike finding [ADR-0007](docs/decisions/0007-uxrce-dds-agent-from-source.md): the Micro XRCE-DDS Agent is built from source (no Jazzy apt package).
-- M3–M8 — Python mission node → multi-waypoint patrol → custom world + AprilTags → perception/image capture → rosbag2/MCAP logging → bag→DGX→Foxglove replay. See the Phase 1 plan for per-milestone goals and exit tests.
+- M3 — Python mission node, takeoff and land. **In progress** (`phase1/m3-mission-node`, stacked on M2): the ROS-free `MissionStateMachine` (hand-rolled, OQ-1) + `FrameConversion` (single ENU↔NED site, MC-7) + `MissionConfig` (fail-loud YAML) under `patrol_mission`, with a `PatrolMissionNode` driving PX4 offboard at 10 Hz over `/fmu/*` (keepalive per A-2) and `ros2 launch patrol_bringup mission_basic.launch.py`. Layer-A unit suite ≥85% (currently 100%) in <5 s with no ROS; the basic-mission SITL integration test runs in the nightly tier. Abort/waypoints/RTH are M4.
+- M4–M8 — multi-waypoint patrol → custom world + AprilTags → perception/image capture → rosbag2/MCAP logging → bag→DGX→Foxglove replay. See the Phase 1 plan for per-milestone goals and exit tests.
 
 Current branch convention: `phase1/m<n>-<slug>` (e.g. `phase1/m1-host-setup`), PR'd into `main`.
 
@@ -101,6 +102,7 @@ Most dirs are scaffolding (`.gitkeep`) until their milestone lands. Single monor
 - **Tests before merge.** Unit tests for new state-machine logic (London-style TDD: the `MissionStateMachine` is plain Python, testable without ROS); integration suite must pass; bag-producing changes get a replay regression. Target >80% state-machine coverage, unit suite <5 s.
 - **Write down non-obvious decisions** as a short ADR in `docs/decisions/` (context / decision / consequences). The bar is low.
 - Code style: `ruff` (line-length 100, py312 target, rules E/F/I/UP/B).
+- **CodeScene code-health gate (PR check, beyond ADR-0002's CI).** Every PR runs a CodeScene "Clean Code Collective" delta review that **fails when a new/changed file scores below 10.0**. It is stricter than `ruff`/`xenon` and trips most often on the *first* PR of a milestone. Recurring offenders here: **Code Duplication** — repeated literal blocks across tests (M3); fix by `@pytest.mark.parametrize` or extracting shared fixtures/builders/constants, not copy-paste — and **Bumpy Road / Complex Method / Complex Conditional** — nested conditional logic in one function (M2); fix by flattening with early returns and extracting helpers (xenon already caps per-function CC ≤10, but CodeScene also penalizes *shape*/nesting). Self-check before opening a PR: any test or function that repeats a near-identical block, or nests conditionals more than ~2 deep, will likely drop a file below 10.0. Suppressing a finding in CodeScene is a last resort, not the default.
 
 ## Where to look
 
