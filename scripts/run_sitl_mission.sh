@@ -29,7 +29,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Reuse env_doctor's agent resolver + capability gate rather than re-implementing them (one source
 # of truth for "is the agent runnable"). Sourcing only DEFINES its functions (env_doctor's main is
 # guarded). Source it FIRST so this script's own usage()/main() definitions below take precedence.
-# shellcheck source=scripts/env_doctor.sh
+# shellcheck source=scripts/env_doctor.sh disable=SC1091
 source "${SCRIPT_DIR}/env_doctor.sh"
 
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
@@ -82,7 +82,7 @@ parse_args() {
   done
 }
 
-# shellcheck disable=SC2317  # body is reached via `trap shutdown ...` in main(), not a direct call
+# shellcheck disable=SC2317,SC2329  # reached via `trap shutdown ...` in main(), not a direct call
 shutdown() {
   trap '' INT TERM
   log "tearing down (logs kept in ${LOG_DIR})"
