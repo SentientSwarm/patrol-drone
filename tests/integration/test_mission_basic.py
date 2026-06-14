@@ -1,57 +1,39 @@
 """SITL integration test for the basic mission (AC-1, AC-5, MC-10).
 
-Spins the mission node via ``mission_basic.launch.py`` against a **real** PX4
-SITL drone (Gazebo Harmonic) reachable over the uXRCE-DDS bridge, and asserts the
-observable progression of the basic mission:
+Spins the mission node via ``mission_basic.launch.py`` against a **real** PX4 SITL drone (Gazebo
+Harmonic) reachable over the uXRCE-DDS bridge, and asserts the observable progression of the basic
+mission:
 
     arm  ->  climb to ~5 m AGL  ->  hover  ->  land + disarm
 
-The simulator is never mocked (tests/README): if a test needs flight dynamics it
-uses real SITL. PX4 SITL + the Micro XRCE-DDS Agent are brought up by the nightly
-job *before* pytest runs; this test launches only the mission node and observes
-``/fmu/out/*``. ``/patrol/*`` mission topics arrive in M4, so M1 asserts on the
-PX4 telemetry surface directly.
+The simulator is never mocked (tests/README): if a test needs flight dynamics it uses real SITL.
+PX4 SITL + the Micro XRCE-DDS Agent are brought up by the nightly job *before* pytest runs; this
+test launches only the mission node and observes ``/fmu/out/*``.
 
-Runs in the nightly SITL tier only — never a required per-PR check (OQ-5). Marked
-``ros`` so the Layer-A unit runner (which has no ROS) skips it.
+The PASS/FAIL definition itself lives in :mod:`mission_acceptance`, shared verbatim with the host
+verifier (``scripts/verify_mission.py``) so the two can't drift — this test only wires the launch
+and turns each shared :class:`~mission_acceptance.Check` into an assertion.
+
+Runs in the nightly SITL tier only — never a required per-PR check (OQ-5). Marked ``ros`` so the
+Layer-A unit runner (which has no ROS) skips it.
 """
-
-import time
-from pathlib import Path
 
 import launch_pytest
 import pytest
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
-from patrol_mission.config import load_mission_config
-from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
-from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-
-from patrol_mission import topics
+from mission_acceptance import (
+    MissionAcceptanceWatcher,
+    evaluate,
+    load_thresholds,
+    spin_until_complete,
+)
 
 pytestmark = pytest.mark.ros
-
-# Derive thresholds from the SAME mission YAML the launch file feeds the node, so the test can
-# never drift from the flown config (Hermes Low #1). Resolved via the installed package share,
-# matching mission_basic.launch.py's FindPackageShare("patrol_bringup").
-_CFG = load_mission_config(
-    str(Path(get_package_share_directory("patrol_bringup")) / "config" / "mission_basic.yaml")
-)
-TAKEOFF_ALT_M = _CFG.takeoff_alt_m
-HOVER_TIME_S = _CFG.hover_time_s  # the window the drone must HOLD altitude
-# "Reached altitude" = within the completion tolerance of the -takeoff_alt_m NED setpoint.
-ALT_REACHED_NED_Z = -(TAKEOFF_ALT_M - _CFG.completion.tolerance_m)
-# Require most of the hover window to be observed at altitude before accepting the mission as
-# complete. Below HOVER_TIME_S to tolerate climb-settle and 2 Hz sampling jitter — its purpose is
-# to reject a climb->immediate-disarm/failsafe run that never actually hovered.
-HOVER_MIN_OBSERVED_S = HOVER_TIME_S - 2.0
-MISSION_TIMEOUT_S = 120.0
 
 
 @launch_pytest.fixture
@@ -70,89 +52,15 @@ def mission_launch() -> LaunchDescription:
     )
 
 
-class _TelemetryWatcher(Node):
-    """Records the arm/altitude/disarm milestones observed on /fmu/out/*."""
-
-    def __init__(self) -> None:
-        super().__init__("mission_basic_test_watcher")
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-        )
-        self.was_armed = False
-        self.reached_altitude = False
-        self.disarmed_after_arm = False
-        # This PR is specifically about Offboard mission control, so prove the vehicle actually
-        # entered OFFBOARD nav_state — not merely that it armed and climbed (Hermes Low #1).
-        self.saw_offboard = False
-        # Continuous-hold tracking: the longest *uninterrupted* window observed at/above takeoff
-        # altitude. _hold_start_s marks when the current window began (None = currently below the
-        # band); any drop resets it, mirroring the state machine's continuous-hold logic
-        # (state_machine._within_tolerance_for_hold). A momentary touch or a dip mid-hover can't
-        # accumulate into a passing window — only a real hover can.
-        self._hold_start_s: float | None = None
-        self._max_continuous_hold_s = 0.0
-        # Topic names come from the shared patrol_mission.topics contract (PX4 v1.17 _v1).
-        self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
-        self.create_subscription(
-            VehicleLocalPosition, topics.VEHICLE_LOCAL_POSITION, self._on_pos, qos
-        )
-
-    def _on_status(self, msg: VehicleStatus) -> None:
-        if msg.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
-            self.saw_offboard = True
-        armed = msg.arming_state == VehicleStatus.ARMING_STATE_ARMED
-        if armed:
-            self.was_armed = True
-        elif self.was_armed and self.reached_altitude:
-            self.disarmed_after_arm = True
-
-    def _on_pos(self, msg: VehicleLocalPosition) -> None:
-        now = time.monotonic()
-        if msg.z > ALT_REACHED_NED_Z:
-            self._hold_start_s = None  # below the band — break the continuous-hold window
-            return
-        self.reached_altitude = True
-        if self._hold_start_s is None:
-            self._hold_start_s = now  # window starts on the first sample back in the band
-        self._max_continuous_hold_s = max(self._max_continuous_hold_s, now - self._hold_start_s)
-
-    @property
-    def continuous_hold_s(self) -> float:
-        """Longest *uninterrupted* window observed at/above takeoff altitude (resets on any drop)."""
-        return self._max_continuous_hold_s
-
-    @property
-    def mission_complete(self) -> bool:
-        return (
-            self.was_armed
-            and self.saw_offboard
-            and self.reached_altitude
-            and self.disarmed_after_arm
-            and self.continuous_hold_s >= HOVER_MIN_OBSERVED_S
-        )
-
-
 @pytest.mark.launch(fixture=mission_launch)
 def test_basic_mission_arms_climbs_and_lands() -> None:
     rclpy.init()
-    watcher = _TelemetryWatcher()
+    thresholds = load_thresholds()
+    watcher = MissionAcceptanceWatcher(thresholds)
     try:
-        deadline = time.monotonic() + MISSION_TIMEOUT_S
-        while time.monotonic() < deadline and not watcher.mission_complete:
-            rclpy.spin_once(watcher, timeout_sec=0.5)
-
-        assert watcher.was_armed, "drone never armed"
-        assert watcher.saw_offboard, "vehicle never entered OFFBOARD nav_state"
-        assert watcher.reached_altitude, f"drone never reached ~{TAKEOFF_ALT_M} m AGL"
-        assert watcher.continuous_hold_s >= HOVER_MIN_OBSERVED_S, (
-            f"drone held altitude continuously only {watcher.continuous_hold_s:.1f} s "
-            f"(< {HOVER_MIN_OBSERVED_S} s of the {HOVER_TIME_S} s hover window) — "
-            "it must hover continuously, not climb-and-immediately-land or dip mid-hover"
-        )
-        assert watcher.disarmed_after_arm, "drone never disarmed (landing) after the mission"
+        spin_until_complete(watcher, thresholds)
+        for check in evaluate(watcher, thresholds):
+            assert check.passed, f"{check.name}: {check.detail}"
     finally:
         watcher.destroy_node()
         rclpy.shutdown()

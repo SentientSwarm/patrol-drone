@@ -596,6 +596,19 @@ install_px4() {
   NEED_REBOOT=1
 }
 
+# ----------------------------------------------------------------------------- env doctor smoke
+# After provisioning, run the UAT Doctor in --smoke mode (prerequisites only — it skips the
+# workspace-built check, which is a milestone DELIVERABLE, not a host prerequisite, ADR-0003).
+# ADVISORY: a smoke failure never fails setup. It legitimately flags things that aren't satisfied
+# yet at this point (e.g. the session is still Wayland until the pending reboot), so it surfaces the
+# fixes rather than aborting a successful install.
+run_env_doctor_smoke() {
+  local doctor="${REPO_ROOT}/scripts/env_doctor.sh"
+  [[ -r "${doctor}" ]] || { warn "env_doctor.sh not found at ${doctor}; skipping smoke check."; return 0; }
+  log "Running the UAT env_doctor smoke check (capability sanity; advisory)..."
+  bash "${doctor}" --smoke || warn "env_doctor smoke check reported issues (advisory — apply the fixes above)."
+}
+
 # ----------------------------------------------------------------------------- summary
 print_next_steps() {
   echo
@@ -641,6 +654,7 @@ main() {
   disable_wayland
   install_python_env
   install_px4
+  run_env_doctor_smoke
   print_next_steps
 }
 

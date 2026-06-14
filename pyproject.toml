@@ -94,6 +94,13 @@ module = [
 ]
 ignore_missing_imports = true
 
+# The shared M3 acceptance module lives under tests/integration/ (a live-ROS, mypy-EXCLUDED dir, so
+# it ships to the nightly container via `docker cp tests`). scripts/verify_mission.py — which mypy
+# DOES check — imports it after a sys.path bootstrap mypy can't follow, so treat it as missing-stubs.
+[[tool.mypy.overrides]]
+module = ["mission_acceptance"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 minversion = "9.0"
 testpaths = ["tests/unit"]
