@@ -108,6 +108,11 @@ class PatrolMissionNode(Node):
         self._status_rx_s: float | None = None
         self._state = MissionState.IDLE
         self._warmup = 0
+        # True while the node is skipping state-machine progression (no telemetry, EKF not yet valid,
+        # or a stale /fmu/out stream). On the edge back to a fresh, usable tick the node restarts the
+        # machine's time-based windows (HOVER/tolerance-hold) so they never complete on wall-time that
+        # elapsed while the machine was NOT ticking (Codex/Claude review #1).
+        self._progression_paused = True
 
         home_ned = to_ned_from_origin(
             self._cfg.home_position, self._cfg.home_frame, _EKF_ORIGIN_NED
@@ -136,17 +141,25 @@ class PatrolMissionNode(Node):
         self._publish_keepalive()  # A-2: heartbeat every tick, even before telemetry/offboard
         pos, status = self._pos, self._status
         if pos is None or status is None:
+            self._progression_paused = True
             return  # no telemetry yet — keep the heartbeat alive but do not progress/arm on defaults
         if not local_position_usable(pos.xy_valid, pos.z_valid):
+            self._progression_paused = True
             return  # EKF position estimate not yet valid — heartbeat stays alive, don't arm on it
         now_s = self._clock_s()
         if self._telemetry_stale(now_s):
             # A /fmu/out stream stopped after a valid sample: keep the heartbeat alive (so PX4's own
             # failsafe governs) but do NOT advance the mission on the frozen fix (Hermes Medium).
+            self._progression_paused = True
             self.get_logger().warning(
                 "stale /fmu/out telemetry — pausing mission progression", throttle_duration_sec=1.0
             )
             return
+        if self._progression_paused:
+            # Resuming after a pause: restart the active state's time-based windows so a HOVER/hold
+            # cannot complete on wall-time that elapsed while the machine was NOT ticking (review #1).
+            self._sm.reset_timing()
+            self._progression_paused = False
         telem = self._build_telemetry(pos, status, now_s)
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)

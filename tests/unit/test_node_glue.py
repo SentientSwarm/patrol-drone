@@ -241,6 +241,36 @@ def test_stale_gate_logs_warning(node: Any, node_mod: ModuleType):
     assert any("stale" in w for w in node.logger.warnings)
 
 
+def test_resume_after_stale_resets_machine_timing(
+    node: Any, node_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    # Review #1: on the stale->fresh resume edge the node restarts the state-machine's time-based
+    # windows (reset_timing) so a HOVER/hold can't complete on wall-time elapsed during a blackout.
+    # A normal run resets once (the startup pause edge) and never again while telemetry stays fresh.
+    calls = 0
+    original = node._sm.reset_timing
+
+    def _spy() -> None:
+        nonlocal calls
+        calls += 1
+        original()
+
+    monkeypatch.setattr(node._sm, "reset_timing", _spy)
+
+    _feed_valid_fresh(node, node_mod)
+    node._on_tick()  # first fresh tick after the startup pause -> exactly one reset
+    node._on_tick()  # steady fresh ticking -> no further reset
+    assert calls == 1
+
+    node.clock.ns += int(5 * 1e9)  # freeze the fix past _TELEMETRY_TIMEOUT_S
+    node._on_tick()  # stale -> paused, machine not ticked, no reset
+    assert calls == 1
+
+    _feed_valid_fresh(node, node_mod)  # fresh samples arrive at the advanced clock
+    node._on_tick()  # resume edge -> the window is restarted
+    assert calls == 2
+
+
 def test_valid_fresh_tick_dispatches_and_advances_warmup(node: Any, node_mod: ModuleType):
     _feed_valid_fresh(node, node_mod)
 

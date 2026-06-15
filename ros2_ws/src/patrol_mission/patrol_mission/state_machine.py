@@ -148,6 +148,21 @@ class MissionStateMachine:
             self._p.inside_since_s = None
         return self._dispatch[state](telem)
 
+    def reset_timing(self) -> None:
+        """Restart the active state's time-based windows on the next ``tick()``.
+
+        The time-based completions (HOVER duration, TAKEOFF tolerance-hold) measure elapsed wall
+        time via ``telem.now_s`` deltas. If the node stops ticking the machine while ``/fmu/out``
+        telemetry is stale (it pauses progression — see the node's stale gate) and later resumes,
+        the injected ``now_s`` has jumped forward by the whole blackout, so a window could otherwise
+        "complete" on time that elapsed with no fresh in-tolerance evidence. The node calls this on
+        the stale->fresh resume edge so the current state re-enters fresh (entry timestamp and the
+        tolerance-hold clock reset on the next tick), making the machine re-establish the hold/hover
+        from observed-on-resume evidence rather than crediting the unobserved gap. Conservative by
+        design: it can only ever delay a completion, never bring one forward.
+        """
+        self._p.last_state = None
+
     def _within_tolerance_for_hold(self, telem: Telemetry, target: Point) -> bool:
         """MC-5: complete iff continuously within tolerance for hold_time_s — never on equality."""
         if _distance(telem.position_ned, target) <= self._cfg.completion.tolerance_m:

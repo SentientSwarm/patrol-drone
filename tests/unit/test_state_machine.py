@@ -205,6 +205,35 @@ def test_basic_mission_rejects_waypoints():
         MissionStateMachine(_config(), waypoints_ned=[(1.0, 2.0, -3.0)], home_ned=HOME_NED)
 
 
+# Review #1: reset_timing() restarts the active state's time-based windows so the machine never
+# completes a HOVER / tolerance-hold on wall-time that elapsed while the node was NOT ticking it
+# (the stale-telemetry pause). After a reset mid-HOVER the hover clock starts over from the resume
+# time, so a now_s that already spans hover_time_s does not complete until a fresh full window.
+def test_reset_timing_restarts_hover_window():
+    sm = _sm()
+    sm.tick(MissionState.HOVER, _telem(now_s=0.0, position_ned=TAKEOFF_NED))  # enter HOVER at t=0
+    sm.tick(MissionState.HOVER, _telem(now_s=5.0, position_ned=TAKEOFF_NED))  # 5 s of real hover
+    sm.reset_timing()  # node observed a stale->fresh resume edge: restart the window
+    # now_s has jumped past hover_time_s (the blackout), but the window restarts on the next tick...
+    nxt, _ = sm.tick(MissionState.HOVER, _telem(now_s=100.0, position_ned=TAKEOFF_NED))
+    assert nxt is MissionState.HOVER  # does NOT complete on the unobserved elapsed wall-time
+    # ...and only completes after a fresh full hover_time_s of observed ticking from the resume.
+    nxt, _ = sm.tick(MissionState.HOVER, _telem(now_s=100.0 + HOVER_TIME, position_ned=TAKEOFF_NED))
+    assert nxt is MissionState.LANDING
+
+
+# Review #1: reset_timing() also restarts the TAKEOFF tolerance-hold clock — continuous in-tolerance
+# evidence must be re-established after a resume, never credited across the unobserved gap.
+def test_reset_timing_restarts_tolerance_hold():
+    sm = _sm()
+    sm.tick(MissionState.TAKEOFF, _telem(now_s=0.0, position_ned=TAKEOFF_NED))  # inside tol at t=0
+    sm.reset_timing()
+    nxt, _ = sm.tick(MissionState.TAKEOFF, _telem(now_s=HOLD, position_ned=TAKEOFF_NED))
+    assert nxt is MissionState.TAKEOFF  # hold clock restarted at the resume tick, not yet elapsed
+    nxt, _ = sm.tick(MissionState.TAKEOFF, _telem(now_s=2 * HOLD, position_ned=TAKEOFF_NED))
+    assert nxt is MissionState.HOVER
+
+
 # M3 (Hermes Medium): a cached PX4 sample is usable only while its age is within the freshness
 # timeout — once /fmu/out/* stops updating, the node must stop advancing on the frozen fix.
 @pytest.mark.parametrize(
