@@ -37,6 +37,7 @@ from patrol_mission.config import load_mission_config
 from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from settle_tracker import SettleTracker
 
 from patrol_mission import topics
 
@@ -44,6 +45,12 @@ from patrol_mission import topics
 # settle into the band, and /fmu/out is sampled at ~2 Hz here. Sized below hover_time_s so a real
 # hover passes while a climb-then-immediately-land (or a mid-hover dip) cannot accumulate a window.
 SETTLE_MARGIN_S = 2.0
+# A position-sample gap longer than this breaks the settled-hover window: /fmu/out is sampled at
+# ~2 Hz here, so a >1 s silence means observation was lost and we cannot claim the vehicle stayed in
+# the band through it. Without this, a telemetry blackout spanning the band would be counted as
+# continuous settled-hover time (review #2). Sized above the nominal sampling interval so ordinary
+# jitter never trips it.
+MAX_SETTLE_SAMPLE_GAP_S = 1.0
 # Upper bound on how long to watch a single mission before giving up (covers climb + 10 s hover +
 # land with generous slack); the verifier/test stop early the instant all criteria are met.
 MISSION_TIMEOUT_S = 120.0
@@ -105,10 +112,13 @@ class MissionAcceptanceWatcher(Node):
         self.saw_offboard = False
         self.reached_altitude = False
         self.disarmed_after_arm = False
-        # Longest *uninterrupted* window observed within the settle band; resets on any sample that
-        # leaves the band, so a transient overshoot/dip cannot accumulate into a passing hover.
-        self._settle_start_s: float | None = None
-        self._max_settled_hold_s = 0.0
+        # Settled-hover measurement (longest continuously-observed in-tolerance window) lives in a
+        # pure, Layer-A-tested tracker; the watcher just feeds it (z, now) samples off /fmu/out.
+        self._settle = SettleTracker(
+            target_z_ned=thresholds.target_z_ned,
+            tolerance_m=thresholds.tolerance_m,
+            max_gap_s=MAX_SETTLE_SAMPLE_GAP_S,
+        )
         qos = _px4_qos()
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
         self.create_subscription(
@@ -129,24 +139,12 @@ class MissionAcceptanceWatcher(Node):
         z = float(msg.z)
         if z <= self._t.target_z_ned + self._t.tolerance_m:
             self.reached_altitude = True  # climbed to >= (takeoff_alt - tolerance) at least once
-        self._track_settle(z)
-
-    def _track_settle(self, z: float) -> None:
-        """Accumulate the continuous time spent within +/- tolerance of the takeoff altitude."""
-        lo = self._t.target_z_ned - self._t.tolerance_m
-        hi = self._t.target_z_ned + self._t.tolerance_m
-        if not (lo <= z <= hi):
-            self._settle_start_s = None  # left the band — break the continuous-hold window
-            return
-        now = time.monotonic()
-        if self._settle_start_s is None:
-            self._settle_start_s = now
-        self._max_settled_hold_s = max(self._max_settled_hold_s, now - self._settle_start_s)
+        self._settle.update(z, time.monotonic())
 
     @property
     def settled_hold_s(self) -> float:
         """Longest uninterrupted window observed within +/- tolerance of the takeoff altitude."""
-        return self._max_settled_hold_s
+        return self._settle.max_hold_s
 
     @property
     def mission_complete(self) -> bool:

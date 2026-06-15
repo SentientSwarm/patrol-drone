@@ -94,11 +94,12 @@ module = [
 ]
 ignore_missing_imports = true
 
-# The shared M3 acceptance module lives under tests/integration/ (a live-ROS, mypy-EXCLUDED dir, so
-# it ships to the nightly container via `docker cp tests`). scripts/verify_mission.py — which mypy
-# DOES check — imports it after a sys.path bootstrap mypy can't follow, so treat it as missing-stubs.
+# The shared M3 acceptance modules live under tests/integration/ (a live-ROS, mypy-EXCLUDED dir, so
+# they ship to the nightly container via `docker cp tests`). scripts/verify_mission.py and the
+# Layer-A test for the pure settle tracker — both mypy-checked — import them after a sys.path
+# bootstrap mypy can't follow, so treat them as missing-stubs.
 [[tool.mypy.overrides]]
-module = ["mission_acceptance"]
+module = ["mission_acceptance", "settle_tracker"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
