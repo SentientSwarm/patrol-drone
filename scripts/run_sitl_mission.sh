@@ -18,7 +18,8 @@
 #
 # Why QGC: on an interactive host PX4 preflight wants a GCS heartbeat ("No connection to the GCS"
 # otherwise), so we launch QGC by default to supply it. The headless nightly arms without QGC inside
-# its container; --no-qgc mirrors that here.
+# its container; --no-qgc mirrors that fully here — Gazebo runs headless (HEADLESS=1) and the
+# X11/QGC doctor checks are skipped (DOCTOR_HEADLESS=1), so it works on a GUI-less host.
 #
 # No `set -u`: we source ROS's setup.bash (references unbound vars; entrypoint.sh does the same).
 set -eo pipefail
@@ -60,7 +61,8 @@ Usage: scripts/run_sitl_mission.sh [options]
 Brings up agent + PX4 SITL + (QGC) + the mission node, verifies the M3 acceptance criteria, and
 tears down. Logs land in $PATROL_UAT_LOG_DIR (default /tmp/patrol-uat).
 
-  --no-qgc        Headless: do NOT launch QGroundControl (mirrors the nightly container).
+  --no-qgc        Fully headless: skip QGC + the X11/QGC doctor checks and run Gazebo headless
+                  (HEADLESS=1) — mirrors the nightly container; works on a GUI-less host.
   --keep-up       Leave the stack running after verifying (inspect in QGC / re-run the verifier).
   --skip-doctor   Skip the env_doctor capability gate.
   --timeout N     Seconds the verifier watches before giving up (default: 120).
@@ -141,9 +143,14 @@ start_agent() {
 }
 
 start_px4() {
-  log "starting PX4 SITL + Gazebo (gz_x500) -> ${LOG_DIR}/px4.log    (first launch may relink; be patient)"
+  # --no-qgc is a fully headless run: default Gazebo to headless (no GUI) so it works on a GUI-less
+  # host and matches the nightly container. An explicit HEADLESS= in the environment still wins.
+  local headless_default=0
+  [[ ${WITH_QGC} -eq 0 ]] && headless_default=1
+  local headless="${HEADLESS:-${headless_default}}"
+  log "starting PX4 SITL + Gazebo (gz_x500, HEADLESS=${headless}) -> ${LOG_DIR}/px4.log    (first launch may relink; be patient)"
   # Own process group (setsid) so teardown can kill the whole gz/px4 subtree, not just make.
-  setsid env HEADLESS="${HEADLESS:-0}" make -C "${PX4_DIR}" px4_sitl gz_x500 >"${LOG_DIR}/px4.log" 2>&1 &
+  setsid env HEADLESS="${headless}" make -C "${PX4_DIR}" px4_sitl gz_x500 >"${LOG_DIR}/px4.log" 2>&1 &
   PX4_PID=$!
 }
 
@@ -176,6 +183,9 @@ report_keep_up() {
 main() {
   parse_args "$@"
   mkdir -p "${LOG_DIR}"
+  # --no-qgc is a fully headless run: tell the sourced doctor to skip the X11/QGC checks (Gazebo runs
+  # headless via start_px4, PX4 needs no GCS), so the gate doesn't fail on a GUI-less host.
+  [[ ${WITH_QGC} -eq 0 ]] && export DOCTOR_HEADLESS=1
   prepare_agent_env
   if [[ ${SKIP_DOCTOR} -eq 0 ]]; then
     run_checks || { err "env_doctor failed — fix the above, or re-run with --skip-doctor"; exit 1; }

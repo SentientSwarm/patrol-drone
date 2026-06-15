@@ -10,12 +10,16 @@
 # Checks (full mode):
 #   - Micro XRCE-DDS Agent is RUNNABLE  : binary resolvable AND its shared lib loads (ldd)
 #   - ROS 2 Jazzy is sourceable         : /opt/ros/jazzy/setup.bash present
-#   - the ROS 2 workspace is built       : ros2_ws/install/ present  (skipped by --smoke)
+#   - the ROS 2 workspace is built       : patrol_mission pkg + mission_basic.launch.py installed
+#                                          (the M3 artifacts the runner needs; skipped by --smoke)
 #   - the display server is X11          : Gazebo Harmonic GUI is unreliable under Wayland here
 #   - QGroundControl is present          : ~/Apps/QGroundControl-x86_64.AppImage
 #
 # --smoke drops the workspace-built check: a built workspace is a milestone DELIVERABLE, not a host
 # prerequisite (ADR-0003), so setup_phase1.sh must not "fail" on it right after provisioning.
+#
+# DOCTOR_HEADLESS=1 (exported by run_sitl_mission.sh --no-qgc) skips the display (X11) and QGC
+# checks: a headless run launches Gazebo without a GUI and PX4 without a GCS, so neither is needed.
 #
 # Sourceable: when sourced (not executed), it only DEFINES functions — so run_sitl_mission.sh can
 # reuse resolve_xrce_agent() / run_checks() without re-running the whole gate. No `set -u`: it may
@@ -114,12 +118,17 @@ check_ros() {
 
 check_workspace() {
   local install_dir="${REPO_ROOT}/ros2_ws/install"
-  if [[ -d "${install_dir}" ]]; then
-    ok "ROS 2 workspace built: ${install_dir}"
+  # Check THIS milestone's installed artifacts, not merely that an `install/` tree exists: an older
+  # M2-only build has install/ but no patrol_mission package or mission_basic.launch.py, so the
+  # doctor would pass while the runner later fails resolving the package/launch (review #5).
+  local node_pkg="${install_dir}/patrol_mission"
+  local launch="${install_dir}/patrol_bringup/share/patrol_bringup/launch/mission_basic.launch.py"
+  if [[ -d "${node_pkg}" && -f "${launch}" ]]; then
+    ok "ROS 2 workspace built: patrol_mission + mission_basic.launch.py installed (${install_dir})"
     return 0
   fi
-  bad "ROS 2 workspace not built (${install_dir} missing) — the mission node + px4_msgs won't load."
-  fix "build it (strip the uv venv first; do NOT prefix PYTHONPATH= — it breaks ament_package):"
+  bad "ROS 2 workspace missing M3 artifacts (patrol_mission package and/or mission_basic.launch.py) — an older M2-only build won't fly the mission."
+  fix "(re)build it (strip the uv venv first; do NOT prefix PYTHONPATH= — it breaks ament_package):"
   fix "  unset VIRTUAL_ENV"
   fix "  export PATH=\"\$(echo \"\$PATH\" | tr ':' '\\n' | grep -v '/patrol-drone/.venv/bin' | paste -sd ':')\""
   fix "  source /opt/ros/${ROS_DISTRO_EXPECTED}/setup.bash"
@@ -129,6 +138,10 @@ check_workspace() {
 
 # ----------------------------------------------------------------------------- display / QGC
 check_display() {
+  if [[ "${DOCTOR_HEADLESS:-0}" -eq 1 ]]; then
+    ok "display server check skipped (headless: no Gazebo GUI to render)"
+    return 0
+  fi
   local session="${XDG_SESSION_TYPE:-unknown}"
   if [[ "${session}" == "x11" ]]; then
     ok "display server is X11 (\$XDG_SESSION_TYPE=x11)"
@@ -140,6 +153,10 @@ check_display() {
 }
 
 check_qgc() {
+  if [[ "${DOCTOR_HEADLESS:-0}" -eq 1 ]]; then
+    ok "QGroundControl check skipped (headless: PX4 runs without a GCS in this path)"
+    return 0
+  fi
   if [[ -f "${QGC_APPIMAGE}" ]]; then
     ok "QGroundControl present: ${QGC_APPIMAGE}"
     return 0
