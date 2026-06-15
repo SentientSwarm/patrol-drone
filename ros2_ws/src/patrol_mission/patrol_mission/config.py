@@ -65,6 +65,29 @@ def _require(raw: dict[str, Any], key: str) -> Any:
     return raw[key]
 
 
+def _section[T](raw: dict[str, Any], key: str, cls: type[T]) -> T:
+    """Build an optional config-section dataclass, fail-loud on a null/non-mapping/unknown-key section.
+
+    A section may be omitted entirely — the dataclass defaults then apply. But a present-but-null
+    section (``completion:`` with no value), a non-mapping value, or an unknown key must raise the
+    loader's contracted :class:`ValueError` with field context, not the bare ``TypeError`` that
+    ``cls(**section)`` would otherwise throw (review #3).
+    """
+    section = raw.get(key, {})
+    if section is None:
+        raise ValueError(
+            f"mission config section {key!r} is null; omit it for defaults or give a mapping"
+        )
+    if not isinstance(section, dict):
+        raise ValueError(
+            f"mission config section {key!r} must be a mapping, got {type(section).__name__}"
+        )
+    try:
+        return cls(**section)
+    except TypeError as exc:  # unknown / misspelled key in the section
+        raise ValueError(f"mission config section {key!r} is invalid: {exc}") from exc
+
+
 def _validate_frame(frame: str, where: str) -> str:
     if frame not in _VALID_FRAMES:
         raise ValueError(f"{where} declares unknown frame {frame!r}: expected 'enu' or 'ned'")
@@ -143,8 +166,8 @@ def load_mission_config(mission_yaml_path: str) -> MissionConfig:
     cfg = MissionConfig(
         takeoff_alt_m=float(_require(raw, "takeoff_alt_m")),
         hover_time_s=float(_require(raw, "hover_time_s")),
-        completion=Completion(**raw.get("completion", {})),
-        abort=AbortConfig(**raw.get("abort", {})),
+        completion=_section(raw, "completion", Completion),
+        abort=_section(raw, "abort", AbortConfig),
         home_position=_point(home["position"]),
         home_frame=_validate_frame(home["frame"], "home"),
         waypoints=waypoints,

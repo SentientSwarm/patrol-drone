@@ -146,6 +146,43 @@ def test_fail_loud_out_of_range(tmp_path, body, match):
         load_mission_config(_write(tmp_path, body))
 
 
+# Review #3: an optional section (completion / abort) that is present-but-null, not a mapping, or
+# carries an unknown/misspelled key must fail loud with a ValueError (field context), not leak the
+# bare TypeError that `Completion(**...)` / `AbortConfig(**...)` would otherwise raise.
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (_HEAD + "completion:\n" + _HOME_ENU + _NO_WAYPOINTS, "completion.*null"),
+        (_HEAD + "abort:\n" + _HOME_ENU + _NO_WAYPOINTS, "abort.*null"),
+        (_HEAD + "completion: 0.5\n" + _HOME_ENU + _NO_WAYPOINTS, "completion.*mapping"),
+        (
+            _HEAD + "completion: {tolerance_m: 0.5, bogus: 1}\n" + _HOME_ENU + _NO_WAYPOINTS,
+            "completion",
+        ),
+        (_HEAD + "abort: {nope: 1}\n" + _HOME_ENU + _NO_WAYPOINTS, "abort"),
+    ],
+    ids=[
+        "completion_null",
+        "abort_null",
+        "completion_not_a_mapping",
+        "completion_unknown_key",
+        "abort_unknown_key",
+    ],
+)
+def test_section_fail_loud(tmp_path, body, match):
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, body))
+
+
+# Review #3: an explicit empty mapping (`completion: {}`) is NOT an error — it means "use defaults",
+# the same as omitting the section entirely.
+def test_empty_section_mapping_uses_defaults(tmp_path):
+    cfg = load_mission_config(
+        _write(tmp_path, _HEAD + "completion: {}\n" + _HOME_ENU + _NO_WAYPOINTS)
+    )
+    assert cfg.completion == Completion(tolerance_m=0.5, hold_time_s=2.0)
+
+
 # Boundary values that ARE valid must load: zero hover/hold (no wait) and the [0, 1] battery
 # threshold endpoints are accepted — the guard rejects out-of-range, not the legal boundary.
 @pytest.mark.parametrize(
