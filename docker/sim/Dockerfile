@@ -120,6 +120,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mesa-utils libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
 
+# Baked-in SITL test layer: the harness the nightly integration test (AC-5 / MC-10) drives —
+# launch_pytest + pytest. Built into the image (not apt-installed live at test time) so the test
+# environment ships with the image rather than being assembled per-run. The package NAMES are
+# distro-managed (no manifest version literal), so the manifest-drift gate is unaffected.
+#
+# Reproducibility (Hermes Low): each version is an overridable, default-empty build ARG, so it
+# carries the apt drift on its own seam rather than leaving the names silently floating.
+#   - default (unset)  -> "${VER}" expands to "" -> the bare name installs whatever the ROS apt
+#     repo serves at build time (today's behaviour; no exact pin to break when the repo rotates).
+#   - pinned in CI      -> pass e.g. --build-arg PYTEST_VERSION="=3.10.1-1" (note the leading "="):
+#     a CI step that has resolved a reproducible apt snapshot feeds the exact versions through here
+#     without editing this file. A frozen apt snapshot remains the bit-for-bit endgame (MZ); these
+#     ARGs are the lever for it. Hardcoding a literal here is deliberately avoided — it is brittle
+#     (apt fails the build the moment the distro rotates the version) and would still drift the pin.
+ARG PYTEST_VERSION
+ARG LAUNCH_TESTING_VERSION
+ARG LAUNCH_PYTEST_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        "python3-pytest${PYTEST_VERSION}" \
+        "ros-${ROS_DISTRO}-launch-testing${LAUNCH_TESTING_VERSION}" \
+        "ros-${ROS_DISTRO}-launch-pytest${LAUNCH_PYTEST_VERSION}" \
+ && rm -rf /var/lib/apt/lists/*
+
 # Micro XRCE-DDS Agent — the native bridge (NOT MAVROS). M2 spike finding (ADR-0007): there is
 # no `ros-${ROS_DISTRO}-micro-xrce-dds-agent` apt package in the Jazzy repo, so build it from
 # source at the pinned eProsima tag (the PX4-canonical method). The build toolchain is already

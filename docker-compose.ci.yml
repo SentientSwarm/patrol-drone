@@ -1,0 +1,15 @@
+# docker-compose.ci.yml — CI-only override for the SITL nightly (Hermes Medium #2).
+#
+# The nightly runs PX4 SITL, the uXRCE-DDS agent, AND pytest all INSIDE the one `sim` container
+# (via `docker exec` — see .github/workflows/sitl-nightly.yml), so it never needs host-side access
+# to the `/fmu/*` surface. Drop the host network namespace and fall back to default bridge
+# networking: the agent <-> PX4 UDP rendezvous is on the container's OWN loopback (localhost:8888,
+# docker/sim/entrypoint.sh), which bridge networking still provides. This narrows the CI trust
+# boundary vs. the local-dev default (`network_mode: host`, kept in docker-compose.yml so a host
+# QGC/ROS 2 can reach the same bridge during interactive sim).
+#
+# Usage (layered on the base compose):
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build build sim
+services:
+  sim:
+    network_mode: bridge

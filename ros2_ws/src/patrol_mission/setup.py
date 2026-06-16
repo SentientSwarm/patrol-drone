@@ -1,8 +1,6 @@
-from glob import glob
-
 from setuptools import find_packages, setup
 
-package_name = "patrol_bringup"
+package_name = "patrol_mission"
 
 setup(
     name=package_name,
@@ -11,19 +9,17 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
-        ("share/" + package_name + "/config", glob("config/*.yaml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
     maintainer="Egemen Cankaya",
     maintainer_email="egemencankaya14@gmail.com",
-    description="Launch files, configs, and params for the patrol-drone mission stack (M2 shell).",
+    description="Mission orchestration (MissionStateMachine + PatrolMissionNode) for the patrol-drone stack.",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            # 02-mission-control (M3+) lands mission node entry points here.
+            "patrol_mission = patrol_mission.node:main",
         ],
     },
 )
