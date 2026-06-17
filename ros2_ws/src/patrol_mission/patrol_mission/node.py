@@ -121,6 +121,10 @@ class PatrolMissionNode(Node):
         self._abort_requested = False
         self._state = MissionState.IDLE
         self._warmup = 0
+        # True once a DO_SET_MODE (offboard) has been issued on a prior tick. The pure command builder
+        # uses it to hold the first ARM one tick after the first offboard request, so arm never races
+        # the mode switch on the BEST_EFFORT publisher (M3 review #2).
+        self._offboard_requested = False
         # True while the node is skipping state-machine progression (no telemetry, EKF not yet valid,
         # or a stale /fmu/out stream). On the edge back to a fresh, usable tick the node restarts the
         # machine's time-based windows (HOVER/tolerance-hold) so they never complete on wall-time that
@@ -235,15 +239,19 @@ class PatrolMissionNode(Node):
         """Translate a decision-layer Command into /fmu/in/* messages.
 
         The setpoint is published first so the offboard setpoint stream is established before any
-        mode/arm command (A-2). Which VehicleCommands to send — gated on the warmup window and
-        ordered offboard-before-arm — is decided by the pure ``build_vehicle_commands`` builder
-        (Layer-A tested); here we only map each kind to its px4_msgs ID and publish it.
+        mode/arm command (A-2). Which VehicleCommands to send — gated on the warmup window, ordered
+        offboard-before-arm, and holding the first arm one tick past the first offboard request — is
+        decided by the pure ``build_vehicle_commands`` builder (Layer-A tested); here we only map each
+        kind to its px4_msgs ID, publish it, and latch that offboard has now been requested.
         """
         if cmd.setpoint_ned is not None:
             self._publish_setpoint(cmd.setpoint_ned, cmd.yaw)
         warmup_elapsed = self._warmup >= _OFFBOARD_STREAM_WARMUP_TICKS
-        for pc in build_vehicle_commands(cmd, warmup_elapsed):
+        px4_cmds = build_vehicle_commands(cmd, warmup_elapsed, self._offboard_requested)
+        for pc in px4_cmds:
             self._send_command(_VEHICLE_CMD_ID[pc.kind], param1=pc.param1, param2=pc.param2)
+        if any(pc.kind is Px4CommandKind.SET_OFFBOARD for pc in px4_cmds):
+            self._offboard_requested = True  # next tick may arm (one tick after the mode switch)
 
     # --- /fmu/in publishers -------------------------------------------------
 

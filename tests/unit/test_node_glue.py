@@ -302,21 +302,27 @@ def test_valid_fresh_tick_dispatches_and_advances_warmup(node: Any, node_mod: Mo
     assert _pub(node, node_mod.topics.VEHICLE_COMMAND).published == []
 
 
-def test_issue_maps_kinds_to_px4_ids_offboard_before_arm(node: Any, node_mod: ModuleType):
-    # Past the warmup window and in ARMING (not yet armed): the node must issue SET_OFFBOARD then ARM.
+def test_issue_defers_arm_one_tick_after_offboard(node: Any, node_mod: ModuleType):
+    # Past warmup, in ARMING (not yet armed): the FIRST tick issues SET_OFFBOARD ONLY — the arm is
+    # held one tick so it can't race the mode switch (M3 review #2). The SECOND tick (offboard now
+    # requested) issues SET_OFFBOARD then ARM, with the PX4 params.
     node._warmup = node_mod._OFFBOARD_STREAM_WARMUP_TICKS
     node._state = node_mod.MissionState.ARMING
     _feed_valid_fresh(node, node_mod, armed=False, offboard=False)
 
-    node._on_tick()
+    node._on_tick()  # tick 1: offboard only, arm deferred
+    cmds = _pub(node, node_mod.topics.VEHICLE_COMMAND).published
+    assert [c.command for c in cmds] == [node_mod.VehicleCommand.VEHICLE_CMD_DO_SET_MODE]
+    assert (cmds[0].param1, cmds[0].param2) == (1.0, 6.0)  # custom-offboard mode params
 
+    node._on_tick()  # tick 2: offboard (re-requested) then arm
     cmds = _pub(node, node_mod.topics.VEHICLE_COMMAND).published
     assert [c.command for c in cmds] == [
         node_mod.VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
+        node_mod.VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
         node_mod.VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
     ]
-    assert (cmds[0].param1, cmds[0].param2) == (1.0, 6.0)  # custom-offboard mode params
-    assert cmds[1].param1 == 1.0  # arm
+    assert cmds[-1].param1 == 1.0  # arm
 
 
 def test_issue_maps_land_ungated_by_warmup(node: Any, node_mod: ModuleType):
