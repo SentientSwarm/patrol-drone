@@ -18,6 +18,8 @@ Nightly SITL tier only — never a required per-PR check (OQ-5). Marked ``ros`` 
 runner (no ROS) skips it.
 """
 
+from pathlib import Path
+
 import launch_pytest
 import pytest
 import rclpy
@@ -32,7 +34,7 @@ from patrol_acceptance import (
     expected_waypoint_count,
     spin_until,
 )
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from patrol_mission.qos import patrol_qos
 from std_msgs.msg import Bool
 
 from patrol_mission import topics
@@ -42,6 +44,12 @@ pytestmark = pytest.mark.ros
 # How long to wait for the patrol to get underway before injecting the abort (arm + climb + reach
 # the first leg). Well under the patrol timeout; the abort then drives the (shorter) return home.
 _UNDERWAY_TIMEOUT_S = 150.0
+
+# Absolute path to the interim checkpoints file, computed from this test's location so it resolves
+# regardless of the launched node's working directory (parents[2] is the repo root on the host and
+# /opt in the nightly container, where `docker cp sim /opt/sim` places it). Passed explicitly to the
+# launch so the patrol's checkpoint_id waypoints resolve without depending on CWD.
+_CHECKPOINTS_YAML = str(Path(__file__).resolve().parents[2] / "sim" / "config" / "checkpoints.yaml")
 
 
 def _patrol_launch(record: str) -> LaunchDescription:
@@ -53,7 +61,10 @@ def _patrol_launch(record: str) -> LaunchDescription:
                         [FindPackageShare("patrol_bringup"), "launch", "mission_patrol.launch.py"]
                     )
                 ),
-                launch_arguments={"record": record}.items(),
+                launch_arguments={
+                    "record": record,
+                    "checkpoints_yaml": _CHECKPOINTS_YAML,
+                }.items(),
             ),
             launch_pytest.actions.ReadyToTest(),
         ]
@@ -69,16 +80,6 @@ def patrol_launch() -> LaunchDescription:
 @launch_pytest.fixture
 def patrol_launch_no_record() -> LaunchDescription:
     return _patrol_launch("false")
-
-
-def _patrol_qos() -> QoSProfile:
-    """Match the node's /patrol/abort subscriber (reliable + transient-local, depth 1)."""
-    return QoSProfile(
-        reliability=ReliabilityPolicy.RELIABLE,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=1,
-    )
 
 
 @pytest.mark.launch(fixture=patrol_launch)
@@ -100,7 +101,7 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
     rclpy.init()
     watcher = PatrolWatcher(expected_waypoint_count())
     injector = rclpy.create_node("abort_injector")
-    abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, _patrol_qos())
+    abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, patrol_qos())
     try:
         # Wait until the patrol is underway (armed + past takeoff / reached a waypoint)...
         spin_until(

@@ -137,10 +137,18 @@ def test_unresolvable_checkpoint_id_raises(tmp_path):
         load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_missing")), cps)
 
 
-# TS-C2b: a checkpoints file entry missing its position fails loud (not a silent skip).
+# TS-C2b: a checkpoints file entry missing its position fails loud (contracted ValueError).
 def test_malformed_checkpoint_entry_raises(tmp_path):
     cps = _write_checkpoints(tmp_path, "- checkpoint_id: cp_north\n  tag_id: 0\n")
-    with pytest.raises((KeyError, ValueError), match=r"position|cp_north"):
+    with pytest.raises(ValueError, match="position"):
+        load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), cps)
+
+
+# TS-C2d: a checkpoints entry missing checkpoint_id fails loud with the contracted ValueError
+# (not a bare KeyError) — symmetric with the missing-position case.
+def test_checkpoint_entry_missing_id_raises(tmp_path):
+    cps = _write_checkpoints(tmp_path, "- position: {x: 1, y: 2, z: 3}\n  tag_id: 0\n")
+    with pytest.raises(ValueError, match="checkpoint_id"):
         load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), cps)
 
 

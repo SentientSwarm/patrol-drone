@@ -31,13 +31,13 @@ from px4_msgs.msg import (
     VehicleStatus,
 )
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Int32, String
 
 from patrol_mission import topics
 from patrol_mission.commands import Px4CommandKind, build_vehicle_commands
 from patrol_mission.config import load_mission_config
 from patrol_mission.frames import Point, to_ned_from_origin
+from patrol_mission.qos import patrol_qos, px4_qos
 from patrol_mission.state_machine import (
     Command,
     MissionState,
@@ -67,31 +67,6 @@ _VEHICLE_CMD_ID: dict[Px4CommandKind, int] = {
 }
 
 
-def _px4_qos() -> QoSProfile:
-    """The /fmu/* QoS PX4's uXRCE-DDS bridge expects (matches px4_ros_com example)."""
-    return QoSProfile(
-        reliability=ReliabilityPolicy.BEST_EFFORT,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=1,
-    )
-
-
-def _patrol_qos() -> QoSProfile:
-    """The /patrol/* QoS (design §4.4.2): reliable + transient-local, depth 1.
-
-    Transient-local depth-1 means a late subscriber (04/05 starting after the node) still sees the
-    latest mission_state / current_waypoint / abort, and reliable delivery means a connected
-    subscriber never drops the single observable ABORT sample before it routes to RTH.
-    """
-    return QoSProfile(
-        reliability=ReliabilityPolicy.RELIABLE,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=1,
-    )
-
-
 class PatrolMissionNode(Node):
     def __init__(self) -> None:
         super().__init__("patrol_mission")
@@ -108,7 +83,7 @@ class PatrolMissionNode(Node):
 
         # Topic names are the PX4 v1.17 `_v1`-suffixed contract, defined once in
         # patrol_mission.topics (01-platform design §4.2.4) and pinned by a Layer-A test.
-        qos = _px4_qos()
+        qos = px4_qos()
         self._pub_ctrl = self.create_publisher(
             OffboardControlMode, topics.OFFBOARD_CONTROL_MODE, qos
         )
@@ -123,10 +98,10 @@ class PatrolMissionNode(Node):
         # /patrol/* — the mission-orchestration surface (OQ-3). mission_state + current_waypoint are
         # the observable mission/capture surface (latched so a late 04/05 subscriber sees the latest);
         # abort is the inbound external-abort signal (latched, MC-6).
-        patrol_qos = _patrol_qos()
-        self._pub_state = self.create_publisher(String, topics.PATROL_MISSION_STATE, patrol_qos)
-        self._pub_wp = self.create_publisher(Int32, topics.PATROL_CURRENT_WAYPOINT, patrol_qos)
-        self.create_subscription(Bool, topics.PATROL_ABORT, self._on_abort, patrol_qos)
+        pqos = patrol_qos()
+        self._pub_state = self.create_publisher(String, topics.PATROL_MISSION_STATE, pqos)
+        self._pub_wp = self.create_publisher(Int32, topics.PATROL_CURRENT_WAYPOINT, pqos)
+        self.create_subscription(Bool, topics.PATROL_ABORT, self._on_abort, pqos)
 
         # Init to None (not a default-constructed message): a default VehicleStatus reports
         # disarmed-at-origin, which is indistinguishable from "no telemetry has arrived yet".

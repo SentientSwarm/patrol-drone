@@ -153,6 +153,8 @@ def _load_checkpoints(checkpoints_yaml_path: str) -> dict[str, Point]:
         )
     positions: dict[str, Point] = {}
     for entry in raw:
+        if "checkpoint_id" not in entry:
+            raise ValueError(f"checkpoints entry missing required 'checkpoint_id': {entry!r}")
         cid = entry["checkpoint_id"]
         if "position" not in entry:
             raise ValueError(f"checkpoint {cid!r} missing required 'position'")

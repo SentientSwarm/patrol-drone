@@ -34,9 +34,9 @@ from dataclasses import dataclass
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from patrol_mission.config import load_mission_config
+from patrol_mission.qos import px4_qos
 from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from settle_tracker import SettleTracker
 
 from patrol_mission import topics
@@ -87,16 +87,6 @@ def load_thresholds(mission_yaml: str | None = None) -> AcceptanceThresholds:
     )
 
 
-def _px4_qos() -> QoSProfile:
-    """The /fmu/* QoS PX4's uXRCE-DDS bridge publishes with (matches the node + px4_ros_com)."""
-    return QoSProfile(
-        reliability=ReliabilityPolicy.BEST_EFFORT,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=1,
-    )
-
-
 class MissionAcceptanceWatcher(Node):
     """Records the arm/offboard/settled-altitude/disarm milestones observed on ``/fmu/out/*``."""
 
@@ -119,7 +109,7 @@ class MissionAcceptanceWatcher(Node):
             tolerance_m=thresholds.tolerance_m,
             max_gap_s=MAX_SETTLE_SAMPLE_GAP_S,
         )
-        qos = _px4_qos()
+        qos = px4_qos()
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
         self.create_subscription(
             VehicleLocalPosition, topics.VEHICLE_LOCAL_POSITION, self._on_pos, qos

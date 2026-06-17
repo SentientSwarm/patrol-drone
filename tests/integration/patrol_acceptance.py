@@ -29,9 +29,9 @@ import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from mission_acceptance import Check  # reuse the one Check verdict shape
+from patrol_mission.qos import patrol_qos, px4_qos
 from px4_msgs.msg import VehicleStatus
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32, String
 
 from patrol_mission import topics
@@ -58,24 +58,10 @@ def expected_waypoint_count(mission_yaml: str | None = None) -> int:
     return len(raw["waypoints"])
 
 
-def _patrol_qos() -> QoSProfile:
-    """Match the node's /patrol/* publishers (reliable + transient-local, depth 1)."""
-    return QoSProfile(
-        reliability=ReliabilityPolicy.RELIABLE,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=1,
-    )
-
-
-def _px4_qos() -> QoSProfile:
-    """Match PX4's /fmu/out publishers (best-effort + transient-local, depth 1)."""
-    return QoSProfile(
-        reliability=ReliabilityPolicy.BEST_EFFORT,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=1,
-    )
+# States that only occur once the vehicle is airborne. A disarm after any of these is a landing —
+# whether the mission flew the full patrol OR aborted early (an abort can fire during HOVER, before
+# any waypoint is visited), so this is what gates "disarmed after arming" rather than a waypoint.
+_AIRBORNE_STATES = frozenset({"TAKEOFF", "HOVER", "WAYPOINT", "DWELL", "RTH", "LANDING"})
 
 
 class PatrolWatcher(Node):
@@ -89,10 +75,10 @@ class PatrolWatcher(Node):
         self.waypoints_visited: set[int] = set()
         self.was_armed = False
         self.disarmed_after_arm = False
-        patrol_qos = _patrol_qos()
-        self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, patrol_qos)
-        self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, patrol_qos)
-        self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, _px4_qos())
+        pqos = patrol_qos()
+        self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
+        self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, pqos)
+        self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, px4_qos())
 
     def _on_state(self, msg: String) -> None:
         if not self.states_seen or self.states_seen[-1] != msg.data:
@@ -105,8 +91,17 @@ class PatrolWatcher(Node):
     def _on_status(self, msg: VehicleStatus) -> None:
         if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED:
             self.was_armed = True
-        elif self.was_armed and self.waypoints_visited:
-            self.disarmed_after_arm = True  # disarmed after arming + visiting at least one waypoint
+        elif self.was_armed and self._flew:
+            self.disarmed_after_arm = True  # disarmed after arming + getting airborne (a landing)
+
+    @property
+    def _flew(self) -> bool:
+        """True once the vehicle has been airborne, so a later disarm is a landing not pre-flight.
+
+        Holds for both the nominal patrol and an early abort (abort can fire during HOVER, before any
+        waypoint), so the disarm gate works for both scenarios.
+        """
+        return any(s in _AIRBORNE_STATES for s in self.states_seen)
 
     @property
     def all_waypoints_visited(self) -> bool:
