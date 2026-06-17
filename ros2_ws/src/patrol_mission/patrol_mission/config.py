@@ -151,15 +151,16 @@ def _load_checkpoints(checkpoints_yaml_path: str) -> dict[str, Point]:
         raise ValueError(
             f"checkpoints file {checkpoints_yaml_path!r} must be a list of checkpoints"
         )
-    positions: dict[str, Point] = {}
-    for entry in raw:
-        if "checkpoint_id" not in entry:
-            raise ValueError(f"checkpoints entry missing required 'checkpoint_id': {entry!r}")
-        cid = entry["checkpoint_id"]
-        if "position" not in entry:
-            raise ValueError(f"checkpoint {cid!r} missing required 'position'")
-        positions[cid] = _point(entry["position"])
-    return positions
+    return dict(_checkpoint_entry(entry) for entry in raw)
+
+
+def _checkpoint_entry(entry: dict) -> tuple[str, Point]:
+    """Validate one checkpoints entry into ``(checkpoint_id, ENU position)``. Fail loud (INF-M3)."""
+    if "checkpoint_id" not in entry:
+        raise ValueError(f"checkpoints entry missing required 'checkpoint_id': {entry!r}")
+    if "position" not in entry:
+        raise ValueError(f"checkpoint {entry['checkpoint_id']!r} missing required 'position'")
+    return entry["checkpoint_id"], _point(entry["position"])
 
 
 def _references_checkpoint(raw_waypoints: list) -> bool:

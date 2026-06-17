@@ -8,6 +8,8 @@ part under test; the scaffold lives here once.
 
 from __future__ import annotations
 
+from typing import Any
+
 from patrol_mission.config import AbortConfig, Completion, MissionConfig, Waypoint
 from patrol_mission.frames import Point
 from patrol_mission.state_machine import MissionStateMachine, Telemetry
@@ -55,24 +57,21 @@ def make_patrol_sm(waypoints_ned: list[Point], dwell_s: float = DWELL) -> Missio
     return MissionStateMachine(make_config(wps), waypoints_ned, HOME_NED)
 
 
-def make_telem(
-    now_s: float = 0.0,
-    position_ned: Point = (0.0, 0.0, 0.0),
-    armed: bool = False,
-    offboard_active: bool = False,
-    battery_remaining: float = 1.0,
-    abort_requested: bool = False,
-    manual_takeover: bool = False,
-    timed_out: bool = False,
-) -> Telemetry:
-    """Telemetry with safe defaults: full battery + no abort, so no guard fires unless asked."""
-    return Telemetry(
-        now_s=now_s,
-        position_ned=position_ned,
-        armed=armed,
-        offboard_active=offboard_active,
-        battery_remaining=battery_remaining,
-        abort_requested=abort_requested,
-        manual_takeover=manual_takeover,
-        timed_out=timed_out,
-    )
+def make_telem(**overrides: Any) -> Telemetry:
+    """Telemetry with safe defaults (full battery, no abort) — override any field by keyword.
+
+    Keyword-only by design: keeps the builder to a single parameter while every Telemetry field
+    stays overridable, e.g. ``make_telem(now_s=1.0, abort_requested=True)``.
+    """
+    fields: dict[str, Any] = {
+        "now_s": 0.0,
+        "position_ned": (0.0, 0.0, 0.0),
+        "armed": False,
+        "offboard_active": False,
+        "battery_remaining": 1.0,
+        "abort_requested": False,
+        "manual_takeover": False,
+        "timed_out": False,
+    }
+    fields.update(overrides)
+    return Telemetry(**fields)
