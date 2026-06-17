@@ -10,8 +10,9 @@
 # Checks (full mode):
 #   - Micro XRCE-DDS Agent is RUNNABLE  : binary resolvable AND its shared lib loads (ldd)
 #   - ROS 2 Jazzy is sourceable         : /opt/ros/jazzy/setup.bash present
-#   - the ROS 2 workspace is built       : patrol_mission pkg + mission_basic.launch.py installed
-#                                          (the M3 artifacts the runner needs; skipped by --smoke)
+#   - the ROS 2 workspace is built       : patrol_mission pkg + mission_basic/mission_patrol launch
+#                                          + patrol_mission.yaml installed (the M4 artifacts the
+#                                          runner needs; skipped by --smoke)
 #   - the display server is X11          : Gazebo Harmonic GUI is unreliable under Wayland here
 #   - QGroundControl is present          : ~/Apps/QGroundControl-x86_64.AppImage
 #
@@ -118,16 +119,21 @@ check_ros() {
 
 check_workspace() {
   local install_dir="${REPO_ROOT}/ros2_ws/install"
+  local share="${install_dir}/patrol_bringup/share/patrol_bringup"
   # Check THIS milestone's installed artifacts, not merely that an `install/` tree exists: an older
-  # M2-only build has install/ but no patrol_mission package or mission_basic.launch.py, so the
-  # doctor would pass while the runner later fails resolving the package/launch (review #5).
+  # M2/M3-only build has install/ but lacks the M4 patrol launch + route, so the doctor would pass
+  # while `run_sitl_mission.sh --patrol` later fails resolving them (review #5). M4 flies
+  # mission_patrol.launch.py with the checked-in patrol_mission.yaml route (the basic mission's
+  # mission_basic.launch.py is still flown by the no-flag runner, so check both).
   local node_pkg="${install_dir}/patrol_mission"
-  local launch="${install_dir}/patrol_bringup/share/patrol_bringup/launch/mission_basic.launch.py"
-  if [[ -d "${node_pkg}" && -f "${launch}" ]]; then
-    ok "ROS 2 workspace built: patrol_mission + mission_basic.launch.py installed (${install_dir})"
+  local basic_launch="${share}/launch/mission_basic.launch.py"
+  local patrol_launch="${share}/launch/mission_patrol.launch.py"
+  local patrol_route="${share}/config/patrol_mission.yaml"
+  if [[ -d "${node_pkg}" && -f "${basic_launch}" && -f "${patrol_launch}" && -f "${patrol_route}" ]]; then
+    ok "ROS 2 workspace built: patrol_mission + mission_basic/mission_patrol launch + patrol_mission.yaml installed (${install_dir})"
     return 0
   fi
-  bad "ROS 2 workspace missing M3 artifacts (patrol_mission package and/or mission_basic.launch.py) — an older M2-only build won't fly the mission."
+  bad "ROS 2 workspace missing M4 artifacts (patrol_mission package, mission_basic/mission_patrol launch, and/or patrol_mission.yaml) — an older M2/M3-only build won't fly the patrol."
   fix "(re)build it (strip the uv venv first; do NOT prefix PYTHONPATH= — it breaks ament_package):"
   fix "  unset VIRTUAL_ENV"
   fix "  export PATH=\"\$(echo \"\$PATH\" | tr ':' '\\n' | grep -v '/patrol-drone/.venv/bin' | paste -sd ':')\""
