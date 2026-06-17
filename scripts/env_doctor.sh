@@ -190,7 +190,7 @@ run_checks() {
   fi
   echo
   if [[ ${fails} -eq 0 ]]; then
-    ok "all checks passed — this host can fly the M3 basic mission"
+    ok "all checks passed — this host can fly the M3 basic + M4 patrol missions"
     return 0
   fi
   bad "${fails} check(s) failed — apply the fixes above, then re-run scripts/env_doctor.sh"
@@ -201,7 +201,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/env_doctor.sh [--smoke]
 
-Verifies the host can fly the M3 basic mission in SITL and prints the exact fix for each failure.
+Verifies the host can fly the M3 basic + M4 patrol missions in SITL and prints the fix for each failure.
 
   --smoke      Prerequisite checks only (skip the workspace-built check). Used by setup_phase1.sh.
   -h, --help   Show this help.
