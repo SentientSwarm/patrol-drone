@@ -1,0 +1,21 @@
+# sim/config/checkpoints.yaml — INTERIM 02-authored stand-in for a 03-sim-environment deliverable.
+#
+# 03-sim-environment owns the authoritative checkpoint-positions file (the world's AprilTag
+# checkpoints). 03 is not delivered yet, but 02's M4 (T2.2) consumes this file to resolve a
+# mission YAML's `checkpoint_id` waypoints to world/ENU positions (design §4.2.5 / Appendix C.1;
+# OQ-2). This provisional file carries the COMBINED-REVIEW-confirmed schema so the checkpoint_id
+# resolution path is real and end-to-end testable now; when 03 lands its own file, it OWNS and
+# REPLACES this one — the loader path is a parameter (`checkpoints_yaml_path`, default this path),
+# so an agreed-different location is a one-line config change, not a code edit.
+#
+# Schema (per design Appendix C.1): a list of { checkpoint_id, position{x,y,z} in world/ENU
+# meters, tag_family, tag_id }. 02 reads `position` (→ NED at the single frame boundary,
+# frames.to_ned_from_origin) and references `checkpoint_id` from patrol_mission.yaml.
+- checkpoint_id: "cp_north"
+  position: { x: 10.0, y: 0.0, z: 2.0 }
+  tag_family: "tag36h11"
+  tag_id: 0
+- checkpoint_id: "cp_east"
+  position: { x: 0.0, y: 10.0, z: 2.0 }
+  tag_family: "tag36h11"
+  tag_id: 1

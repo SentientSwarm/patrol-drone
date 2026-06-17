@@ -1,0 +1,165 @@
+"""Shared patrol-mission acceptance criteria (AC-2 / AC-6) — single PASS/FAIL truth for CI + host.
+
+Mirrors :mod:`mission_acceptance` (the M3 basic-mission harness) for the M4 multi-waypoint patrol.
+Both consumers import this so "the patrol flew" / "the abort was observable" is defined in exactly
+one place and the nightly SITL test and the host verifier can't drift:
+
+  * the nightly SITL integration test -> ``tests/integration/test_mission_patrol.py``
+  * the host-side verifier              -> ``scripts/verify_patrol.py`` (M4 UAT slice, SWM-40)
+
+Layer-B: imports ``rclpy`` + ``px4_msgs`` + ``std_msgs``, so it is excluded from the Layer-A unit
+runner and from mypy (pyproject), and ships to the nightly container via ``docker cp tests``. It
+defines no ``test_*`` functions, so neither pytest tier collects it as a test.
+
+The observable patrol surface is ``/patrol/*`` (OQ-3): ``mission_state`` (the MissionState name) and
+``current_waypoint`` (the active index). Arm/disarm comes from ``/fmu/out/vehicle_status`` (the same
+``_v1`` output the basic harness reads). The acceptance criteria:
+
+  AC-2 (nominal patrol): armed -> every configured waypoint index visited -> DWELL observed ->
+        RTH observed -> disarmed after arming.
+  AC-6 (external abort): an external ``/patrol/abort`` published mid-patrol drives an observable
+        ABORT then RTH, then disarm (asserted by the abort scenario in the test, using this watcher).
+"""
+
+from __future__ import annotations
+
+import time
+
+import rclpy
+import yaml
+from ament_index_python.packages import get_package_share_directory
+from mission_acceptance import Check  # reuse the one Check verdict shape
+from px4_msgs.msg import VehicleStatus
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Int32, String
+
+from patrol_mission import topics
+
+# Generous upper bound on a single patrol run: takeoff + hover + 4*(fly + dwell) + RTH + land, with
+# slack. The verifier/test stop early the instant the criteria are met. Within the OQ-5 ≤8 min/
+# scenario provisional budget; MZ.1 re-measures.
+PATROL_TIMEOUT_S = 300.0
+
+
+def _patrol_mission_yaml() -> str:
+    """The same checked-in YAML mission_patrol.launch.py feeds the node (via the installed share)."""
+    return f"{get_package_share_directory('patrol_bringup')}/config/patrol_mission.yaml"
+
+
+def expected_waypoint_count(mission_yaml: str | None = None) -> int:
+    """Number of waypoints the patrol must visit — counted from the route YAML, never hardcoded.
+
+    Counts the raw ``waypoints`` list (no checkpoint_id resolution needed just to count), so this
+    has no dependency on 03's checkpoints file being reachable from the acceptance process.
+    """
+    with open(mission_yaml or _patrol_mission_yaml()) as fh:
+        raw = yaml.safe_load(fh)
+    return len(raw["waypoints"])
+
+
+def _patrol_qos() -> QoSProfile:
+    """Match the node's /patrol/* publishers (reliable + transient-local, depth 1)."""
+    return QoSProfile(
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+    )
+
+
+def _px4_qos() -> QoSProfile:
+    """Match PX4's /fmu/out publishers (best-effort + transient-local, depth 1)."""
+    return QoSProfile(
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+    )
+
+
+class PatrolWatcher(Node):
+    """Records the patrol's observable surface: states seen (ordered), waypoint indices visited,
+    and arm/disarm — off ``/patrol/*`` + ``/fmu/out/vehicle_status``."""
+
+    def __init__(self, expected_waypoints: int, *, node_name: str = "patrol_acceptance_watcher"):
+        super().__init__(node_name)
+        self._expected = expected_waypoints
+        self.states_seen: list[str] = []  # deduped-consecutive ordered mission_state history
+        self.waypoints_visited: set[int] = set()
+        self.was_armed = False
+        self.disarmed_after_arm = False
+        patrol_qos = _patrol_qos()
+        self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, patrol_qos)
+        self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, patrol_qos)
+        self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, _px4_qos())
+
+    def _on_state(self, msg: String) -> None:
+        if not self.states_seen or self.states_seen[-1] != msg.data:
+            self.states_seen.append(msg.data)
+
+    def _on_wp(self, msg: Int32) -> None:
+        if msg.data >= 0:
+            self.waypoints_visited.add(msg.data)
+
+    def _on_status(self, msg: VehicleStatus) -> None:
+        if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+            self.was_armed = True
+        elif self.was_armed and self.waypoints_visited:
+            self.disarmed_after_arm = True  # disarmed after arming + visiting at least one waypoint
+
+    @property
+    def all_waypoints_visited(self) -> bool:
+        return self.waypoints_visited >= set(range(self._expected))
+
+    @property
+    def saw_dwell(self) -> bool:
+        return "DWELL" in self.states_seen
+
+    @property
+    def saw_rth(self) -> bool:
+        return "RTH" in self.states_seen
+
+    @property
+    def abort_then_rth(self) -> bool:
+        """ABORT was observed and an RTH followed it (the AC-6 observable return-home)."""
+        if "ABORT" not in self.states_seen or "RTH" not in self.states_seen:
+            return False
+        return self.states_seen.index("RTH") > self.states_seen.index("ABORT")
+
+    @property
+    def nominal_complete(self) -> bool:
+        """Every nominal-patrol criterion observed — the spin loop stops early once true (AC-2)."""
+        return (
+            self.was_armed
+            and self.all_waypoints_visited
+            and self.saw_rth
+            and self.disarmed_after_arm
+        )
+
+
+def evaluate_nominal(watcher: PatrolWatcher, expected_waypoints: int) -> list[Check]:
+    """The AC-2 nominal-patrol checks: armed, all waypoints in the route visited, dwell, RTH, land."""
+    return [
+        Check("armed", watcher.was_armed, "vehicle reported ARMED"),
+        Check(
+            "all_waypoints_visited",
+            watcher.all_waypoints_visited,
+            f"visited waypoint indices {sorted(watcher.waypoints_visited)} "
+            f"(need 0..{expected_waypoints - 1})",
+        ),
+        Check("dwelled", watcher.saw_dwell, "DWELL observed at a waypoint"),
+        Check("returned_home", watcher.saw_rth, "RTH (return-to-home) observed"),
+        Check(
+            "landed_disarmed",
+            watcher.disarmed_after_arm,
+            "disarmed after arming + visiting waypoints (landing completed)",
+        ),
+    ]
+
+
+def spin_until(watcher: PatrolWatcher, predicate, *, timeout_s: float = PATROL_TIMEOUT_S) -> None:
+    """Spin the watcher until ``predicate(watcher)`` is true or the timeout elapses (caller owns rclpy)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and not predicate(watcher):
+        rclpy.spin_once(watcher, timeout_sec=0.5)

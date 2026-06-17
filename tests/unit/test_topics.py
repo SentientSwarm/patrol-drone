@@ -15,7 +15,7 @@ from patrol_mission import topics
 
 # The contract split by version surface: outputs are MESSAGE_VERSION>=1 (suffixed); the offboard
 # input trio is unversioned / v0 (bare). See the module docstring for why the asymmetry matters.
-_VERSIONED_OUT = (topics.VEHICLE_LOCAL_POSITION, topics.VEHICLE_STATUS)
+_VERSIONED_OUT = (topics.VEHICLE_LOCAL_POSITION, topics.VEHICLE_STATUS, topics.BATTERY_STATUS)
 _UNVERSIONED_IN = (topics.OFFBOARD_CONTROL_MODE, topics.TRAJECTORY_SETPOINT, topics.VEHICLE_COMMAND)
 
 
@@ -38,17 +38,30 @@ def test_fmu_topics_are_on_the_fmu_surface():
         assert name.startswith(("/fmu/in/", "/fmu/out/")), f"{name!r} is not a /fmu/* topic"
 
 
-# Pin the exact contract (out: position+status, _v1; in: the offboard-control trio, bare).
+# Pin the exact contract (out: position+status+battery, _v1; in: the offboard-control trio, bare).
 # Catches an accidental rename as well as a wrong-surface suffix.
 def test_topic_names_match_the_platform_contract():
     assert topics.VEHICLE_LOCAL_POSITION == "/fmu/out/vehicle_local_position_v1"
     assert topics.VEHICLE_STATUS == "/fmu/out/vehicle_status_v1"
+    assert topics.BATTERY_STATUS == "/fmu/out/battery_status_v1"
     assert topics.OFFBOARD_CONTROL_MODE == "/fmu/in/offboard_control_mode"
     assert topics.TRAJECTORY_SETPOINT == "/fmu/in/trajectory_setpoint"
     assert topics.VEHICLE_COMMAND == "/fmu/in/vehicle_command"
 
 
-# The aggregate tuple is exactly the five distinct names (no dupes, none missed).
+# The /patrol/* surface (M4, OQ-3): std_msgs orchestration topics, distinct from /fmu/*.
+def test_patrol_topics_are_on_the_patrol_surface():
+    for name in topics.PATROL_TOPICS:
+        assert name.startswith("/patrol/"), f"{name!r} is not a /patrol/* topic"
+
+
+def test_patrol_topic_names_match_contract():
+    assert topics.PATROL_MISSION_STATE == "/patrol/mission_state"
+    assert topics.PATROL_CURRENT_WAYPOINT == "/patrol/current_waypoint"
+    assert topics.PATROL_ABORT == "/patrol/abort"
+
+
+# The aggregate tuple is exactly the six distinct names (no dupes, none missed).
 def test_fmu_topics_aggregate_is_complete_and_unique():
     expected = {*_VERSIONED_OUT, *_UNVERSIONED_IN}
     assert set(topics.FMU_TOPICS) == expected

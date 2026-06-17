@@ -43,7 +43,8 @@ STATUS_TOPIC="/fmu/out/vehicle_status_v1"
 WITH_QGC=1
 KEEP_UP=0
 SKIP_DOCTOR=0
-VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-120}"
+MISSION="basic"  # basic -> mission_basic.launch.py + verify_mission.py; patrol -> the M4 patrol
+VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-}"  # default chosen per-mission in main (120 basic / 300 patrol)
 
 AGENT_PID=""
 PX4_PID=""
@@ -61,11 +62,14 @@ Usage: scripts/run_sitl_mission.sh [options]
 Brings up agent + PX4 SITL + (QGC) + the mission node, verifies the M3 acceptance criteria, and
 tears down. Logs land in $PATROL_UAT_LOG_DIR (default /tmp/patrol-uat).
 
+  --patrol        Fly the M4 multi-waypoint patrol (mission_patrol.launch.py + verify_patrol.py)
+                  instead of the M3 basic mission. 05's recorder is disabled (record:=false) and
+                  the checkpoints path is pinned to the repo's sim/config/checkpoints.yaml.
   --no-qgc        Fully headless: skip QGC + the X11/QGC doctor checks and run Gazebo headless
                   (HEADLESS=1) — mirrors the nightly container; works on a GUI-less host.
   --keep-up       Leave the stack running after verifying (inspect in QGC / re-run the verifier).
   --skip-doctor   Skip the env_doctor capability gate.
-  --timeout N     Seconds the verifier watches before giving up (default: 120).
+  --timeout N     Seconds the verifier watches before giving up (default: 120 basic / 300 patrol).
   -h, --help      Show this help.
 EOF
 }
@@ -73,6 +77,7 @@ EOF
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --patrol) MISSION="patrol" ;;
       --no-qgc) WITH_QGC=0 ;;
       --keep-up) KEEP_UP=1 ;;
       --skip-doctor) SKIP_DOCTOR=1 ;;
@@ -167,16 +172,25 @@ start_qgc() {
 }
 
 start_node() {
-  log "launching mission node (ros2 launch patrol_bringup mission_basic.launch.py) -> ${LOG_DIR}/node.log"
-  ros2 launch patrol_bringup mission_basic.launch.py >"${LOG_DIR}/node.log" 2>&1 &
+  if [[ "${MISSION}" == patrol ]]; then
+    # record:=false so no 05 dependency; pin checkpoints to the repo file (resolves regardless of CWD).
+    log "launching mission node (ros2 launch patrol_bringup mission_patrol.launch.py record:=false) -> ${LOG_DIR}/node.log"
+    ros2 launch patrol_bringup mission_patrol.launch.py record:=false \
+      "checkpoints_yaml:=${REPO_ROOT}/sim/config/checkpoints.yaml" >"${LOG_DIR}/node.log" 2>&1 &
+  else
+    log "launching mission node (ros2 launch patrol_bringup mission_basic.launch.py) -> ${LOG_DIR}/node.log"
+    ros2 launch patrol_bringup mission_basic.launch.py >"${LOG_DIR}/node.log" 2>&1 &
+  fi
   NODE_PID=$!
 }
 
 report_keep_up() {
   trap - EXIT INT TERM  # don't tear down on exit
+  local verifier="verify_mission.py"
+  [[ "${MISSION}" == patrol ]] && verifier="verify_patrol.py"
   log "stack left running (--keep-up):"
   log "  PIDs: agent=${AGENT_PID} px4=${PX4_PID} node=${NODE_PID} qgc=${QGC_PID:-none}"
-  log "  re-run the verifier: (source ROS + ws, then) python3 ${SCRIPT_DIR}/verify_mission.py"
+  log "  re-run the verifier: (source ROS + ws, then) python3 ${SCRIPT_DIR}/${verifier}"
   log "  tear down:           kill -- -${PX4_PID}; kill ${AGENT_PID} ${NODE_PID} ${QGC_PID:-}"
 }
 
@@ -200,9 +214,16 @@ main() {
   wait_for_bridge || { err "bridge did not come up in time (see ${LOG_DIR}/px4.log and agent.log)"; exit 1; }
   start_node
 
-  log "verifying acceptance criteria (timeout ${VERIFY_TIMEOUT}s)..."
+  local verifier="verify_mission.py"
+  local default_timeout=120
+  if [[ "${MISSION}" == patrol ]]; then
+    verifier="verify_patrol.py"
+    default_timeout=300
+  fi
+  VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-${default_timeout}}"
+  log "verifying ${MISSION}-mission acceptance criteria (timeout ${VERIFY_TIMEOUT}s)..."
   set +e
-  python3 "${SCRIPT_DIR}/verify_mission.py" --timeout "${VERIFY_TIMEOUT}"
+  python3 "${SCRIPT_DIR}/${verifier}" --timeout "${VERIFY_TIMEOUT}"
   local verdict=$?
   set -e
 

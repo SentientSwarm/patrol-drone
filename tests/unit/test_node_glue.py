@@ -120,6 +120,7 @@ def _stub_module(name: str, **attrs: Any) -> ModuleType:
 def _px4_msg_module() -> ModuleType:
     return _stub_module(
         "px4_msgs.msg",
+        BatteryStatus=_Msg,
         OffboardControlMode=_Msg,
         TrajectorySetpoint=_Msg,
         VehicleCommand=_VehicleCommand,
@@ -128,8 +129,14 @@ def _px4_msg_module() -> ModuleType:
     )
 
 
+def _std_msg_module() -> ModuleType:
+    # std_msgs/{Bool,Int32,String} — the node's /patrol/* surface. Permissive _Msg: `.data` is set
+    # at publish time and read back off the recording publisher in the assertions.
+    return _stub_module("std_msgs.msg", Bool=_Msg, Int32=_Msg, String=_Msg)
+
+
 def _qos_module() -> ModuleType:
-    enum = SimpleNamespace(BEST_EFFORT=1, TRANSIENT_LOCAL=1, KEEP_LAST=1)
+    enum = SimpleNamespace(BEST_EFFORT=1, RELIABLE=2, TRANSIENT_LOCAL=1, KEEP_LAST=1)
     return _stub_module(
         "rclpy.qos",
         QoSProfile=_QoSProfile,
@@ -148,6 +155,8 @@ def node_mod(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
         "rclpy.qos": _qos_module(),
         "px4_msgs": _stub_module("px4_msgs"),
         "px4_msgs.msg": _px4_msg_module(),
+        "std_msgs": _stub_module("std_msgs"),
+        "std_msgs.msg": _std_msg_module(),
     }
     for name, mod in stubs.items():
         monkeypatch.setitem(sys.modules, name, mod)
@@ -183,6 +192,14 @@ def _status(node_mod: ModuleType, *, armed: bool = False, offboard: bool = False
 def _feed_valid_fresh(node: Any, node_mod: ModuleType, **status_kw: Any) -> None:
     node._on_pos(_valid_pos(node_mod))
     node._on_status(_status(node_mod, **status_kw))
+
+
+def _feed_battery(node: Any, node_mod: ModuleType, *, remaining: float) -> None:
+    node._on_battery(node_mod.BatteryStatus(remaining=remaining))
+
+
+def _feed_abort(node: Any, *, value: bool) -> None:
+    node._on_abort(_Msg(data=value))
 
 
 def _pub(node: Any, topic: str) -> _FakePublisher:
@@ -313,3 +330,46 @@ def test_issue_maps_land_ungated_by_warmup(node: Any, node_mod: ModuleType):
     assert node._warmup < node_mod._OFFBOARD_STREAM_WARMUP_TICKS  # still warming up, yet...
     cmds = _pub(node, node_mod.topics.VEHICLE_COMMAND).published
     assert [c.command for c in cmds] == [node_mod.VehicleCommand.VEHICLE_CMD_NAV_LAND]
+
+
+# T2.4 (OQ-3): the node publishes the observable /patrol/* surface every progressing tick —
+# mission_state derived from the returned enum name (one source) + the active waypoint index.
+def test_patrol_surface_published_from_returned_state(node: Any, node_mod: ModuleType):
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()  # IDLE -> ARMING
+
+    assert _pub(node, node_mod.topics.PATROL_MISSION_STATE).published[-1].data == "ARMING"
+    assert _pub(node, node_mod.topics.PATROL_CURRENT_WAYPOINT).published[-1].data == -1
+
+
+# T2.4 (MC-6): an external /patrol/abort True wired into telemetry drives the ABORT transition,
+# observable on /patrol/mission_state.
+def test_external_abort_wired_into_telemetry_drives_abort(node: Any, node_mod: ModuleType):
+    _feed_abort(node, value=True)
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ABORT
+    assert _pub(node, node_mod.topics.PATROL_MISSION_STATE).published[-1].data == "ABORT"
+
+
+# T2.4 (MC-6/AC-7): a BatteryStatus below the configured threshold drives the low-battery abort.
+def test_low_battery_telemetry_drives_abort(node: Any, node_mod: ModuleType):
+    _feed_battery(node, node_mod, remaining=0.1)  # mission_basic.yaml threshold is 0.20
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ABORT
+
+
+# T2.4: an ABSENT BatteryStatus must not fabricate a low-battery abort (defaults to full) — the
+# mission progresses normally (IDLE -> ARMING) when only pos+status are present.
+def test_absent_battery_does_not_abort(node: Any, node_mod: ModuleType):
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ARMING

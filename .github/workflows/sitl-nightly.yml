@@ -55,17 +55,22 @@ jobs:
           done
           echo "::error::/fmu/* bridge did not come up within 10 min"; exit 1
 
-      - name: Run the basic-mission integration test (AC-5 / MC-10)
+      - name: Run the mission integration tests (basic + patrol; AC-5 / AC-2 / AC-6 / MC-10)
         run: |
           CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
           # The sim image already carries the runtime + ROS + the built ws AND the pinned test
           # harness (python3-pytest + launch_pytest, baked into docker/sim/Dockerfile's runtime
           # stage) — nothing is installed live here. launch_pytest drives the launch file; pytest
-          # runs the assertions.
+          # runs the assertions. Both -m ros scenarios collect: test_mission_basic + test_mission_patrol.
           docker cp tests "$CID:/opt/tests"
+          # The patrol route (patrol_mission.yaml) resolves checkpoint_ids against 03's interim
+          # checkpoints.yaml (the 02 stand-in under sim/config/). Ship sim/ and run pytest from /opt
+          # so the launched node's default relative checkpoints path resolves to /opt/sim/config/.
+          docker cp sim "$CID:/opt/sim"
           docker exec "$CID" bash -lc '
             source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
             source /opt/ros2_ws/install/setup.bash
+            cd /opt
             python3 -m pytest /opt/tests/integration -m ros -o markers=ros -ra'
 
       - name: Sim container logs (always)

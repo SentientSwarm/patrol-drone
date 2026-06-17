@@ -130,38 +130,82 @@ def _point(p: dict) -> Point:
     return (float(p["x"]), float(p["y"]), float(p["z"]))
 
 
-def _parse_waypoint(w: dict) -> Waypoint:
-    if "checkpoint_id" in w:
-        # M4 (T2.2) resolves checkpoint_id against 03's sim/config/checkpoints.yaml.
+def _load_checkpoints(checkpoints_yaml_path: str) -> dict[str, Point]:
+    """Load 03's checkpoint-positions YAML into ``{checkpoint_id: ENU position}`` (read-only).
+
+    Called only when a waypoint references a ``checkpoint_id`` (so a basic mission with no
+    checkpoint references never needs the file to exist). Fail loud — a missing file, a
+    non-list document, or an entry missing its ``position`` raises with field context so an
+    unresolvable route never flies (INF-M3). The path is the caller-supplied parameter (OQ-2:
+    03 owns the file; an agreed-different location is a one-line config change, not a code edit).
+    """
+    try:
+        with open(checkpoints_yaml_path) as fh:
+            raw = yaml.safe_load(fh)
+    except FileNotFoundError as exc:
         raise ValueError(
-            f"waypoint references checkpoint_id {w['checkpoint_id']!r}: "
-            "checkpoint_id resolution lands in M4 (basic mission uses inline waypoints only)"
+            f"checkpoints file {checkpoints_yaml_path!r} not found, "
+            "but a waypoint references a checkpoint_id"
+        ) from exc
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"checkpoints file {checkpoints_yaml_path!r} must be a list of checkpoints"
+        )
+    positions: dict[str, Point] = {}
+    for entry in raw:
+        cid = entry["checkpoint_id"]
+        if "position" not in entry:
+            raise ValueError(f"checkpoint {cid!r} missing required 'position'")
+        positions[cid] = _point(entry["position"])
+    return positions
+
+
+def _references_checkpoint(raw_waypoints: list) -> bool:
+    """Whether any waypoint resolves via a ``checkpoint_id`` (so checkpoints must be loaded)."""
+    return any("checkpoint_id" in w for w in raw_waypoints)
+
+
+def _parse_waypoint(w: dict, checkpoints: dict[str, Point]) -> Waypoint:
+    """Build a Waypoint from a resolved ``checkpoint_id`` (ENU) or an inline ``position``+``frame``."""
+    if "checkpoint_id" in w:
+        cid = w["checkpoint_id"]
+        if cid not in checkpoints:
+            raise ValueError(f"waypoint references unknown checkpoint_id {cid!r}")
+        return Waypoint(
+            position=checkpoints[cid], frame="enu", dwell_s=float(w["dwell_s"]), checkpoint_id=cid
         )
     frame = _validate_frame(w["frame"], "waypoint")
     return Waypoint(position=_point(w["position"]), frame=frame, dwell_s=float(w["dwell_s"]))
 
 
-def load_mission_config(mission_yaml_path: str) -> MissionConfig:
+def load_mission_config(
+    mission_yaml_path: str,
+    checkpoints_yaml_path: str = "sim/config/checkpoints.yaml",
+) -> MissionConfig:
     """Parse + validate a mission YAML into a frozen :class:`MissionConfig` (MC-3).
 
     Args:
         mission_yaml_path: path to the mission YAML to load.
+        checkpoints_yaml_path: path to 03's checkpoint-positions YAML (OQ-2). Read only
+            when a waypoint references a ``checkpoint_id``; the default is the agreed
+            location, kept behind a parameter so a different one is a one-line config
+            change, not a code edit.
 
     Raises:
-        ValueError: on a missing required field, an unknown frame, an
-            out-of-range numeric field (see :func:`_validate_semantics`), or
-            (M1) a ``checkpoint_id`` waypoint.
-
-    M4 (T2.2) adds a ``checkpoints_yaml_path`` parameter (default
-    ``sim/config/checkpoints.yaml``, the OQ-2 file location, kept behind a
-    parameter so an agreed-different location is a one-line config change) for
-    ``checkpoint_id`` resolution against 03's checkpoint-positions file.
+        ValueError: on a missing required field, an unknown frame, an out-of-range
+            numeric field (see :func:`_validate_semantics`), an unresolvable
+            ``checkpoint_id``, or a missing/malformed checkpoints file when one is
+            referenced.
     """
     with open(mission_yaml_path) as fh:
         raw = yaml.safe_load(fh)
 
     home = _require(raw, "home")
-    waypoints = tuple(_parse_waypoint(w) for w in _require(raw, "waypoints"))
+    raw_waypoints = _require(raw, "waypoints")
+    checkpoints = (
+        _load_checkpoints(checkpoints_yaml_path) if _references_checkpoint(raw_waypoints) else {}
+    )
+    waypoints = tuple(_parse_waypoint(w, checkpoints) for w in raw_waypoints)
 
     cfg = MissionConfig(
         takeoff_alt_m=float(_require(raw, "takeoff_alt_m")),

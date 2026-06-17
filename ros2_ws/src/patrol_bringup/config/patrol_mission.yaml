@@ -1,0 +1,33 @@
+# patrol_mission.yaml (02-owned) — the full patrol route (MC-3, design Appendix C.2).
+#
+# Flown by `ros2 launch patrol_bringup mission_patrol.launch.py`: arm -> takeoff to takeoff_alt_m
+# -> hover hover_time_s -> visit each waypoint in order (tolerance+hold, then dwell_s) -> RTH via
+# the explicit home-waypoint offboard sequence -> land. No route data is hardcoded in source.
+#
+# Every waypoint carries a frame (directly via `frame`, or implicitly ENU via a `checkpoint_id`
+# reference resolved against sim/config/checkpoints.yaml) so the single MC-7 conversion boundary
+# always knows the source frame. The first two waypoints reference 03's checkpoints (interim
+# stand-in today); the last two are inline ENU.
+takeoff_alt_m: 5.0
+hover_time_s: 10.0
+completion:
+  tolerance_m: 0.5      # OQ-4 default (overridable)
+  hold_time_s: 2.0      # OQ-4 default (overridable)
+abort:
+  low_battery_threshold: 0.20   # OQ-6 (battery_status.remaining fraction)
+# Home at 2 m ENU altitude: RTH flies the explicit home-waypoint setpoint to here, settles, then
+# LANDING descends the rest of the way (OQ-8 — no PX4 RTL handoff).
+home:
+  position: { x: 0.0, y: 0.0, z: 2.0 }
+  frame: "enu"
+waypoints:
+  - checkpoint_id: "cp_north"   # resolved from sim/config/checkpoints.yaml (ENU)
+    dwell_s: 3.0
+  - checkpoint_id: "cp_east"
+    dwell_s: 3.0
+  - position: { x: -10.0, y: 0.0, z: 2.0 }   # inline waypoint (ENU)
+    frame: "enu"
+    dwell_s: 3.0
+  - position: { x: 0.0, y: -10.0, z: 2.0 }
+    frame: "enu"
+    dwell_s: 3.0

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import rclpy
 from px4_msgs.msg import (
+    BatteryStatus,
     OffboardControlMode,
     TrajectorySetpoint,
     VehicleCommand,
@@ -31,6 +32,7 @@ from px4_msgs.msg import (
 )
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, Int32, String
 
 from patrol_mission import topics
 from patrol_mission.commands import Px4CommandKind, build_vehicle_commands
@@ -75,13 +77,34 @@ def _px4_qos() -> QoSProfile:
     )
 
 
+def _patrol_qos() -> QoSProfile:
+    """The /patrol/* QoS (design §4.4.2): reliable + transient-local, depth 1.
+
+    Transient-local depth-1 means a late subscriber (04/05 starting after the node) still sees the
+    latest mission_state / current_waypoint / abort, and reliable delivery means a connected
+    subscriber never drops the single observable ABORT sample before it routes to RTH.
+    """
+    return QoSProfile(
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+    )
+
+
 class PatrolMissionNode(Node):
     def __init__(self) -> None:
         super().__init__("patrol_mission")
         mission_yaml = str(self.declare_parameter("mission_yaml", "").value)
         if not mission_yaml:
             raise ValueError("parameter 'mission_yaml' is required (path to the mission YAML)")
-        self._cfg = load_mission_config(mission_yaml)
+        # OQ-2: the checkpoints path is a parameter so an agreed-different 03 location (or the SITL
+        # workspace's resolved path) is a launch-time override, not a code edit. Only read when a
+        # waypoint references a checkpoint_id, so the basic mission never needs the file.
+        checkpoints_yaml = str(
+            self.declare_parameter("checkpoints_yaml", "sim/config/checkpoints.yaml").value
+        )
+        self._cfg = load_mission_config(mission_yaml, checkpoints_yaml)
 
         # Topic names are the PX4 v1.17 `_v1`-suffixed contract, defined once in
         # patrol_mission.topics (01-platform design §4.2.4) and pinned by a Layer-A test.
@@ -95,6 +118,15 @@ class PatrolMissionNode(Node):
             VehicleLocalPosition, topics.VEHICLE_LOCAL_POSITION, self._on_pos, qos
         )
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, qos)
+        self.create_subscription(BatteryStatus, topics.BATTERY_STATUS, self._on_battery, qos)
+
+        # /patrol/* — the mission-orchestration surface (OQ-3). mission_state + current_waypoint are
+        # the observable mission/capture surface (latched so a late 04/05 subscriber sees the latest);
+        # abort is the inbound external-abort signal (latched, MC-6).
+        patrol_qos = _patrol_qos()
+        self._pub_state = self.create_publisher(String, topics.PATROL_MISSION_STATE, patrol_qos)
+        self._pub_wp = self.create_publisher(Int32, topics.PATROL_CURRENT_WAYPOINT, patrol_qos)
+        self.create_subscription(Bool, topics.PATROL_ABORT, self._on_abort, patrol_qos)
 
         # Init to None (not a default-constructed message): a default VehicleStatus reports
         # disarmed-at-origin, which is indistinguishable from "no telemetry has arrived yet".
@@ -106,6 +138,12 @@ class PatrolMissionNode(Node):
         # _on_tick uses these to refuse to advance the mission on a frozen fix (Hermes Medium).
         self._pos_rx_s: float | None = None
         self._status_rx_s: float | None = None
+        # Battery defaults to "full" and abort to False so their ABSENCE never fabricates an abort: a
+        # missing BatteryStatus must not fire low-battery, and no /patrol/abort means no abort. The
+        # latest received value replaces these; the abort latch itself lives in the state machine's
+        # _NON_ABORTABLE exclusion, so a momentary external True still drives the full return home.
+        self._battery_remaining = 1.0
+        self._abort_requested = False
         self._state = MissionState.IDLE
         self._warmup = 0
         # True while the node is skipping state-machine progression (no telemetry, EKF not yet valid,
@@ -135,6 +173,14 @@ class PatrolMissionNode(Node):
         self._status = msg
         self._status_rx_s = self._clock_s()
 
+    def _on_battery(self, msg: BatteryStatus) -> None:
+        # BatteryStatus.remaining is the 0..1 fraction the low-battery abort threshold compares.
+        self._battery_remaining = float(msg.remaining)
+
+    def _on_abort(self, msg: Bool) -> None:
+        # Reflect the latest /patrol/abort value; the state machine makes a True "stick" through RTH.
+        self._abort_requested = bool(msg.data)
+
     # --- 10 Hz control loop -------------------------------------------------
 
     def _on_tick(self) -> None:
@@ -163,8 +209,23 @@ class PatrolMissionNode(Node):
         telem = self._build_telemetry(pos, status, now_s)
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)
+        self._publish_patrol(cmd)  # observable mission surface (OQ-3) + 04 capture trigger (OQ-7)
         if self._warmup < _OFFBOARD_STREAM_WARMUP_TICKS:
             self._warmup += 1
+
+    def _publish_patrol(self, cmd: Command) -> None:
+        """Publish the /patrol/* mission surface (OQ-3).
+
+        mission_state is derived from the just-updated ``self._state`` enum (the single source of
+        truth — the Command does not duplicate it); current_waypoint is the active index. DWELL +
+        that index is 04's once-per-checkpoint capture trigger (OQ-7).
+        """
+        state_msg = String()
+        state_msg.data = self._state.name
+        self._pub_state.publish(state_msg)
+        wp_msg = Int32()
+        wp_msg.data = cmd.current_waypoint
+        self._pub_wp.publish(wp_msg)
 
     def _telemetry_stale(self, now_s: float) -> bool:
         """True if either required /fmu/out stream's latest sample is older than the freshness timeout."""
@@ -184,6 +245,10 @@ class PatrolMissionNode(Node):
             position_ned=(float(pos.x), float(pos.y), float(pos.z)),
             armed=status.arming_state == VehicleStatus.ARMING_STATE_ARMED,
             offboard_active=status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD,
+            battery_remaining=self._battery_remaining,
+            abort_requested=self._abort_requested,
+            # manual_takeover / timed_out are scaffold guards — never wired in SITL (Phase 2 RC),
+            # so they keep their False defaults here. The state machine still unit-tests both paths.
         )
 
     def _clock_s(self) -> float:
