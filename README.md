@@ -121,7 +121,9 @@ whose `checkpoint_id` waypoints resolve against [`sim/config/checkpoints.yaml`](
 them with no custom plugin). An external abort is the safety floor:
 
 ```bash
-ros2 topic pub -1 /patrol/abort std_msgs/Bool '{data: true}'   # mid-patrol → observable ABORT → RTH
+# /patrol/abort is reliable + transient-local — match it or the abort isn't delivered:
+ros2 topic pub -1 --qos-reliability reliable --qos-durability transient_local \
+  /patrol/abort std_msgs/Bool '{data: true}'                   # mid-patrol → observable ABORT → RTH
 ```
 
 Abort/waypoint/RTH transitions are all unit-tested (including the scaffolded manual-takeover/timeout
