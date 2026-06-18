@@ -199,6 +199,16 @@ def test_checkpoint_reference_without_path_fails_loud(tmp_path):
         load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")))
 
 
+# TS-C5d (Hermes Medium): a RELATIVE checkpoints path is rejected when referenced — resolution must
+# not depend on the working directory (the durability guarantee this milestone explicitly adds).
+def test_relative_checkpoints_path_rejected(tmp_path):
+    with pytest.raises(ValueError, match="absolute"):
+        load_mission_config(
+            _write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")),
+            "sim/config/checkpoints.yaml",  # relative — must be rejected before any open()
+        )
+
+
 # TS-C5b: a missing checkpoints file is harmless when NO waypoint references a checkpoint_id
 # (the basic mission must still load even if 03's file is absent).
 def test_missing_checkpoints_file_ignored_when_unreferenced(tmp_path):

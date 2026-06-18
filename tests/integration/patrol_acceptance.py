@@ -15,8 +15,8 @@ The observable patrol surface is ``/patrol/*`` (OQ-3): ``mission_state`` (the Mi
 ``current_waypoint`` (the active index). Arm/disarm comes from ``/fmu/out/vehicle_status`` (the same
 ``_v1`` output the basic harness reads). The acceptance criteria:
 
-  AC-2 (nominal patrol): armed -> every configured waypoint index visited -> DWELL observed ->
-        RTH observed -> disarmed after arming.
+  AC-2 (nominal patrol): armed -> every configured waypoint index observed in DWELL (reached and
+        dwelled, not merely targeted) -> RTH observed -> disarmed after arming.
   AC-6 (external abort): an external ``/patrol/abort`` published mid-patrol drives an observable
         ABORT then RTH, then disarm (asserted by the abort scenario in the test, using this watcher).
 """
@@ -72,9 +72,18 @@ class PatrolWatcher(Node):
         super().__init__(node_name)
         self._expected = expected_waypoints
         self.states_seen: list[str] = []  # deduped-consecutive ordered mission_state history
-        self.waypoints_visited: set[int] = set()
+        self.waypoints_visited: set[int] = (
+            set()
+        )  # active targets seen (current_waypoint>=0): underway
+        self.waypoints_dwelled: set[int] = (
+            set()
+        )  # indices observed in DWELL — reached, not just targeted
         self.was_armed = False
         self.disarmed_after_arm = False
+        # Latest sample on each /patrol topic, correlated in _note_dwell so a waypoint counts as
+        # *reached* only once DWELL is observed with its index active (not merely targeted).
+        self._cur_state = ""
+        self._cur_wp = -1
         pqos = patrol_state_qos()
         self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
         self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, pqos)
@@ -83,10 +92,26 @@ class PatrolWatcher(Node):
     def _on_state(self, msg: String) -> None:
         if not self.states_seen or self.states_seen[-1] != msg.data:
             self.states_seen.append(msg.data)
+        self._cur_state = msg.data
+        self._note_dwell()
 
     def _on_wp(self, msg: Int32) -> None:
         if msg.data >= 0:
             self.waypoints_visited.add(msg.data)
+        self._cur_wp = msg.data
+        self._note_dwell()
+
+    def _note_dwell(self) -> None:
+        """Count a waypoint as reached only when observed in DWELL with its index active (OQ-7).
+
+        The node publishes ``current_waypoint=i`` while still *flying toward* waypoint i (WAYPOINT
+        state), so counting any non-negative index as "visited" would pass the patrol gate on
+        approach, before arrival/dwell (Hermes High). ``current_waypoint`` stays ``i`` across both
+        WAYPOINT(i) and DWELL(i), so correlating the two /patrol topics — DWELL + index i — is sound
+        evidence that waypoint i was actually reached and dwelled, which is the AC-2 / OQ-7 contract.
+        """
+        if self._cur_state == "DWELL" and self._cur_wp >= 0:
+            self.waypoints_dwelled.add(self._cur_wp)
 
     def _on_status(self, msg: VehicleStatus) -> None:
         if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED:
@@ -104,12 +129,9 @@ class PatrolWatcher(Node):
         return any(s in _AIRBORNE_STATES for s in self.states_seen)
 
     @property
-    def all_waypoints_visited(self) -> bool:
-        return self.waypoints_visited >= set(range(self._expected))
-
-    @property
-    def saw_dwell(self) -> bool:
-        return "DWELL" in self.states_seen
+    def all_waypoints_dwelled(self) -> bool:
+        """Every configured waypoint index was observed in DWELL — reached + dwelled, not just targeted."""
+        return self.waypoints_dwelled >= set(range(self._expected))
 
     @property
     def saw_rth(self) -> bool:
@@ -127,23 +149,23 @@ class PatrolWatcher(Node):
         """Every nominal-patrol criterion observed — the spin loop stops early once true (AC-2)."""
         return (
             self.was_armed
-            and self.all_waypoints_visited
+            and self.all_waypoints_dwelled
             and self.saw_rth
             and self.disarmed_after_arm
         )
 
 
 def evaluate_nominal(watcher: PatrolWatcher, expected_waypoints: int) -> list[Check]:
-    """The AC-2 nominal-patrol checks: armed, all waypoints in the route visited, dwell, RTH, land."""
+    """The AC-2 nominal-patrol checks: armed, every waypoint reached + dwelled, RTH, land."""
     return [
         Check("armed", watcher.was_armed, "vehicle reported ARMED"),
         Check(
-            "all_waypoints_visited",
-            watcher.all_waypoints_visited,
-            f"visited waypoint indices {sorted(watcher.waypoints_visited)} "
-            f"(need 0..{expected_waypoints - 1})",
+            "all_waypoints_dwelled",
+            watcher.all_waypoints_dwelled,
+            f"dwelled at waypoint indices {sorted(watcher.waypoints_dwelled)} "
+            f"(need 0..{expected_waypoints - 1}); active targets seen "
+            f"{sorted(watcher.waypoints_visited)}",
         ),
-        Check("dwelled", watcher.saw_dwell, "DWELL observed at a waypoint"),
         Check("returned_home", watcher.saw_rth, "RTH (return-to-home) observed"),
         Check(
             "landed_disarmed",

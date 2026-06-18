@@ -14,6 +14,7 @@ in M4; until then a ``checkpoint_id`` waypoint fails loud.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -182,6 +183,11 @@ def _resolve_checkpoints(raw_waypoints: list, checkpoints_yaml_path: str) -> dic
         raise ValueError(
             "a waypoint references a checkpoint_id but no checkpoints_yaml path was provided; "
             "pass checkpoints_yaml:=<absolute path> (the checkpoints file is 03-owned, OQ-2)"
+        )
+    if not Path(checkpoints_yaml_path).is_absolute():
+        raise ValueError(
+            f"checkpoints_yaml path {checkpoints_yaml_path!r} must be absolute so resolution does "
+            "not depend on the working directory; pass checkpoints_yaml:=<absolute path> (Hermes)"
         )
     return _load_checkpoints(checkpoints_yaml_path)
 
