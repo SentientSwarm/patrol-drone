@@ -29,12 +29,19 @@ import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from mission_acceptance import Check  # reuse the one Check verdict shape
+from patrol_mission.frames import Point, to_ned_from_origin
 from patrol_mission.qos import patrol_state_qos, px4_qos
-from px4_msgs.msg import VehicleStatus
+from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from std_msgs.msg import Int32, String
 
 from patrol_mission import topics
+
+# SITL VehicleLocalPosition is already EKF-origin-relative NED, so the watcher converts the
+# configured home to NED with the same zero origin the node uses (node.py _EKF_ORIGIN_NED). The
+# home-settle check then compares the vehicle's reported position against the *same* home_ned the
+# state machine flies to before LANDING — catching an RTH that targets the wrong coordinate (Hermes).
+_EKF_ORIGIN_NED: Point = (0.0, 0.0, 0.0)
 
 # Generous upper bound on a single patrol run: takeoff + hover + 4*(fly + dwell) + RTH + land, with
 # slack. The verifier/test stop early the instant the criteria are met. Within the OQ-5 ≤8 min/
@@ -47,15 +54,34 @@ def _patrol_mission_yaml() -> str:
     return f"{get_package_share_directory('patrol_bringup')}/config/patrol_mission.yaml"
 
 
-def expected_waypoint_count(mission_yaml: str | None = None) -> int:
-    """Number of waypoints the patrol must visit — counted from the route YAML, never hardcoded.
-
-    Counts the raw ``waypoints`` list (no checkpoint_id resolution needed just to count), so this
-    has no dependency on 03's checkpoints file being reachable from the acceptance process.
-    """
+def _mission_raw(mission_yaml: str | None = None) -> dict:
+    """The raw mission YAML — read directly (no checkpoint_id resolution), so the acceptance process
+    never depends on 03's checkpoints file being reachable just to read waypoint count / home."""
     with open(mission_yaml or _patrol_mission_yaml()) as fh:
-        raw = yaml.safe_load(fh)
-    return len(raw["waypoints"])
+        return yaml.safe_load(fh)
+
+
+def expected_waypoint_count(mission_yaml: str | None = None) -> int:
+    """Number of waypoints the patrol must visit — counted from the route YAML, never hardcoded."""
+    return len(_mission_raw(mission_yaml)["waypoints"])
+
+
+def home_target_ned(mission_yaml: str | None = None) -> Point:
+    """The configured home, converted to the EKF-origin-relative NED the vehicle reports (MC-7).
+
+    Mirrors the node's own home_ned derivation (``to_ned_from_origin`` with a zero EKF origin), so
+    the home-settle check compares the vehicle against the exact coordinate RTH flies to.
+    """
+    home = _mission_raw(mission_yaml)["home"]
+    p = home["position"]
+    return to_ned_from_origin((p["x"], p["y"], p["z"]), home["frame"], _EKF_ORIGIN_NED)
+
+
+def home_tolerance_m(mission_yaml: str | None = None) -> float:
+    """The completion-tolerance ball (m) for the home settle — the same radius the state machine
+    uses to leave RTH for LANDING. Reads ``completion.tolerance_m`` (OQ-4 default 0.5)."""
+    completion = _mission_raw(mission_yaml).get("completion") or {}
+    return float(completion.get("tolerance_m", 0.5))
 
 
 # States that only occur once the vehicle is airborne. A disarm after any of these is a landing —
@@ -68,9 +94,20 @@ class PatrolWatcher(Node):
     """Records the patrol's observable surface: states seen (ordered), waypoint indices visited,
     and arm/disarm — off ``/patrol/*`` + ``/fmu/out/vehicle_status``."""
 
-    def __init__(self, expected_waypoints: int, *, node_name: str = "patrol_acceptance_watcher"):
+    def __init__(
+        self,
+        expected_waypoints: int,
+        *,
+        home_ned: Point | None = None,
+        home_tol_m: float | None = None,
+        node_name: str = "patrol_acceptance_watcher",
+    ):
         super().__init__(node_name)
         self._expected = expected_waypoints
+        # The home coordinate RTH must settle at, and the tolerance ball (default: read from the same
+        # checked-in mission YAML the launch uses), so the home-settle check is config-driven.
+        self.home_ned = home_ned if home_ned is not None else home_target_ned()
+        self.home_tol_m = home_tol_m if home_tol_m is not None else home_tolerance_m()
         self.states_seen: list[str] = []  # deduped-consecutive ordered mission_state history
         self.waypoints_visited: set[int] = (
             set()
@@ -80,6 +117,8 @@ class PatrolWatcher(Node):
         )  # indices observed in DWELL — reached, not just targeted
         self.was_armed = False
         self.disarmed_after_arm = False
+        self.settled_near_home = False  # vehicle reached the configured home_ned within tolerance
+        self.min_home_distance_m = float("inf")  # closest the vehicle ever got to home_ned (detail)
         # Latest sample on each /patrol topic, correlated in _note_dwell so a waypoint counts as
         # *reached* only once DWELL is observed with its index active (not merely targeted).
         self._cur_state = ""
@@ -88,6 +127,9 @@ class PatrolWatcher(Node):
         self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
         self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, pqos)
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, px4_qos())
+        self.create_subscription(
+            VehicleLocalPosition, topics.VEHICLE_LOCAL_POSITION, self._on_local_pos, px4_qos()
+        )
 
     def _on_state(self, msg: String) -> None:
         if not self.states_seen or self.states_seen[-1] != msg.data:
@@ -119,6 +161,22 @@ class PatrolWatcher(Node):
         elif self.was_armed and self._flew:
             self.disarmed_after_arm = True  # disarmed after arming + getting airborne (a landing)
 
+    def _on_local_pos(self, msg: VehicleLocalPosition) -> None:
+        """Latch ``settled_near_home`` once the vehicle reaches the configured home_ned (AC-2/AC-6).
+
+        Mirrors the state machine's own RTH->LANDING trigger (within tolerance, 3D) so "returned
+        home" means the vehicle actually arrived at the configured home coordinate — not merely that
+        the RTH *state* was published. An RTH targeting the wrong home would never settle here and the
+        check fails (Hermes Medium). Only a valid EKF fix is trusted (xy_valid + z_valid).
+        """
+        if not (msg.xy_valid and msg.z_valid):
+            return
+        hx, hy, hz = self.home_ned
+        distance = ((msg.x - hx) ** 2 + (msg.y - hy) ** 2 + (msg.z - hz) ** 2) ** 0.5
+        self.min_home_distance_m = min(self.min_home_distance_m, distance)
+        if distance <= self.home_tol_m:
+            self.settled_near_home = True
+
     @property
     def _flew(self) -> bool:
         """True once the vehicle has been airborne, so a later disarm is a landing not pre-flight.
@@ -145,12 +203,17 @@ class PatrolWatcher(Node):
         return self.states_seen.index("RTH") > self.states_seen.index("ABORT")
 
     @property
+    def returned_home(self) -> bool:
+        """RTH observed AND the vehicle settled at the configured home_ned (not just the state)."""
+        return self.saw_rth and self.settled_near_home
+
+    @property
     def nominal_complete(self) -> bool:
         """Every nominal-patrol criterion observed — the spin loop stops early once true (AC-2)."""
         return (
             self.was_armed
             and self.all_waypoints_dwelled
-            and self.saw_rth
+            and self.returned_home
             and self.disarmed_after_arm
         )
 
@@ -166,7 +229,12 @@ def evaluate_nominal(watcher: PatrolWatcher, expected_waypoints: int) -> list[Ch
             f"(need 0..{expected_waypoints - 1}); active targets seen "
             f"{sorted(watcher.waypoints_visited)}",
         ),
-        Check("returned_home", watcher.saw_rth, "RTH (return-to-home) observed"),
+        Check(
+            "returned_home",
+            watcher.returned_home,
+            f"RTH observed and vehicle settled within {watcher.home_tol_m} m of home_ned "
+            f"{watcher.home_ned}; closest approach {watcher.min_home_distance_m:.2f} m",
+        ),
         Check(
             "landed_disarmed",
             watcher.disarmed_after_arm,
@@ -180,3 +248,16 @@ def spin_until(watcher: PatrolWatcher, predicate, *, timeout_s: float = PATROL_T
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline and not predicate(watcher):
         rclpy.spin_once(watcher, timeout_sec=0.5)
+
+
+def wait_for_subscription(node: Node, publisher, *, timeout_s: float = 10.0) -> bool:
+    """Spin ``node`` until ``publisher`` has a matched subscription (DDS discovery), or timeout.
+
+    Returns whether a subscriber was discovered. A *volatile* command publisher (e.g. /patrol/abort)
+    drops samples published before discovery completes, so a test must wait for the node's subscriber
+    to be matched rather than assume it — otherwise the abort can be silently lost (Hermes Medium).
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and publisher.get_subscription_count() == 0:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    return publisher.get_subscription_count() > 0

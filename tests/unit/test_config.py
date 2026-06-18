@@ -159,6 +159,18 @@ def test_non_list_checkpoints_file_raises(tmp_path):
         load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), cps)
 
 
+# TS-C2e: a duplicate checkpoint_id fails loud rather than silently overwriting earlier coordinates
+# (a plain dict() fold would keep only the last). Names the offending id (Hermes Medium).
+def test_duplicate_checkpoint_id_raises(tmp_path):
+    cps = _write_checkpoints(
+        tmp_path,
+        "- checkpoint_id: cp_north\n  position: {x: 10, y: 0, z: 2}\n"
+        "- checkpoint_id: cp_north\n  position: {x: 99, y: 9, z: 9}\n",  # same id, different coords
+    )
+    with pytest.raises(ValueError, match="duplicate checkpoint_id 'cp_north'"):
+        load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), cps)
+
+
 # TS-C3: a route mixing checkpoint_id and inline waypoints resolves all of them in order.
 def test_mixed_checkpoint_and_inline(tmp_path):
     cps = _write_checkpoints(tmp_path)

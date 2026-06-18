@@ -152,7 +152,27 @@ def _load_checkpoints(checkpoints_yaml_path: str) -> dict[str, Point]:
         raise ValueError(
             f"checkpoints file {checkpoints_yaml_path!r} must be a list of checkpoints"
         )
-    return dict(_checkpoint_entry(entry) for entry in raw)
+    return _checkpoints_map(raw, checkpoints_yaml_path)
+
+
+def _checkpoints_map(raw: list, checkpoints_yaml_path: str) -> dict[str, Point]:
+    """Fold checkpoint entries into ``{checkpoint_id: ENU position}``, fail-loud on duplicate ids.
+
+    A plain ``dict(...)`` comprehension would let a duplicate ``checkpoint_id`` silently overwrite
+    an earlier coordinate, hiding conflicting 03-owned checkpoint data (Hermes Medium). Building the
+    map explicitly lets a duplicate raise with field context, matching this loader's fail-loud
+    contract for every other malformed-checkpoint case (INF-M3).
+    """
+    checkpoints: dict[str, Point] = {}
+    for entry in raw:
+        cid, point = _checkpoint_entry(entry)
+        if cid in checkpoints:
+            raise ValueError(
+                f"checkpoints file {checkpoints_yaml_path!r} declares duplicate checkpoint_id "
+                f"{cid!r}; checkpoint ids must be unique (a duplicate silently overwrites coordinates)"
+            )
+        checkpoints[cid] = point
+    return checkpoints
 
 
 def _checkpoint_entry(entry: dict) -> tuple[str, Point]:

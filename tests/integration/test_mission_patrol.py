@@ -33,6 +33,7 @@ from patrol_acceptance import (
     evaluate_nominal,
     expected_waypoint_count,
     spin_until,
+    wait_for_subscription,
 )
 from patrol_mission.qos import patrol_abort_qos
 from std_msgs.msg import Bool
@@ -111,17 +112,28 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
         )
         assert watcher.was_armed, "patrol never armed — cannot exercise the mid-patrol abort"
 
-        # ...then raise the external abort. The injector's publisher and the node's subscriber share
-        # patrol_abort_qos (reliable + volatile) and are matched by now (the patrol is underway), so
-        # the abort is delivered; it then "sticks" through RTH via the state machine's latch.
+        # ...then raise the external abort. patrol_abort_qos is reliable + *volatile*, so a sample
+        # published before the node's subscriber is discovered would be dropped on the floor. Wait
+        # for DDS matching first (Hermes Medium) rather than assume the patrol being underway implies
+        # it. Once delivered, the abort "sticks" through RTH via the state machine's latch.
+        assert wait_for_subscription(injector, abort_pub), (
+            "node's /patrol/abort subscriber was not discovered; the volatile abort would be dropped"
+        )
         msg = Bool()
         msg.data = True
         abort_pub.publish(msg)
 
-        # The mission must transition to an observable ABORT, then RTH (return home), then disarm.
-        spin_until(watcher, lambda w: w.abort_then_rth and w.disarmed_after_arm)
+        # The mission must transition to an observable ABORT, then RTH, settle at home, then disarm.
+        spin_until(
+            watcher,
+            lambda w: w.abort_then_rth and w.settled_near_home and w.disarmed_after_arm,
+        )
         assert watcher.abort_then_rth, (
             f"no observable ABORT->RTH; states seen: {watcher.states_seen}"
+        )
+        assert watcher.settled_near_home, (
+            f"abort-driven RTH did not settle within {watcher.home_tol_m} m of home_ned "
+            f"{watcher.home_ned}; closest approach {watcher.min_home_distance_m:.2f} m"
         )
         assert watcher.disarmed_after_arm, (
             "vehicle did not disarm after the abort-driven return home"
