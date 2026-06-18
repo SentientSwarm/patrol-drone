@@ -48,7 +48,9 @@ jobs:
             if docker exec "$CID" bash -lc '
                 source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
                 source /opt/ros2_ws/install/setup.bash
-                ros2 topic list 2>/dev/null | grep -q /fmu/out/vehicle_status_v1'; then
+                # Resolve the version-sensitive status topic from patrol_mission.topics, not a
+                # re-hardcoded _v1 literal (one source of truth — Hermes Low).
+                ros2 topic list 2>/dev/null | grep -qx "$(python3 -m patrol_mission.topics VEHICLE_STATUS)"'; then
               echo "bridge up after ${i}0s"; exit 0
             fi
             sleep 10

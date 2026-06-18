@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
+from patrol_mission.frames import takeoff_target_ned
+
 if TYPE_CHECKING:
     from patrol_mission.config import MissionConfig
     from patrol_mission.frames import Point
@@ -173,10 +175,9 @@ class MissionStateMachine:
         self._wps = waypoints_ned
         self._home = home_ned
         self._p = _Progress()
-        # Takeoff target: home x/y, takeoff_alt_m AGL above home. NED down increases downward, so
-        # "alt above home" subtracts from home's own down coordinate (home_ned[2] - alt). Correct
-        # for any home altitude.
-        self._takeoff_ned: Point = (home_ned[0], home_ned[1], home_ned[2] - config.takeoff_alt_m)
+        # Takeoff target: home x/y, takeoff_alt_m AGL above home. Shared with the acceptance harness
+        # via frames.takeoff_target_ned (one derivation, correct for any home altitude — Hermes).
+        self._takeoff_ned: Point = takeoff_target_ned(home_ned, config.takeoff_alt_m)
         self._dispatch: dict[MissionState, Callable[[Telemetry], tuple[MissionState, Command]]] = {
             MissionState.IDLE: self._idle,
             MissionState.ARMING: self._arming,

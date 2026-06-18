@@ -66,3 +66,22 @@ def test_fmu_topics_aggregate_is_complete_and_unique():
     expected = {*_VERSIONED_OUT, *_UNVERSIONED_IN}
     assert set(topics.FMU_TOPICS) == expected
     assert len(topics.FMU_TOPICS) == len(expected)
+
+
+# named_topic backs `python -m patrol_mission.topics <NAME>` (Hermes Low): shell/CI resolve the
+# canonical, version-sensitive name from this one source instead of re-hardcoding the _v1 literal.
+def test_named_topic_resolves_known_constants():
+    assert topics.named_topic("VEHICLE_STATUS") == topics.VEHICLE_STATUS
+    assert topics.named_topic("PATROL_ABORT") == topics.PATROL_ABORT
+
+
+# An unknown name returns None (the CLI turns that into a non-zero exit + usage on stderr).
+def test_named_topic_unknown_returns_none():
+    assert topics.named_topic("NOT_A_TOPIC") is None
+    assert topics.named_topic("") is None
+
+
+# The resolver map is exactly the /fmu/* and /patrol/* surfaces — auto-derived, so a newly added
+# topic constant is reachable from the CLI with no second list to keep in sync.
+def test_named_topic_map_covers_every_surface():
+    assert set(topics._NAMED_TOPICS.values()) == {*topics.FMU_TOPICS, *topics.PATROL_TOPICS}

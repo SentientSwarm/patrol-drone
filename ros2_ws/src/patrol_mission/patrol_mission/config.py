@@ -212,17 +212,76 @@ def _resolve_checkpoints(raw_waypoints: list, checkpoints_yaml_path: str) -> dic
     return _load_checkpoints(checkpoints_yaml_path)
 
 
-def _parse_waypoint(w: dict, checkpoints: dict[str, Point]) -> Waypoint:
-    """Build a Waypoint from a resolved ``checkpoint_id`` (ENU) or an inline ``position``+``frame``."""
-    if "checkpoint_id" in w:
-        cid = w["checkpoint_id"]
-        if cid not in checkpoints:
-            raise ValueError(f"waypoint references unknown checkpoint_id {cid!r}")
-        return Waypoint(
-            position=checkpoints[cid], frame="enu", dwell_s=float(w["dwell_s"]), checkpoint_id=cid
+_CHECKPOINT_WAYPOINT_KEYS = frozenset({"checkpoint_id", "dwell_s"})
+_INLINE_WAYPOINT_KEYS = frozenset({"position", "frame", "dwell_s"})
+
+
+def _waypoint_shape(w: dict, index: int) -> str:
+    """Classify a waypoint as ``'checkpoint'`` or ``'inline'``; fail loud if it is both or neither.
+
+    A waypoint must be exactly one shape — checkpoint-based ``{checkpoint_id, dwell_s}`` or inline
+    ``{position, frame, dwell_s}``. Mixing a ``checkpoint_id`` with inline ``position``/``frame`` is
+    rejected rather than silently honoring the checkpoint and dropping the stray inline keys, which
+    would hide a conflicting/typo'd route (Hermes Medium).
+    """
+    has_checkpoint = "checkpoint_id" in w
+    has_inline = "position" in w or "frame" in w
+    if has_checkpoint and has_inline:
+        raise ValueError(
+            f"waypoint[{index}] is ambiguous: it mixes a checkpoint_id with inline position/frame; "
+            "give exactly one of {checkpoint_id, dwell_s} or {position, frame, dwell_s}"
         )
-    frame = _validate_frame(w["frame"], "waypoint")
+    if has_checkpoint:
+        return "checkpoint"
+    if has_inline:
+        return "inline"
+    raise ValueError(
+        f"waypoint[{index}] must be checkpoint-based {{checkpoint_id, dwell_s}} or inline "
+        f"{{position, frame, dwell_s}}; got keys {sorted(w)}"
+    )
+
+
+def _check_waypoint_keys(w: dict, index: int, allowed: frozenset[str]) -> None:
+    """A waypoint must carry exactly its shape's keys — a missing or unexpected key fails loud."""
+    keys = set(w)
+    missing = allowed - keys
+    if missing:
+        raise ValueError(f"waypoint[{index}] is missing required key(s) {sorted(missing)}")
+    extra = keys - allowed
+    if extra:
+        raise ValueError(
+            f"waypoint[{index}] has unexpected key(s) {sorted(extra)}; allowed {sorted(allowed)}"
+        )
+
+
+def _checkpoint_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> Waypoint:
+    """Resolve a checkpoint-based waypoint against the loaded checkpoints (ENU). Fail loud (INF-M3)."""
+    cid = w["checkpoint_id"]
+    if cid not in checkpoints:
+        raise ValueError(f"waypoint[{index}] references unknown checkpoint_id {cid!r}")
+    return Waypoint(
+        position=checkpoints[cid], frame="enu", dwell_s=float(w["dwell_s"]), checkpoint_id=cid
+    )
+
+
+def _inline_waypoint(w: dict, index: int) -> Waypoint:
+    """Build an inline ``position``+``frame`` waypoint (fail loud on an unknown frame)."""
+    frame = _validate_frame(w["frame"], f"waypoint[{index}]")
     return Waypoint(position=_point(w["position"]), frame=frame, dwell_s=float(w["dwell_s"]))
+
+
+def _parse_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> Waypoint:
+    """Build a Waypoint from exactly one shape: a checkpoint reference or an inline position.
+
+    Each waypoint must be unambiguously one shape and carry exactly that shape's keys; a mixed,
+    incomplete, or extra-keyed waypoint is rejected with an indexed ValueError so a malformed route
+    never flies (Hermes Medium).
+    """
+    if _waypoint_shape(w, index) == "checkpoint":
+        _check_waypoint_keys(w, index, _CHECKPOINT_WAYPOINT_KEYS)
+        return _checkpoint_waypoint(w, index, checkpoints)
+    _check_waypoint_keys(w, index, _INLINE_WAYPOINT_KEYS)
+    return _inline_waypoint(w, index)
 
 
 def load_mission_config(
@@ -251,7 +310,7 @@ def load_mission_config(
     home = _require(raw, "home")
     raw_waypoints = _require(raw, "waypoints")
     checkpoints = _resolve_checkpoints(raw_waypoints, checkpoints_yaml_path)
-    waypoints = tuple(_parse_waypoint(w, checkpoints) for w in raw_waypoints)
+    waypoints = tuple(_parse_waypoint(w, i, checkpoints) for i, w in enumerate(raw_waypoints))
 
     cfg = MissionConfig(
         takeoff_alt_m=float(_require(raw, "takeoff_alt_m")),

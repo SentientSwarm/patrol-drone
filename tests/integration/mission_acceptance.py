@@ -34,12 +34,17 @@ from dataclasses import dataclass
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from patrol_mission.config import load_mission_config
+from patrol_mission.frames import Point, takeoff_target_ned, to_ned_from_origin
 from patrol_mission.qos import px4_qos
 from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from settle_tracker import SettleTracker
 
 from patrol_mission import topics
+
+# SITL VehicleLocalPosition is already EKF-origin-relative NED, so the configured home is converted
+# with the same zero origin the node uses (node.py _EKF_ORIGIN_NED, mirrored by patrol_acceptance).
+_EKF_ORIGIN_NED: Point = (0.0, 0.0, 0.0)
 
 # The settled-hover window need only cover MOST of the hover, not all of it: the climb must first
 # settle into the band, and /fmu/out is sampled at ~2 Hz here. Sized below hover_time_s so a real
@@ -63,7 +68,7 @@ class AcceptanceThresholds:
     takeoff_alt_m: float
     hover_time_s: float
     tolerance_m: float
-    target_z_ned: float  # -takeoff_alt_m (NED down is negative-up)
+    target_z_ned: float  # the takeoff-target down coord the state machine flies to (home-relative)
     min_settled_hold_s: float  # required continuous time in the settle band
     mission_timeout_s: float
 
@@ -75,13 +80,22 @@ def _default_mission_yaml() -> str:
 
 
 def load_thresholds(mission_yaml: str | None = None) -> AcceptanceThresholds:
-    """Derive the acceptance thresholds from the flown mission config (never hardcoded here)."""
+    """Derive the acceptance thresholds from the flown mission config (never hardcoded here).
+
+    The settle-band target is the same point the state machine flies to: ``takeoff_alt_m`` above the
+    *configured home*, derived by converting home through the single MC-7 frame boundary and reusing
+    ``frames.takeoff_target_ned``. Hardcoding ``-takeoff_alt_m`` here would silently drift the moment
+    home is not at z=0 — and the shipped mission sits home at 2 m ENU, so the band would land 2 m off
+    the vehicle's actual hover altitude and the settled-hover check could never pass (Hermes).
+    """
     cfg = load_mission_config(mission_yaml or _default_mission_yaml())
+    home_ned = to_ned_from_origin(cfg.home_position, cfg.home_frame, _EKF_ORIGIN_NED)
+    _, _, target_z_ned = takeoff_target_ned(home_ned, cfg.takeoff_alt_m)
     return AcceptanceThresholds(
         takeoff_alt_m=cfg.takeoff_alt_m,
         hover_time_s=cfg.hover_time_s,
         tolerance_m=cfg.completion.tolerance_m,
-        target_z_ned=-cfg.takeoff_alt_m,
+        target_z_ned=target_z_ned,
         min_settled_hold_s=max(0.0, cfg.hover_time_s - SETTLE_MARGIN_S),
         mission_timeout_s=MISSION_TIMEOUT_S,
     )

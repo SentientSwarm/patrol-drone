@@ -28,6 +28,7 @@ import time
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from home_settle_tracker import HomeSettleTracker
 from mission_acceptance import Check  # reuse the one Check verdict shape
 from patrol_mission.frames import Point, to_ned_from_origin
 from patrol_mission.qos import patrol_state_qos, px4_qos
@@ -117,8 +118,10 @@ class PatrolWatcher(Node):
         )  # indices observed in DWELL — reached, not just targeted
         self.was_armed = False
         self.disarmed_after_arm = False
-        self.settled_near_home = False  # vehicle reached the configured home_ned within tolerance
-        self.min_home_distance_m = float("inf")  # closest the vehicle ever got to home_ned (detail)
+        # Return-home decision lives in a pure, Layer-A-tested tracker; the watcher feeds it position
+        # samples and gates them on RTH having started, so the takeoff climb through the home altitude
+        # can't falsely latch "returned home" before RTH runs (see HomeSettleTracker / Hermes High).
+        self._home_settle = HomeSettleTracker(self.home_ned, self.home_tol_m)
         # Latest sample on each /patrol topic, correlated in _note_dwell so a waypoint counts as
         # *reached* only once DWELL is observed with its index active (not merely targeted).
         self._cur_state = ""
@@ -162,20 +165,19 @@ class PatrolWatcher(Node):
             self.disarmed_after_arm = True  # disarmed after arming + getting airborne (a landing)
 
     def _on_local_pos(self, msg: VehicleLocalPosition) -> None:
-        """Latch ``settled_near_home`` once the vehicle reaches the configured home_ned (AC-2/AC-6).
+        """Feed the vehicle position to the home-settle tracker, gated on RTH having begun (AC-2/AC-6).
 
-        Mirrors the state machine's own RTH->LANDING trigger (within tolerance, 3D) so "returned
-        home" means the vehicle actually arrived at the configured home coordinate — not merely that
-        the RTH *state* was published. An RTH targeting the wrong home would never settle here and the
-        check fails (Hermes Medium). Only a valid EKF fix is trusted (xy_valid + z_valid).
+        The settle counts only *after* RTH starts: the takeoff climb passes through the configured
+        home altitude at home x/y, so a pre-RTH sample sits at home_ned within tolerance and — if it
+        latched — would falsely mark "returned home" before RTH ever runs (Hermes High). The pure
+        HomeSettleTracker owns that rule, the RTH->LANDING-style tolerance check, and the
+        closest-approach diagnostic; the watcher just supplies (position, rth_started, valid).
         """
-        if not (msg.xy_valid and msg.z_valid):
-            return
-        hx, hy, hz = self.home_ned
-        distance = ((msg.x - hx) ** 2 + (msg.y - hy) ** 2 + (msg.z - hz) ** 2) ** 0.5
-        self.min_home_distance_m = min(self.min_home_distance_m, distance)
-        if distance <= self.home_tol_m:
-            self.settled_near_home = True
+        self._home_settle.update(
+            (float(msg.x), float(msg.y), float(msg.z)),
+            rth_started=self.saw_rth,
+            valid=bool(msg.xy_valid and msg.z_valid),
+        )
 
     @property
     def _flew(self) -> bool:
@@ -201,6 +203,16 @@ class PatrolWatcher(Node):
         if "ABORT" not in self.states_seen or "RTH" not in self.states_seen:
             return False
         return self.states_seen.index("RTH") > self.states_seen.index("ABORT")
+
+    @property
+    def settled_near_home(self) -> bool:
+        """The vehicle reached the configured home_ned within tolerance *after* RTH began (Hermes)."""
+        return self._home_settle.settled
+
+    @property
+    def min_home_distance_m(self) -> float:
+        """Closest post-RTH approach to home_ned (diagnostic; inf until RTH starts being observed)."""
+        return self._home_settle.min_distance_m
 
     @property
     def returned_home(self) -> bool:

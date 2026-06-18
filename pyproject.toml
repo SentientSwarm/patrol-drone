@@ -99,7 +99,7 @@ ignore_missing_imports = true
 # Layer-A test for the pure settle tracker — both mypy-checked — import them after a sys.path
 # bootstrap mypy can't follow, so treat them as missing-stubs.
 [[tool.mypy.overrides]]
-module = ["mission_acceptance", "patrol_acceptance", "settle_tracker"]
+module = ["mission_acceptance", "patrol_acceptance", "settle_tracker", "home_settle_tracker"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -133,4 +133,5 @@ fail_under = 85
 exclude_also = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
+    "if __name__ == .__main__.:",  # CLI entry points (e.g. topics.py) only run as a script
 ]

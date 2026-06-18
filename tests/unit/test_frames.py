@@ -6,7 +6,7 @@ Layer-A: ROS-free, deterministic. No simulator, no rclpy.
 import math
 
 import pytest
-from patrol_mission.frames import to_ned_from_origin
+from patrol_mission.frames import takeoff_target_ned, to_ned_from_origin
 
 
 # TS-8: ENU -> NED axis map for a known input, with a zero origin.
@@ -49,3 +49,23 @@ def test_returns_plain_float_tuple():
     result = to_ned_from_origin((1, 2, 3), "enu", (0, 0, 0))
     assert all(isinstance(c, float) for c in result)
     assert not any(math.isnan(c) for c in result)
+
+
+# takeoff_target_ned keeps home x/y and climbs takeoff_alt_m above home (NED down decreases).
+@pytest.mark.parametrize(
+    ("home_ned", "alt", "expected"),
+    [
+        ((0.0, 0.0, 0.0), 5.0, (0.0, 0.0, -5.0)),  # home on the ground plane -> -alt
+        ((0.0, 0.0, -2.0), 5.0, (0.0, 0.0, -7.0)),  # home 2 m up (shipped config) -> -7, NOT -alt
+        ((1.0, 2.0, -3.0), 4.0, (1.0, 2.0, -7.0)),  # x/y preserved; down is home_down - alt
+    ],
+    ids=["home_at_origin", "home_above_origin", "home_offset_xy"],
+)
+def test_takeoff_target_is_alt_above_home(home_ned, alt, expected):
+    assert takeoff_target_ned(home_ned, alt) == expected
+
+
+# Returns a plain float tuple even for int inputs (mirrors to_ned_from_origin's contract).
+def test_takeoff_target_returns_plain_float_tuple():
+    result = takeoff_target_ned((1, 2, 3), 4)
+    assert all(isinstance(c, float) for c in result)

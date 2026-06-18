@@ -38,7 +38,7 @@ PX4_DIR="${PX4_DIR:-${HOME}/PX4-Autopilot}"
 QGC_APPIMAGE="${HOME}/Apps/QGroundControl-x86_64.AppImage"
 WS_SETUP="${REPO_ROOT}/ros2_ws/install/setup.bash"
 LOG_DIR="${PATROL_UAT_LOG_DIR:-/tmp/patrol-uat}"
-STATUS_TOPIC="/fmu/out/vehicle_status_v1"
+STATUS_TOPIC=""  # resolved from patrol_mission.topics once ROS + the ws are sourced (one source of truth)
 
 WITH_QGC=1
 KEEP_UP=0
@@ -205,6 +205,9 @@ main() {
     run_checks || { err "env_doctor failed — fix the above, or re-run with --skip-doctor"; exit 1; }
   fi
   source_ros
+  # Resolve the version-sensitive status topic from patrol_mission.topics now that the ws is on
+  # PYTHONPATH — the `_v1` literal lives only in that module, not re-hardcoded here (Hermes Low).
+  STATUS_TOPIC="$(python3 -m patrol_mission.topics VEHICLE_STATUS)"
 
   trap shutdown INT TERM EXIT
   start_agent

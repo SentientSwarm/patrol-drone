@@ -237,6 +237,61 @@ def test_shipped_patrol_mission_loads():
     assert cfg.waypoints[0].frame == "enu"
 
 
+# TS-C7 (Hermes Medium): each waypoint must be exactly one shape — checkpoint-based
+# {checkpoint_id, dwell_s} or inline {position, frame, dwell_s}. A waypoint that mixes the two,
+# is neither, or carries a missing/unexpected key is rejected fail-loud rather than silently honored
+# (the old parser took checkpoint_id and dropped any stray inline position/frame). A valid
+# checkpoints file is always supplied; it is simply ignored for the inline-only cases.
+@pytest.mark.parametrize(
+    ("waypoint", "match"),
+    [
+        (
+            "  - checkpoint_id: cp_north\n    position: {x: 1, y: 1, z: 1}\n"
+            "    frame: enu\n    dwell_s: 3.0\n",
+            "ambiguous",
+        ),
+        ("  - checkpoint_id: cp_north\n    dwell_s: 3.0\n    altitude: 9\n", "unexpected"),
+        (
+            "  - position: {x: 1, y: 1, z: 1}\n    frame: enu\n    dwell_s: 3.0\n    speed: 2\n",
+            "unexpected",
+        ),
+        ("  - dwell_s: 3.0\n", "must be checkpoint-based"),
+        ("  - position: {x: 1, y: 1, z: 1}\n    dwell_s: 3.0\n", "missing required key"),
+        ("  - checkpoint_id: cp_north\n", "missing required key"),
+    ],
+    ids=[
+        "mixes_checkpoint_and_inline",
+        "checkpoint_extra_key",
+        "inline_extra_key",
+        "neither_shape",
+        "inline_missing_frame",
+        "checkpoint_missing_dwell",
+    ],
+)
+def test_waypoint_shape_fail_loud(tmp_path, waypoint, match):
+    cps = _write_checkpoints(tmp_path)
+    body = _HEAD + _HOME_ENU + "waypoints:\n" + waypoint
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, body), cps)
+
+
+# TS-C7b (Hermes Medium): the fail-loud error names the offending waypoint *index* (here wp 1, a
+# valid checkpoint wp 0 precedes it) so a malformed entry in a long route is locatable.
+def test_waypoint_shape_error_is_indexed(tmp_path):
+    cps = _write_checkpoints(tmp_path)
+    body = (
+        _HEAD
+        + _HOME_ENU
+        + (
+            "waypoints:\n"
+            "  - checkpoint_id: cp_north\n    dwell_s: 3.0\n"  # valid wp 0
+            "  - position: {x: 1, y: 1, z: 1}\n    dwell_s: 3.0\n"  # wp 1: inline missing frame
+        )
+    )
+    with pytest.raises(ValueError, match=r"waypoint\[1\]"):
+        load_mission_config(_write(tmp_path, body), cps)
+
+
 # Shared completion/abort/waypoint scaffolds so the range cases vary only the field under test.
 def _completion(tolerance_m: float, hold_time_s: float) -> str:
     return f"completion: {{tolerance_m: {tolerance_m}, hold_time_s: {hold_time_s}}}\n"

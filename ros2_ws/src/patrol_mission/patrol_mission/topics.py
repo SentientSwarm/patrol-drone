@@ -50,3 +50,30 @@ PATROL_TOPICS = (
     PATROL_CURRENT_WAYPOINT,
     PATROL_ABORT,
 )
+
+# Map of public constant name -> topic, derived from this module's own constants (never a hand-kept
+# second list). Lets a shell/CI step resolve a canonical topic name — incl. the version-sensitive
+# ``_v1`` suffix — from this one source instead of re-hardcoding the literal (Hermes Low). See the
+# ``python -m patrol_mission.topics <NAME>`` entry point below.
+_NAMED_TOPICS = {
+    name: value
+    for name, value in list(globals().items())
+    if name.isupper() and isinstance(value, str) and value.startswith("/")
+}
+
+
+def named_topic(name: str) -> str | None:
+    """The canonical topic for a constant name (e.g. ``"VEHICLE_STATUS"``), or ``None`` if unknown."""
+    return _NAMED_TOPICS.get(name)
+
+
+if __name__ == "__main__":  # `python -m patrol_mission.topics VEHICLE_STATUS` -> the canonical name
+    import sys
+
+    _args = sys.argv[1:]
+    _topic = named_topic(_args[0]) if len(_args) == 1 else None
+    if _topic is None:
+        _known = ", ".join(sorted(_NAMED_TOPICS))
+        print(f"usage: python -m patrol_mission.topics <NAME>; known: {_known}", file=sys.stderr)
+        raise SystemExit(2)
+    print(_topic)
