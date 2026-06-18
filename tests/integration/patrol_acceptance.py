@@ -29,7 +29,7 @@ import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from mission_acceptance import Check  # reuse the one Check verdict shape
-from patrol_mission.qos import patrol_qos, px4_qos
+from patrol_mission.qos import patrol_state_qos, px4_qos
 from px4_msgs.msg import VehicleStatus
 from rclpy.node import Node
 from std_msgs.msg import Int32, String
@@ -75,7 +75,7 @@ class PatrolWatcher(Node):
         self.waypoints_visited: set[int] = set()
         self.was_armed = False
         self.disarmed_after_arm = False
-        pqos = patrol_qos()
+        pqos = patrol_state_qos()
         self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
         self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, pqos)
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, px4_qos())

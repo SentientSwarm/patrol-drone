@@ -1,9 +1,17 @@
 """Shared QoS profiles for the patrol stack (design §4.4.2).
 
-One definition each for the two messaging surfaces, imported by the node *and* the acceptance
-harness, so a publisher and its subscriber are guaranteed-compatible and the profile is not
-re-derived per file (the CodeScene duplication trap on M-milestone test PRs). Imports rclpy, so
-this is Layer-B — not part of the ROS-free unit-coverage gate.
+One definition per messaging surface, imported by the node *and* the acceptance harness, so a
+publisher and its subscriber are guaranteed-compatible and the profile is not re-derived per file
+(the CodeScene duplication trap on M-milestone test PRs). Imports rclpy, so this is Layer-B — not
+part of the ROS-free unit-coverage gate.
+
+The two /patrol/* surfaces have different needs (Hermes Medium), so they get distinct profiles
+rather than one shared one:
+  * observable state (mission_state/current_waypoint) is *latched* (transient-local) so a late
+    04/05 subscriber sees the latest sample;
+  * the inbound /patrol/abort *command* is volatile, so a plain ``ros2 topic pub`` (the documented
+    manual abort) is QoS-compatible. The abort "sticks" through RTH via the state machine's
+    _NON_ABORTABLE latch — not via topic durability.
 """
 
 from __future__ import annotations
@@ -21,16 +29,31 @@ def px4_qos() -> QoSProfile:
     )
 
 
-def patrol_qos() -> QoSProfile:
-    """The /patrol/* QoS (reliable + transient-local, depth 1).
+def patrol_state_qos() -> QoSProfile:
+    """The /patrol/{mission_state,current_waypoint} QoS (reliable + transient-local, depth 1).
 
-    Transient-local depth-1 lets a late subscriber (04/05 starting after the node) see the latest
-    mission_state/current_waypoint/abort; reliable delivery means a connected subscriber never drops
-    the single observable ABORT sample before it routes to RTH.
+    Transient-local depth-1 latches the observable mission surface so a late subscriber (04/05
+    starting after the node) immediately sees the latest state/waypoint sample.
     """
     return QoSProfile(
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+    )
+
+
+def patrol_abort_qos() -> QoSProfile:
+    """The /patrol/abort QoS (reliable + volatile, depth 1).
+
+    The abort is an inbound *command*, not latched observable state, so it is volatile: a plain
+    ``ros2 topic pub -1`` (which waits for the node's subscription before publishing) is then
+    QoS-compatible and delivered. The abort still "sticks" through the whole return home — that is
+    the state machine's _NON_ABORTABLE latch after receipt, not topic durability.
+    """
+    return QoSProfile(
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
         history=HistoryPolicy.KEEP_LAST,
         depth=1,
     )

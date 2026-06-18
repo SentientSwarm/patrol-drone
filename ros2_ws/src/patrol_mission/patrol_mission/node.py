@@ -37,7 +37,7 @@ from patrol_mission import topics
 from patrol_mission.commands import Px4CommandKind, build_vehicle_commands
 from patrol_mission.config import load_mission_config
 from patrol_mission.frames import Point, to_ned_from_origin
-from patrol_mission.qos import patrol_qos, px4_qos
+from patrol_mission.qos import patrol_abort_qos, patrol_state_qos, px4_qos
 from patrol_mission.state_machine import (
     Command,
     MissionState,
@@ -73,12 +73,11 @@ class PatrolMissionNode(Node):
         mission_yaml = str(self.declare_parameter("mission_yaml", "").value)
         if not mission_yaml:
             raise ValueError("parameter 'mission_yaml' is required (path to the mission YAML)")
-        # OQ-2: the checkpoints path is a parameter so an agreed-different 03 location (or the SITL
-        # workspace's resolved path) is a launch-time override, not a code edit. Only read when a
-        # waypoint references a checkpoint_id, so the basic mission never needs the file.
-        checkpoints_yaml = str(
-            self.declare_parameter("checkpoints_yaml", "sim/config/checkpoints.yaml").value
-        )
+        # OQ-2: the checkpoints path is a parameter (the file is 03-owned). No CWD-relative default —
+        # a checkpoint-referencing mission must pass an explicit path, so the resolution never
+        # depends on where the launch ran from (Hermes Medium). Only read when a waypoint references
+        # a checkpoint_id, so the basic mission never needs the file.
+        checkpoints_yaml = str(self.declare_parameter("checkpoints_yaml", "").value)
         self._cfg = load_mission_config(mission_yaml, checkpoints_yaml)
 
         # Topic names are the PX4 v1.17 `_v1`-suffixed contract, defined once in
@@ -96,12 +95,14 @@ class PatrolMissionNode(Node):
         self.create_subscription(BatteryStatus, topics.BATTERY_STATUS, self._on_battery, qos)
 
         # /patrol/* — the mission-orchestration surface (OQ-3). mission_state + current_waypoint are
-        # the observable mission/capture surface (latched so a late 04/05 subscriber sees the latest);
-        # abort is the inbound external-abort signal (latched, MC-6).
-        pqos = patrol_qos()
-        self._pub_state = self.create_publisher(String, topics.PATROL_MISSION_STATE, pqos)
-        self._pub_wp = self.create_publisher(Int32, topics.PATROL_CURRENT_WAYPOINT, pqos)
-        self.create_subscription(Bool, topics.PATROL_ABORT, self._on_abort, pqos)
+        # the observable mission/capture surface, latched (transient-local) so a late 04/05
+        # subscriber sees the latest; /patrol/abort is the inbound external-abort *command*, on a
+        # volatile profile so a plain `ros2 topic pub` is QoS-compatible (the abort sticks via the
+        # state machine's latch, not topic durability — Hermes Medium).
+        state_qos = patrol_state_qos()
+        self._pub_state = self.create_publisher(String, topics.PATROL_MISSION_STATE, state_qos)
+        self._pub_wp = self.create_publisher(Int32, topics.PATROL_CURRENT_WAYPOINT, state_qos)
+        self.create_subscription(Bool, topics.PATROL_ABORT, self._on_abort, patrol_abort_qos())
 
         # Init to None (not a default-constructed message): a default VehicleStatus reports
         # disarmed-at-origin, which is indistinguishable from "no telemetry has arrived yet".
@@ -153,8 +154,12 @@ class PatrolMissionNode(Node):
         self._status_rx_s = self._clock_s()
 
     def _on_battery(self, msg: BatteryStatus) -> None:
-        # BatteryStatus.remaining is the 0..1 fraction the low-battery abort threshold compares.
-        self._battery_remaining = float(msg.remaining)
+        # BatteryStatus.remaining is the 0..1 fraction the low-battery abort threshold compares, but
+        # PX4 reports -1 (and connected=False) when capacity is unknown — not yet estimated after
+        # boot, or the battery disconnected. Pass an explicit "unknown" (-1.0) through when
+        # disconnected so the state machine's battery_low() guard ignores it instead of reading the
+        # sentinel as a near-empty battery and false-aborting a valid flight (Hermes High).
+        self._battery_remaining = float(msg.remaining) if msg.connected else -1.0
 
     def _on_abort(self, msg: Bool) -> None:
         # Reflect the latest /patrol/abort value; the state machine makes a True "stick" through RTH.

@@ -66,7 +66,9 @@ class Telemetry:
     position_ned: Point
     armed: bool
     offboard_active: bool
-    battery_remaining: float  # 0.0..1.0 (BatteryStatus.remaining)
+    battery_remaining: (
+        float  # 0.0..1.0 (BatteryStatus.remaining); <0 / non-finite = unknown (PX4 -1)
+    )
     abort_requested: bool  # latched value from /patrol/abort
     manual_takeover: bool = False  # scaffold — always False in SITL
     timed_out: bool = False  # scaffold — always False in SITL
@@ -131,6 +133,21 @@ def telemetry_fresh(age_s: float, timeout_s: float) -> bool:
     progression while any required stream is stale. Pure (no rclpy) so the gate is Layer-A testable.
     """
     return age_s <= timeout_s
+
+
+def battery_low(remaining: float, threshold: float) -> bool:
+    """Whether a *valid* battery fraction is below the low-battery abort threshold (MC-6/OQ-6).
+
+    PX4's ``BatteryStatus.remaining`` is a ``0..1`` fraction, but PX4 publishes ``-1`` (and
+    ``connected=False``) when capacity is unknown — not yet estimated after boot, or the battery
+    disconnected (BatteryStatus.msg ``[@invalid -1]``). An unknown reading must NOT fire the
+    low-battery abort, or a valid mission aborts before PX4 has an estimate (Hermes High). So treat
+    anything non-finite or negative as "unknown -> not low"; only a real fraction strictly below the
+    threshold is low. Pure (no rclpy) so the safety guard stays Layer-A testable.
+    """
+    if not math.isfinite(remaining) or remaining < 0.0:
+        return False
+    return remaining < threshold
 
 
 def _distance(a: Point, b: Point) -> float:
@@ -207,7 +224,7 @@ class MissionStateMachine:
         """Highest-precedence abort condition active this tick (external > battery > scaffolds)."""
         if telem.abort_requested:
             return AbortReason.EXTERNAL_SIGNAL
-        if telem.battery_remaining < self._cfg.abort.low_battery_threshold:
+        if battery_low(telem.battery_remaining, self._cfg.abort.low_battery_threshold):
             return AbortReason.LOW_BATTERY
         if telem.manual_takeover:  # scaffold (MC-11) — never True in SITL
             return AbortReason.MANUAL_TAKEOVER

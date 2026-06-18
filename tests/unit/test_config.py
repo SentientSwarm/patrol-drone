@@ -192,6 +192,13 @@ def test_missing_checkpoints_file_when_referenced(tmp_path):
         )
 
 
+# TS-C5c (Hermes Medium): a checkpoint_id reference with NO checkpoints path supplied fails loud
+# with guidance — the file is 03-owned and has no CWD-relative default to silently fall back on.
+def test_checkpoint_reference_without_path_fails_loud(tmp_path):
+    with pytest.raises(ValueError, match="checkpoint_id"):
+        load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")))
+
+
 # TS-C5b: a missing checkpoints file is harmless when NO waypoint references a checkpoint_id
 # (the basic mission must still load even if 03's file is absent).
 def test_missing_checkpoints_file_ignored_when_unreferenced(tmp_path):

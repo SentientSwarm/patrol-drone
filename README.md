@@ -110,8 +110,11 @@ job (never a per-PR gate).
 return to home, and land — plus the abort safety floor and the downstream `/patrol/*` contracts:
 
 ```bash
-# with the SITL bridge live, in a sourced shell:
-ros2 launch patrol_bringup mission_patrol.launch.py        # arm → takeoff → patrol → dwell → RTH → land
+# with the SITL bridge live, run from the repo root in a sourced shell. The patrol's checkpoint_id
+# waypoints resolve against 03's checkpoints file, so pass its absolute path — there is no
+# CWD-relative default (OQ-2); the UAT runner below does this for you.
+ros2 launch patrol_bringup mission_patrol.launch.py \
+  checkpoints_yaml:="$(pwd)/sim/config/checkpoints.yaml"   # arm → takeoff → patrol → dwell → RTH → land
 ```
 
 The route is the checked-in [`patrol_mission.yaml`](ros2_ws/src/patrol_bringup/config/patrol_mission.yaml),
@@ -121,9 +124,10 @@ whose `checkpoint_id` waypoints resolve against [`sim/config/checkpoints.yaml`](
 them with no custom plugin). An external abort is the safety floor:
 
 ```bash
-# /patrol/abort is reliable + transient-local — match it or the abort isn't delivered:
-ros2 topic pub -1 --qos-reliability reliable --qos-durability transient_local \
-  /patrol/abort std_msgs/Bool '{data: true}'                   # mid-patrol → observable ABORT → RTH
+# /patrol/abort is reliable + volatile; `ros2 topic pub -1` waits for the node's subscription before
+# publishing, so a plain default publish is delivered (the abort sticks through RTH in the state
+# machine, not via topic durability):
+ros2 topic pub -1 /patrol/abort std_msgs/Bool '{data: true}'   # mid-patrol → observable ABORT → RTH
 ```
 
 Abort/waypoint/RTH transitions are all unit-tested (including the scaffolded manual-takeover/timeout

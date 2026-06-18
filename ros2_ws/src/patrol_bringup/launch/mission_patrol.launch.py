@@ -3,14 +3,20 @@
 Wiring only (design §4.2.7) — starts PatrolMissionNode with the checked-in patrol_mission.yaml and
 optionally includes 05's recorder.
 
-The recorder include is **resilient**: 05 (``patrol_logging``) is a later docset and may be absent.
-When it is, the include is skipped with a warning rather than failing the launch (design §4.4.5:
-"recorder absent -> mission flies, no bag, non-critical"). When 05 lands, ``record:=true`` (the
-default) auto-attaches it; ``record:=false`` disables it explicitly even when present.
+``checkpoints_yaml`` has no in-package default: the checkpoints file is 03's deliverable (OQ-2), so
+its path is supplied explicitly rather than via a CWD-relative default that would resolve
+differently depending on where the launch ran from (Hermes Medium). The shipped patrol_mission.yaml
+uses checkpoint_id waypoints, so an absolute ``checkpoints_yaml:=`` is required (the UAT runner
+``scripts/run_sitl_mission.sh --patrol`` passes it for you).
 
-    ros2 launch patrol_bringup mission_patrol.launch.py
-    ros2 launch patrol_bringup mission_patrol.launch.py record:=false
+The recorder include is **resilient**: 05 (``patrol_logging``) is a later docset and may be absent.
+``record`` defaults to ``false`` until 05 lands in-tree, so the launch never auto-includes a package
+that merely happens to be named ``patrol_logging`` on the path (Hermes Medium). Pass ``record:=true``
+to attach it once 05 is installed — when present it auto-attaches, when absent the include is skipped
+with a warning rather than failing the launch (design §4.4.5: "recorder absent -> mission flies").
+
     ros2 launch patrol_bringup mission_patrol.launch.py checkpoints_yaml:=/abs/path/checkpoints.yaml
+    ros2 launch patrol_bringup mission_patrol.launch.py checkpoints_yaml:=... record:=true
 """
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
@@ -55,13 +61,15 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument(
                 "record",
-                default_value="true",
-                description="include 05's recorder if the patrol_logging package is installed",
+                default_value="false",
+                description="include 05's recorder (patrol_logging) if installed; defaults false "
+                "until 05 lands in-tree, pass record:=true to attach it",
             ),
             DeclareLaunchArgument(
                 "checkpoints_yaml",
-                default_value="sim/config/checkpoints.yaml",
-                description="path to 03's checkpoint-positions YAML (OQ-2)",
+                default_value="",
+                description="absolute path to 03's checkpoint-positions YAML (OQ-2); required when "
+                "the mission uses checkpoint_id waypoints (no CWD-relative default)",
             ),
             Node(
                 package="patrol_mission",

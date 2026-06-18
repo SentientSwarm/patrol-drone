@@ -34,7 +34,7 @@ from patrol_acceptance import (
     expected_waypoint_count,
     spin_until,
 )
-from patrol_mission.qos import patrol_qos
+from patrol_mission.qos import patrol_abort_qos
 from std_msgs.msg import Bool
 
 from patrol_mission import topics
@@ -101,7 +101,7 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
     rclpy.init()
     watcher = PatrolWatcher(expected_waypoint_count())
     injector = rclpy.create_node("abort_injector")
-    abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, patrol_qos())
+    abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, patrol_abort_qos())
     try:
         # Wait until the patrol is underway (armed + past takeoff / reached a waypoint)...
         spin_until(
@@ -111,8 +111,9 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
         )
         assert watcher.was_armed, "patrol never armed — cannot exercise the mid-patrol abort"
 
-        # ...then raise the external abort. /patrol/abort is latched (transient-local), so the node
-        # receives it regardless of exact timing.
+        # ...then raise the external abort. The injector's publisher and the node's subscriber share
+        # patrol_abort_qos (reliable + volatile) and are matched by now (the patrol is underway), so
+        # the abort is delivered; it then "sticks" through RTH via the state machine's latch.
         msg = Bool()
         msg.data = True
         abort_pub.publish(msg)

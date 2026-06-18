@@ -168,6 +168,24 @@ def _references_checkpoint(raw_waypoints: list) -> bool:
     return any("checkpoint_id" in w for w in raw_waypoints)
 
 
+def _resolve_checkpoints(raw_waypoints: list, checkpoints_yaml_path: str) -> dict[str, Point]:
+    """Load checkpoints iff referenced; fail loud when referenced but no path was supplied (OQ-2).
+
+    The checkpoints file is 03's deliverable, so its path is a caller-supplied parameter with no
+    in-package default — a CWD-relative default resolves differently depending on where the launch
+    ran from (Hermes Medium). When a waypoint references a ``checkpoint_id`` but no path was given,
+    fail loud with guidance rather than silently depending on the current directory.
+    """
+    if not _references_checkpoint(raw_waypoints):
+        return {}
+    if not checkpoints_yaml_path:
+        raise ValueError(
+            "a waypoint references a checkpoint_id but no checkpoints_yaml path was provided; "
+            "pass checkpoints_yaml:=<absolute path> (the checkpoints file is 03-owned, OQ-2)"
+        )
+    return _load_checkpoints(checkpoints_yaml_path)
+
+
 def _parse_waypoint(w: dict, checkpoints: dict[str, Point]) -> Waypoint:
     """Build a Waypoint from a resolved ``checkpoint_id`` (ENU) or an inline ``position``+``frame``."""
     if "checkpoint_id" in w:
@@ -183,31 +201,30 @@ def _parse_waypoint(w: dict, checkpoints: dict[str, Point]) -> Waypoint:
 
 def load_mission_config(
     mission_yaml_path: str,
-    checkpoints_yaml_path: str = "sim/config/checkpoints.yaml",
+    checkpoints_yaml_path: str = "",
 ) -> MissionConfig:
     """Parse + validate a mission YAML into a frozen :class:`MissionConfig` (MC-3).
 
     Args:
         mission_yaml_path: path to the mission YAML to load.
         checkpoints_yaml_path: path to 03's checkpoint-positions YAML (OQ-2). Read only
-            when a waypoint references a ``checkpoint_id``; the default is the agreed
-            location, kept behind a parameter so a different one is a one-line config
-            change, not a code edit.
+            when a waypoint references a ``checkpoint_id``; there is no in-package default
+            (the file is 03-owned), so a checkpoint-referencing mission must pass an
+            explicit path — a CWD-relative default would resolve differently depending on
+            where the launch ran from (Hermes Medium).
 
     Raises:
         ValueError: on a missing required field, an unknown frame, an out-of-range
             numeric field (see :func:`_validate_semantics`), an unresolvable
-            ``checkpoint_id``, or a missing/malformed checkpoints file when one is
-            referenced.
+            ``checkpoint_id``, a missing/malformed checkpoints file when one is
+            referenced, or a ``checkpoint_id`` reference with no checkpoints path supplied.
     """
     with open(mission_yaml_path) as fh:
         raw = yaml.safe_load(fh)
 
     home = _require(raw, "home")
     raw_waypoints = _require(raw, "waypoints")
-    checkpoints = (
-        _load_checkpoints(checkpoints_yaml_path) if _references_checkpoint(raw_waypoints) else {}
-    )
+    checkpoints = _resolve_checkpoints(raw_waypoints, checkpoints_yaml_path)
     waypoints = tuple(_parse_waypoint(w, checkpoints) for w in raw_waypoints)
 
     cfg = MissionConfig(

@@ -136,7 +136,7 @@ def _std_msg_module() -> ModuleType:
 
 
 def _qos_module() -> ModuleType:
-    enum = SimpleNamespace(BEST_EFFORT=1, RELIABLE=2, TRANSIENT_LOCAL=1, KEEP_LAST=1)
+    enum = SimpleNamespace(BEST_EFFORT=1, RELIABLE=2, TRANSIENT_LOCAL=1, VOLATILE=2, KEEP_LAST=1)
     return _stub_module(
         "rclpy.qos",
         QoSProfile=_QoSProfile,
@@ -194,8 +194,10 @@ def _feed_valid_fresh(node: Any, node_mod: ModuleType, **status_kw: Any) -> None
     node._on_status(_status(node_mod, **status_kw))
 
 
-def _feed_battery(node: Any, node_mod: ModuleType, *, remaining: float) -> None:
-    node._on_battery(node_mod.BatteryStatus(remaining=remaining))
+def _feed_battery(
+    node: Any, node_mod: ModuleType, *, remaining: float, connected: bool = True
+) -> None:
+    node._on_battery(node_mod.BatteryStatus(remaining=remaining, connected=connected))
 
 
 def _feed_abort(node: Any, *, value: bool) -> None:
@@ -374,6 +376,25 @@ def test_low_battery_telemetry_drives_abort(node: Any, node_mod: ModuleType):
 # T2.4: an ABSENT BatteryStatus must not fabricate a low-battery abort (defaults to full) — the
 # mission progresses normally (IDLE -> ARMING) when only pos+status are present.
 def test_absent_battery_does_not_abort(node: Any, node_mod: ModuleType):
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ARMING
+
+
+# Hermes High: PX4 reports remaining=-1 (and connected=False) when capacity is unknown — not yet
+# estimated after boot, or the battery disconnected. The node must not feed that as a near-empty
+# battery and false-abort; the mission progresses normally (IDLE -> ARMING).
+@pytest.mark.parametrize(
+    ("remaining", "connected"),
+    [(-1.0, True), (0.5, False)],
+    ids=["invalid_sentinel", "disconnected"],
+)
+def test_unknown_battery_reading_does_not_abort(
+    node: Any, node_mod: ModuleType, remaining: float, connected: bool
+):
+    _feed_battery(node, node_mod, remaining=remaining, connected=connected)
     _feed_valid_fresh(node, node_mod)
 
     node._on_tick()

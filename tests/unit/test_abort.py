@@ -78,6 +78,19 @@ def test_low_battery_threshold_boundary(battery_remaining, expected):
     assert sm._abort_reason(make_telem(battery_remaining=battery_remaining)) is expected
 
 
+# Hermes High: PX4 reports remaining=-1 / NaN when capacity is unknown (not yet estimated after
+# boot, or battery disconnected). An unknown reading is NOT "low" — it must not fire the low-battery
+# abort, or a valid flight aborts before PX4 has an estimate. Only a real fraction below threshold is.
+@pytest.mark.parametrize(
+    "battery_remaining",
+    [-1.0, float("nan"), float("-inf")],
+    ids=["invalid_sentinel", "nan", "neg_inf"],
+)
+def test_unknown_battery_reading_is_not_low(battery_remaining):
+    sm = make_sm()  # make_config low_battery_threshold = 0.20
+    assert sm._abort_reason(make_telem(battery_remaining=battery_remaining)) is AbortReason.NONE
+
+
 # The ABORT state routes to the explicit home-waypoint return (RTH) on the next tick (OQ-8).
 def test_abort_state_routes_to_rth():
     nxt, cmd = make_sm().tick(MissionState.ABORT, make_telem())
