@@ -66,8 +66,10 @@ jobs:
           # runs the assertions. Both -m ros scenarios collect: test_mission_basic + test_mission_patrol.
           docker cp tests "$CID:/opt/tests"
           # The patrol route (patrol_mission.yaml) resolves checkpoint_ids against 03's interim
-          # checkpoints.yaml (the 02 stand-in under sim/config/). Ship sim/ and run pytest from /opt
-          # so the launched node's default relative checkpoints path resolves to /opt/sim/config/.
+          # checkpoints.yaml (the 02 stand-in under sim/config/). The loader has NO CWD-relative
+          # default (an absolute checkpoints_yaml is required); test_mission_patrol computes that
+          # path as parents[2]/sim/config/checkpoints.yaml, which is /opt/sim/config here. So ship
+          # sim/ to /opt/sim and run pytest from /opt to make that absolute path resolve.
           docker cp sim "$CID:/opt/sim"
           docker exec "$CID" bash -lc '
             source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash

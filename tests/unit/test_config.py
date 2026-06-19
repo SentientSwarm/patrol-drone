@@ -146,6 +146,50 @@ def test_malformed_top_level_shape_fail_loud(tmp_path, body, match):
         load_mission_config(_write(tmp_path, body))
 
 
+# Hermes (review follow-up): a malformed `position` value — a null/scalar node, or one missing or
+# non-numeric x/y/z — must fail loud with field context (the contracted ValueError), not leak the
+# bare TypeError/KeyError the subscript or float(...) cast would otherwise raise. Exercised through
+# both `home` and an inline waypoint, which share the single `_point` boundary.
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (_HEAD + "home: {position: null, frame: enu}\n" + _NO_WAYPOINTS, "home position.*mapping"),
+        (_HEAD + "home: {position: 5, frame: enu}\n" + _NO_WAYPOINTS, "home position.*mapping"),
+        (
+            _HEAD + "home: {position: {x: 0, y: 0}, frame: enu}\n" + _NO_WAYPOINTS,
+            r"home position missing required axis 'z'",
+        ),
+        (
+            _HEAD + "home: {position: {x: abc, y: 0, z: 0}, frame: enu}\n" + _NO_WAYPOINTS,
+            r"home position axis 'x' must be a number",
+        ),
+        (
+            _HEAD
+            + _HOME_ENU
+            + "waypoints:\n  - position: null\n    frame: enu\n    dwell_s: 1.0\n",
+            r"waypoint\[0\] position.*mapping",
+        ),
+        (
+            _HEAD
+            + _HOME_ENU
+            + "waypoints:\n  - position: {x: 1, y: 2}\n    frame: enu\n    dwell_s: 1.0\n",
+            r"waypoint\[0\] position missing required axis 'z'",
+        ),
+    ],
+    ids=[
+        "home_null_position",
+        "home_scalar_position",
+        "home_missing_axis",
+        "home_non_numeric_axis",
+        "waypoint_null_position",
+        "waypoint_missing_axis",
+    ],
+)
+def test_malformed_position_fail_loud(tmp_path, body, match):
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, body))
+
+
 # TS-C1: a checkpoint_id waypoint resolves against checkpoints.yaml to its ENU position + id.
 def test_checkpoint_id_resolves(tmp_path):
     cps = _write_checkpoints(tmp_path)

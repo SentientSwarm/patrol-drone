@@ -151,8 +151,28 @@ def _validate_semantics(cfg: MissionConfig) -> None:
         _non_negative(wp.dwell_s, f"waypoints[{i}].dwell_s")
 
 
-def _point(p: dict) -> Point:
-    return (float(p["x"]), float(p["y"]), float(p["z"]))
+def _coord(p: dict[str, Any], where: str, axis: str) -> float:
+    """Read one numeric position axis, fail loud on a missing or non-numeric value (Hermes)."""
+    if axis not in p:
+        raise ValueError(f"{where} position missing required axis {axis!r}")
+    try:
+        return float(p[axis])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{where} position axis {axis!r} must be a number, got {p[axis]!r}"
+        ) from exc
+
+
+def _point(p: Any, where: str) -> Point:
+    """Build an ``(x, y, z)`` point from a mapping, fail loud on a malformed position (Hermes).
+
+    A null/scalar ``position`` (or one missing/non-numeric ``x``/``y``/``z``) would otherwise leak a
+    bare ``TypeError``/``KeyError`` from the subscript or ``float(...)`` cast; raise the loader's
+    contracted :class:`ValueError` with field context instead, consistent with the document/section/
+    waypoint/checkpoint guards.
+    """
+    p = _require_mapping(p, f"{where} position")
+    return (_coord(p, where, "x"), _coord(p, where, "y"), _coord(p, where, "z"))
 
 
 def _load_checkpoints(checkpoints_yaml_path: str) -> dict[str, Point]:
@@ -206,7 +226,9 @@ def _checkpoint_entry(entry: Any) -> tuple[str, Point]:
         raise ValueError(f"checkpoints entry missing required 'checkpoint_id': {entry!r}")
     if "position" not in entry:
         raise ValueError(f"checkpoint {entry['checkpoint_id']!r} missing required 'position'")
-    return entry["checkpoint_id"], _point(entry["position"])
+    return entry["checkpoint_id"], _point(
+        entry["position"], f"checkpoint {entry['checkpoint_id']!r}"
+    )
 
 
 def _references_checkpoint(raw_waypoints: list) -> bool:
@@ -292,7 +314,11 @@ def _checkpoint_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> 
 def _inline_waypoint(w: dict, index: int) -> Waypoint:
     """Build an inline ``position``+``frame`` waypoint (fail loud on an unknown frame)."""
     frame = _validate_frame(w["frame"], f"waypoint[{index}]")
-    return Waypoint(position=_point(w["position"]), frame=frame, dwell_s=float(w["dwell_s"]))
+    return Waypoint(
+        position=_point(w["position"], f"waypoint[{index}]"),
+        frame=frame,
+        dwell_s=float(w["dwell_s"]),
+    )
 
 
 def _parse_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> Waypoint:
@@ -358,7 +384,7 @@ def load_mission_config(
         hover_time_s=float(_require(raw, "hover_time_s")),
         completion=_section(raw, "completion", Completion),
         abort=_section(raw, "abort", AbortConfig),
-        home_position=_point(home["position"]),
+        home_position=_point(home["position"], "home"),
         home_frame=_validate_frame(home["frame"], "home"),
         waypoints=waypoints,
     )
