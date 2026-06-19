@@ -66,6 +66,30 @@ def _require(raw: dict[str, Any], key: str) -> Any:
     return raw[key]
 
 
+def _require_mapping(value: Any, what: str) -> dict[str, Any]:
+    """Fail loud unless ``value`` is a mapping, with field context (Hermes Medium).
+
+    A null, empty, or scalar YAML node (an empty mission document, ``home:`` with no value, a
+    non-mapping waypoint/checkpoint entry) would otherwise leak a bare ``TypeError`` from the
+    downstream ``key in value`` / ``value[...]`` access. Convert it to the loader's contracted
+    :class:`ValueError` at the same fail-loud boundary as the missing-field check.
+    """
+    if not isinstance(value, dict):
+        raise ValueError(f"{what} must be a mapping, got {type(value).__name__}")
+    return value
+
+
+def _require_list(value: Any, what: str) -> list:
+    """Fail loud unless ``value`` is a list, with field context (Hermes Medium).
+
+    A present-but-null or scalar ``waypoints:`` would otherwise leak a bare ``TypeError`` when
+    iterated; raise the contracted :class:`ValueError` instead.
+    """
+    if not isinstance(value, list):
+        raise ValueError(f"{what} must be a list, got {type(value).__name__}")
+    return value
+
+
 def _section[T](raw: dict[str, Any], key: str, cls: type[T]) -> T:
     """Build an optional config-section dataclass, fail-loud on a null/non-mapping/unknown-key section.
 
@@ -175,8 +199,9 @@ def _checkpoints_map(raw: list, checkpoints_yaml_path: str) -> dict[str, Point]:
     return checkpoints
 
 
-def _checkpoint_entry(entry: dict) -> tuple[str, Point]:
+def _checkpoint_entry(entry: Any) -> tuple[str, Point]:
     """Validate one checkpoints entry into ``(checkpoint_id, ENU position)``. Fail loud (INF-M3)."""
+    entry = _require_mapping(entry, "checkpoints entry")
     if "checkpoint_id" not in entry:
         raise ValueError(f"checkpoints entry missing required 'checkpoint_id': {entry!r}")
     if "position" not in entry:
@@ -284,6 +309,20 @@ def _parse_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> Waypo
     return _inline_waypoint(w, index)
 
 
+def _waypoint_entries(raw: dict[str, Any]) -> list:
+    """Fetch the required ``waypoints`` list and validate every entry is a mapping (fail loud).
+
+    ``waypoints`` is required (a basic mission uses ``waypoints: []``). A present-but-null/scalar
+    ``waypoints:``, or a non-mapping entry (``- 123``), would otherwise leak a bare ``TypeError``
+    from the downstream ``checkpoint_id in w`` membership test (Hermes Medium); guard it here with
+    index context at the loader's fail-loud boundary.
+    """
+    raw_waypoints = _require_list(_require(raw, "waypoints"), "mission config 'waypoints'")
+    for i, w in enumerate(raw_waypoints):
+        _require_mapping(w, f"waypoint[{i}]")
+    return raw_waypoints
+
+
 def load_mission_config(
     mission_yaml_path: str,
     checkpoints_yaml_path: str = "",
@@ -299,16 +338,18 @@ def load_mission_config(
             where the launch ran from (Hermes Medium).
 
     Raises:
-        ValueError: on a missing required field, an unknown frame, an out-of-range
-            numeric field (see :func:`_validate_semantics`), an unresolvable
-            ``checkpoint_id``, a missing/malformed checkpoints file when one is
-            referenced, or a ``checkpoint_id`` reference with no checkpoints path supplied.
+        ValueError: on a malformed top-level shape (a null/scalar mission document, a
+            null/scalar ``home`` section, a null/scalar ``waypoints`` list, or a non-mapping
+            waypoint/checkpoint entry), a missing required field, an unknown frame, an
+            out-of-range numeric field (see :func:`_validate_semantics`), an unresolvable
+            ``checkpoint_id``, a missing/malformed checkpoints file when one is referenced,
+            or a ``checkpoint_id`` reference with no checkpoints path supplied.
     """
     with open(mission_yaml_path) as fh:
-        raw = yaml.safe_load(fh)
+        raw = _require_mapping(yaml.safe_load(fh), "mission config")
 
-    home = _require(raw, "home")
-    raw_waypoints = _require(raw, "waypoints")
+    home = _require_mapping(_require(raw, "home"), "mission config 'home'")
+    raw_waypoints = _waypoint_entries(raw)
     checkpoints = _resolve_checkpoints(raw_waypoints, checkpoints_yaml_path)
     waypoints = tuple(_parse_waypoint(w, i, checkpoints) for i, w in enumerate(raw_waypoints))
 

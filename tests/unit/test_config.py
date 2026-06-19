@@ -118,6 +118,34 @@ def test_fail_loud(tmp_path, body, match):
         load_mission_config(_write(tmp_path, body))
 
 
+# Hermes Medium: a malformed top-level shape — a null/scalar mission document, a null/scalar `home`
+# section, a null/scalar `waypoints` list, or a non-mapping waypoint entry — must fail loud with
+# field/index context (the contracted ValueError), not leak the bare TypeError that the downstream
+# `key in node` membership / `node[...]` subscript would otherwise raise.
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("", "mission config must be a mapping"),
+        ("- a\n- b\n", "mission config must be a mapping"),
+        (_HEAD + "home:\n" + _NO_WAYPOINTS, "home.*mapping"),
+        (_HEAD + _HOME_ENU + "waypoints:\n", "waypoints.*list"),
+        (_HEAD + _HOME_ENU + "waypoints: 5\n", "waypoints.*list"),
+        (_HEAD + _HOME_ENU + "waypoints:\n  - 123\n", r"waypoint\[0\].*mapping"),
+    ],
+    ids=[
+        "empty_document",
+        "non_mapping_document",
+        "null_home",
+        "null_waypoints",
+        "scalar_waypoints",
+        "non_mapping_waypoint_entry",
+    ],
+)
+def test_malformed_top_level_shape_fail_loud(tmp_path, body, match):
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, body))
+
+
 # TS-C1: a checkpoint_id waypoint resolves against checkpoints.yaml to its ENU position + id.
 def test_checkpoint_id_resolves(tmp_path):
     cps = _write_checkpoints(tmp_path)
@@ -156,6 +184,15 @@ def test_checkpoint_entry_missing_id_raises(tmp_path):
 def test_non_list_checkpoints_file_raises(tmp_path):
     cps = _write_checkpoints(tmp_path, "cp_north: {x: 1, y: 2, z: 3}\n")  # mapping, not a list
     with pytest.raises(ValueError, match="list of checkpoints"):
+        load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), cps)
+
+
+# TS-C2f (Hermes Medium): a checkpoints entry that is not a mapping (a bare scalar `- 123`) fails
+# loud with field context rather than leaking a bare TypeError from the `checkpoint_id in entry`
+# membership test — symmetric with the non-list-file and missing-field cases above.
+def test_non_mapping_checkpoint_entry_raises(tmp_path):
+    cps = _write_checkpoints(tmp_path, "- 123\n")
+    with pytest.raises(ValueError, match="checkpoints entry must be a mapping"):
         load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), cps)
 
 

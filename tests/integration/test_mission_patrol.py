@@ -4,8 +4,9 @@ Spins the mission node via ``mission_patrol.launch.py`` against a **real** PX4 S
 Harmonic) over the uXRCE-DDS bridge, and asserts the observable patrol on ``/patrol/*``:
 
   * Nominal (AC-2): arm -> takeoff -> visit every configured waypoint (with dwell) -> RTH -> land.
-    Run with the launch default ``record:=true``: since 05 (patrol_logging) is absent in CI, this
-    also exercises the launch's resilient-include skip (TS-I3) — the patrol must still come up.
+    Run with ``record:=true`` passed explicitly (the launch default is ``false`` until 05 lands):
+    since 05 (patrol_logging) is absent in CI, this also exercises the launch's resilient-include
+    skip (TS-I3) — the patrol must still come up.
   * External abort (AC-6): an abort published on ``/patrol/abort`` mid-patrol drives an observable
     ABORT -> RTH (return home) then disarm. Run with ``record:=false`` for determinism.
 
@@ -74,7 +75,8 @@ def _patrol_launch(record: str) -> LaunchDescription:
 
 @launch_pytest.fixture
 def patrol_launch() -> LaunchDescription:
-    # Launch default record:=true; 05 absent in CI -> resilient skip (TS-I3), patrol still comes up.
+    # Pass record:=true explicitly (launch default is false); 05 absent in CI -> resilient skip
+    # (TS-I3), patrol still comes up.
     return _patrol_launch("true")
 
 

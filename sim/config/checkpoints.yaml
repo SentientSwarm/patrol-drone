@@ -5,8 +5,9 @@
 # mission YAML's `checkpoint_id` waypoints to world/ENU positions (design §4.2.5 / Appendix C.1;
 # OQ-2). This provisional file carries the COMBINED-REVIEW-confirmed schema so the checkpoint_id
 # resolution path is real and end-to-end testable now; when 03 lands its own file, it OWNS and
-# REPLACES this one — the loader path is a parameter (`checkpoints_yaml_path`, default this path),
-# so an agreed-different location is a one-line config change, not a code edit.
+# REPLACES this one — the loader takes the path as an explicit launch parameter (`checkpoints_yaml`,
+# an absolute path with no in-package default since the file is 03-owned, OQ-2), so an
+# agreed-different location is a one-line launch-arg change, not a code edit.
 #
 # Schema (per design Appendix C.1): a list of { checkpoint_id, position{x,y,z} in world/ENU
 # meters, tag_family, tag_id }. 02 reads `position` (→ NED at the single frame boundary,
