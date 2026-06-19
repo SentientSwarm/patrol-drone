@@ -244,14 +244,38 @@ def _point(p: Any, where: str) -> Point:
     return (_coord(p, where, "x"), _coord(p, where, "y"), _coord(p, where, "z"))
 
 
+def _checkpoint_list(raw: Any, checkpoints_yaml_path: str) -> list:
+    """Extract the checkpoint list from either the canonical keyed form or a bare list.
+
+    03's canonical ``checkpoints.yaml`` (design §4.2.3, M5) is a mapping with a top-level
+    ``checkpoints:`` key holding the list. The interim 02-authored stand-in was a bare list; the
+    loader stays back-compatible with it (a list ``raw`` is used directly) so this consumer does not
+    break across the schema migration. Any other shape — a mapping without ``checkpoints``, a scalar
+    — fails loud with field context (INF-M3).
+    """
+    if isinstance(raw, dict):
+        if "checkpoints" not in raw:
+            raise ValueError(
+                f"checkpoints file {checkpoints_yaml_path!r} is a mapping but has no 'checkpoints:' "
+                "key; give a top-level 'checkpoints:' list (or a bare list, back-compat)"
+            )
+        return _require_list(raw["checkpoints"], f"{checkpoints_yaml_path!r} 'checkpoints'")
+    if isinstance(raw, list):
+        return raw
+    raise ValueError(
+        f"checkpoints file {checkpoints_yaml_path!r} must be a 'checkpoints:' mapping or a bare list"
+    )
+
+
 def _load_checkpoints(checkpoints_yaml_path: str) -> dict[str, Point]:
     """Load 03's checkpoint-positions YAML into ``{checkpoint_id: ENU position}`` (read-only).
 
     Called only when a waypoint references a ``checkpoint_id`` (so a basic mission with no
     checkpoint references never needs the file to exist). Fail loud — a missing file, a
-    non-list document, or an entry missing its ``position`` raises with field context so an
+    wrong-shaped document, or an entry missing its ``position`` raises with field context so an
     unresolvable route never flies (INF-M3). The path is the caller-supplied parameter (OQ-2:
     03 owns the file; an agreed-different location is a one-line config change, not a code edit).
+    Accepts both the canonical ``checkpoints:``-keyed mapping (M5) and the interim bare list.
     """
     try:
         with open(checkpoints_yaml_path) as fh:
@@ -261,11 +285,7 @@ def _load_checkpoints(checkpoints_yaml_path: str) -> dict[str, Point]:
             f"checkpoints file {checkpoints_yaml_path!r} not found, "
             "but a waypoint references a checkpoint_id"
         ) from exc
-    if not isinstance(raw, list):
-        raise ValueError(
-            f"checkpoints file {checkpoints_yaml_path!r} must be a list of checkpoints"
-        )
-    return _checkpoints_map(raw, checkpoints_yaml_path)
+    return _checkpoints_map(_checkpoint_list(raw, checkpoints_yaml_path), checkpoints_yaml_path)
 
 
 def _checkpoints_map(raw: list, checkpoints_yaml_path: str) -> dict[str, Point]:
