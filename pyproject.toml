@@ -20,7 +20,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["ros2_ws/src", "analysis", "scripts", "tests"]
+src = ["ros2_ws/src", "analysis", "scripts", "tests", "sim/tools"]
 extend-exclude = ["ros2_ws/src/external"]   # vendored px4_msgs — not our code
 
 [tool.ruff.lint]
@@ -66,7 +66,9 @@ exclude = [
     # live-ROS tier (verified by `colcon build` + the SITL nightly), not Layer-A type-checking.
     "^ros2_ws/src/[^/]+/launch/.*\\.py$",
 ]
-mypy_path = "ros2_ws/src/patrol_mission"   # M3: so `import patrol_mission` resolves for mypy
+# M3: so `import patrol_mission` resolves for mypy. M5: + sim/tools so the World Composer
+# (`import compose_world`, `import gen_apriltag_models`) resolves for scripts/ + tests/ that import it.
+mypy_path = ["ros2_ws/src/patrol_mission", "sim/tools"]
 
 # Tighten the ROS-free mission core (highest bug risk).
 [[tool.mypy.overrides]]
@@ -113,7 +115,9 @@ minversion = "9.0"
 testpaths = ["tests/unit"]
 norecursedirs = ["tests/integration", "tests/replay", "ros2_ws/src/external"]
 addopts = "-ra --strict-markers --strict-config"
-pythonpath = ["ros2_ws/src/patrol_mission"]   # M3: makes `import patrol_mission` work for Layer-A unit tests
+# M3: makes `import patrol_mission` work for Layer-A unit tests. M5: + sim/tools for the
+# World Composer / AprilTag-model generator unit tests (`import compose_world`, `gen_apriltag_models`).
+pythonpath = ["ros2_ws/src/patrol_mission", "sim/tools"]
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
 ]

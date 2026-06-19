@@ -46,7 +46,7 @@ jobs:
       - id: pyfiles
         shell: bash
         run: |
-          if [ -n "$(find ros2_ws/src analysis scripts tests -name '*.py' 2>/dev/null | head -n1)" ]; then
+          if [ -n "$(find ros2_ws/src analysis scripts tests sim/tools -name '*.py' 2>/dev/null | head -n1)" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
@@ -76,12 +76,12 @@ jobs:
           uv run xenon
           --max-absolute B
           -i "external,build,install,log"
-          analysis scripts tests ros2_ws/src
+          analysis scripts tests ros2_ws/src sim/tools
       - name: Complexity report (radon, non-gating)
         if: always()
         run: |
-          uv run radon cc -s -a --md analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
-          uv run radon mi -s analysis scripts tests ros2_ws/src >> "$GITHUB_STEP_SUMMARY" || true
+          uv run radon cc -s -a --md analysis scripts tests ros2_ws/src sim/tools >> "$GITHUB_STEP_SUMMARY" || true
+          uv run radon mi -s analysis scripts tests ros2_ws/src sim/tools >> "$GITHUB_STEP_SUMMARY" || true
 
   test:
     runs-on: ubuntu-24.04
@@ -155,6 +155,20 @@ jobs:
           persist-credentials: false
       - name: Manifest drift gate
         run: python3 scripts/check_manifest_drift.py
+
+  world-drift:
+    # Enforces the M5 one-source-of-truth contract (INF-S2): the committed patrol world and the
+    # AprilTag model library must match the config/generator they are produced from, so a checkpoint
+    # edit that forgot to regenerate cannot reach `main`. Pure stdlib (the composer + generator are
+    # dependency-free) on the runner's system python3.12 — no uv/ROS deps, like manifest-drift.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Sim asset drift gate (world markers + apriltag models vs sources)
+        run: python3 scripts/check_world_drift.py
 
   xrce-pins:
     # Network-only supply-chain gate: every pinned uXRCE-DDS git ref (agent + 4 transitive superbuild
