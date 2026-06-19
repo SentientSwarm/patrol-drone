@@ -19,6 +19,10 @@
   <exec_depend>launch_ros</exec_depend>
   <!-- mission_patrol.launch.py imports ament_index_python at runtime (resilient 05-recorder include) -->
   <exec_depend>ament_index_python</exec_depend>
+  <!-- M5: camera_bridge.launch.py bridges the gz_x500_patrol camera into ROS image topics.
+       image_transport_plugins provides the /compressed companion (sensor_msgs/CompressedImage). -->
+  <exec_depend>ros_gz_image</exec_depend>
+  <exec_depend>image_transport_plugins</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

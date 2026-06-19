@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  gz_x500_patrol — PX4 gz_x500 + an RGB camera, for the Phase 1 patrol (M5, SIM-3 / SIM-4).
+
+  Pattern mirrors PX4's own camera variants (Tools/simulation/gz/models/x500_mono_cam): merge the
+  stock x500 model, add a camera_link carrying the sensor, and fix it to base_link with a joint. This
+  is an OVERRIDE, not a PX4 fork (A2): `model://x500` resolves from PX4's models dir on
+  GZ_SIM_RESOURCE_PATH; the camera is defined here under sim/ so the variant is fully repo-portable.
+
+  Camera contract (the surface 04-perception subscribes to and 05-logging records — design §4.4.4;
+  values provisional per OQ-4/OQ-5, mount tuned at T2.5):
+    * gz sensor publishes gz.msgs.Image on the gz topic `/drone/camera/image_raw`
+    * `ros_gz_image image_bridge` (wired in the bring-up launch) republishes it as ROS 2
+      sensor_msgs/Image on `/drone/camera/image_raw` AND, via image_transport, a companion
+      sensor_msgs/CompressedImage on `/drone/camera/image_raw/compressed`
+    * 640x480 @ 15 Hz, horizontal FOV ~1.2 rad (~69 deg), gz_frame_id = camera_link
+    * mount: forward (+x) and pitched ~0.35 rad (~20 deg) down from base_link
+-->
+<sdf version="1.9">
+  <model name="gz_x500_patrol">
+    <!-- Stock PX4 quad (rotors, IMU, mag, the uxrce_dds airframe wiring) merged in unchanged. -->
+    <include merge="true">
+      <uri>model://x500</uri>
+    </include>
+
+    <!-- Forward-looking, slightly-down RGB camera. Lightweight link so flight dynamics are ~unchanged. -->
+    <link name="camera_link">
+      <pose relative_to="base_link">0.12 0 0.0 0 0.35 0</pose>
+      <inertial>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>0.00004</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.00004</iyy>
+          <iyz>0</iyz>
+          <izz>0.00004</izz>
+        </inertia>
+      </inertial>
+      <visual name="camera_housing">
+        <geometry>
+          <box>
+            <size>0.02 0.04 0.04</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.05 0.05 0.05 1</ambient>
+          <diffuse>0.05 0.05 0.05 1</diffuse>
+        </material>
+      </visual>
+      <sensor name="camera" type="camera">
+        <gz_frame_id>camera_link</gz_frame_id>
+        <topic>/drone/camera/image_raw</topic>
+        <camera>
+          <horizontal_fov>1.2</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>300</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>15</update_rate>
+        <visualize>true</visualize>
+      </sensor>
+    </link>
+
+    <!-- camera_link is already posed relative_to base_link above; the fixed joint just rigidly
+         attaches it (default joint pose = child origin), so the mount offset lives in one place. -->
+    <joint name="camera_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>camera_link</child>
+    </joint>
+  </model>
+</sdf>
