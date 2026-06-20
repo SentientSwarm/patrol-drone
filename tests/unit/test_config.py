@@ -498,6 +498,27 @@ def test_empty_section_mapping_uses_defaults(tmp_path):
     assert cfg.completion == Completion(tolerance_m=0.5, hold_time_s=2.0)
 
 
+# Hermes Medium: a quoted numeric section value (`tolerance_m: "0.25"`) parses to a YAML *string*.
+# The loader must coerce it to a float — exactly as it does the top-level numerics — so it cannot
+# pass range validation yet later crash a state-machine comparison ('<' between float and str).
+def test_quoted_section_numerics_stored_as_floats(tmp_path):
+    body = (
+        _HEAD
+        + 'completion: {tolerance_m: "0.25", hold_time_s: "3.0"}\n'
+        + 'abort: {low_battery_threshold: "0.35"}\n'
+        + _HOME_ENU
+        + _NO_WAYPOINTS
+    )
+    cfg = load_mission_config(_write(tmp_path, body))
+    for value, expected in (
+        (cfg.completion.tolerance_m, 0.25),
+        (cfg.completion.hold_time_s, 3.0),
+        (cfg.abort.low_battery_threshold, 0.35),
+    ):
+        assert value == expected
+        assert isinstance(value, float)  # coerced, not the quoted str that would crash later
+
+
 # Boundary values that ARE valid must load: zero hover/hold (no wait) and the [0, 1] battery
 # threshold endpoints are accepted — the guard rejects out-of-range, not the legal boundary.
 @pytest.mark.parametrize(

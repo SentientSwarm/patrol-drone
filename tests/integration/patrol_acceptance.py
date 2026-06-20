@@ -120,10 +120,10 @@ class PatrolWatcher(Node):
         # samples and gates them on RTH having started, so the takeoff climb through the home altitude
         # can't falsely latch "returned home" before RTH runs (see HomeSettleTracker / Hermes High).
         self._home_settle = HomeSettleTracker(self.home_ned, self.home_tol_m)
-        # Dwell attribution also lives in a pure, Layer-A-tested tracker: a waypoint counts as
-        # *reached* only when the authoritative DWELL state is observed with its index active — never
-        # from a (reorderable) current_waypoint update alone, so a cross-topic reorder can't
-        # false-count the next waypoint as dwelled (see DwellTracker / Hermes High).
+        # Dwell attribution also lives in a pure, Layer-A-tested tracker that counts DWELL *episodes*
+        # in the per-topic-ordered mission_state stream ALONE — it never reads current_waypoint, so a
+        # cross-topic reorder (current_waypoint=i+1 delivered before a pending DWELL(i)) structurally
+        # cannot false-count the next waypoint as dwelled (see DwellTracker / Hermes High).
         self._dwell = DwellTracker()
         pqos = patrol_state_qos()
         self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
@@ -136,14 +136,13 @@ class PatrolWatcher(Node):
     def _on_state(self, msg: String) -> None:
         if not self.states_seen or self.states_seen[-1] != msg.data:
             self.states_seen.append(msg.data)
-        # Attribute a dwell only from the authoritative DWELL state (with its index already cached);
-        # see DwellTracker for why the current_waypoint callback must NOT count one (Hermes High).
+        # Dwell attribution counts DWELL episodes from this (ordered) state stream alone; see
+        # DwellTracker for why current_waypoint must NOT participate (cross-topic reorder, Hermes High).
         self._dwell.on_state(msg.data)
 
     def _on_wp(self, msg: Int32) -> None:
         if msg.data >= 0:
-            self.waypoints_visited.add(msg.data)  # active targets (underway), not yet reached
-        self._dwell.on_waypoint(msg.data)  # caches the index only — never counts a dwell
+            self.waypoints_visited.add(msg.data)  # active targets (underway) — diagnostic only
 
     def _on_status(self, msg: VehicleStatus) -> None:
         if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED:

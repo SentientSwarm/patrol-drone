@@ -13,7 +13,7 @@ in M4; until then a ``checkpoint_id`` waypoint fails loud.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -90,13 +90,28 @@ def _require_list(value: Any, what: str) -> list:
     return value
 
 
+def _coerce_section_floats(section: dict[str, Any], cls: type, key: str) -> dict[str, Any]:
+    """Coerce each provided ``float``-typed section field through :func:`_number` so a quoted YAML
+    scalar (``tolerance_m: "0.5"``) is stored as a float — not a str that passes range validation yet
+    later crashes a state-machine comparison (Hermes Medium). This mirrors the top-level numerics,
+    which are already cast in :func:`load`. Unknown keys pass through untouched so ``_section``'s
+    ``cls(**section)`` still raises the contracted ValueError for them.
+    """
+    float_fields = {f.name for f in fields(cls) if f.type in (float, "float")}
+    return {
+        name: _number(value, f"{key}.{name}") if name in float_fields else value
+        for name, value in section.items()
+    }
+
+
 def _section[T](raw: dict[str, Any], key: str, cls: type[T]) -> T:
     """Build an optional config-section dataclass, fail-loud on a null/non-mapping/unknown-key section.
 
     A section may be omitted entirely — the dataclass defaults then apply. But a present-but-null
     section (``completion:`` with no value), a non-mapping value, or an unknown key must raise the
     loader's contracted :class:`ValueError` with field context, not the bare ``TypeError`` that
-    ``cls(**section)`` would otherwise throw (review #3).
+    ``cls(**section)`` would otherwise throw (review #3). Numeric fields are coerced (a quoted scalar
+    becomes a float, or fails loud as "<field> must be a number") before construction.
     """
     section = raw.get(key, {})
     if section is None:
@@ -108,7 +123,7 @@ def _section[T](raw: dict[str, Any], key: str, cls: type[T]) -> T:
             f"mission config section {key!r} must be a mapping, got {type(section).__name__}"
         )
     try:
-        return cls(**section)
+        return cls(**_coerce_section_floats(section, cls, key))
     except TypeError as exc:  # unknown / misspelled key in the section
         raise ValueError(f"mission config section {key!r} is invalid: {exc}") from exc
 

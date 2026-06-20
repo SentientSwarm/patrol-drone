@@ -1,9 +1,13 @@
 """Unit tests for the pure dwell tracker (Hermes High — split-topic dwell false-positive).
 
-Layer-A: ROS-free, deterministic. The patrol acceptance harness's dwell attribution is exercised
-with no live bridge. The tracker lives beside the rclpy-importing ``patrol_acceptance`` module under
+Layer-A: ROS-free, deterministic. The patrol acceptance harness's dwell verdict is exercised with no
+live bridge. The tracker lives beside the rclpy-importing ``patrol_acceptance`` module under
 ``tests/integration``; it imports nothing heavy, so this Layer-A test pulls it in via a path insert
 (mirrors ``test_home_settle_tracker`` and how ``verify_patrol.py`` reaches that directory).
+
+The tracker counts DWELL *episodes* in the (per-topic-ordered) mission_state stream and never reads
+current_waypoint — so a cross-topic reorder cannot influence the count. These cases drive only the
+state stream, matching how the watcher feeds the tracker.
 """
 
 import sys
@@ -17,52 +21,65 @@ sys.path.insert(0, str(REPO_ROOT / "tests" / "integration"))
 from dwell_tracker import DwellTracker  # noqa: E402  (import after the path bootstrap)
 
 
-# A normal leg: the active index is published (WAYPOINT i) and then DWELL is observed -> i counts.
-def test_dwell_observed_with_active_index_counts():
+def _feed(t: DwellTracker, states: list[str]) -> None:
+    """Replay a mission_state stream (every sample, including consecutive duplicates) into the tracker."""
+    for s in states:
+        t.on_state(s)
+
+
+# A single leg: WAYPOINT(i) then DWELL(i) — held for several ticks — is one episode -> waypoint 0.
+def test_one_dwell_episode_counts_one_waypoint():
     t = DwellTracker()
-    t.on_waypoint(0)
-    t.on_state("WAYPOINT")
-    t.on_state("DWELL")
+    _feed(t, ["WAYPOINT", "WAYPOINT", "DWELL", "DWELL", "DWELL"])
+    assert t.episodes == 1
     assert t.dwelled == {0}
 
 
-# The exact reorder Hermes flagged: while the cached state is still DWELL(i), a reordered
-# current_waypoint=i+1 is delivered BEFORE the WAYPOINT(i+1) state. The next waypoint must NOT be
-# counted as dwelled from the index update alone — only the authoritative DWELL state attributes a
-# dwell, and the state stream has no DWELL after the index advances.
-def test_reordered_next_waypoint_before_waypoint_state_not_dwelled():
-    t = DwellTracker()
-    t.on_waypoint(0)
-    t.on_state("DWELL")  # dwelled at 0
-    t.on_waypoint(1)  # current_waypoint advances early (reordered ahead of the WAYPOINT state)
-    assert t.dwelled == {0}  # 1 is NOT counted — the vehicle only started flying toward it
-    t.on_state("WAYPOINT")  # the state catches up; still not a dwell for 1
-    assert t.dwelled == {0}
-
-
-# A full nominal patrol counts every leg exactly once, including the final waypoint.
+# A full nominal patrol: four WAYPOINT->DWELL episodes count every leg exactly once, the final
+# waypoint included.
 def test_full_patrol_counts_every_waypoint():
     t = DwellTracker()
-    for i in range(4):
-        t.on_waypoint(i)
-        t.on_state("WAYPOINT")
-        t.on_state("DWELL")
+    for _ in range(4):
+        _feed(t, ["WAYPOINT", "WAYPOINT", "DWELL", "DWELL"])
+    assert t.episodes == 4
     assert t.dwelled == {0, 1, 2, 3}
 
 
-# The sentinel index (-1, published before the first waypoint / during non-waypoint states) never
-# counts, even if DWELL is somehow observed while it is the active index.
-def test_negative_index_never_counts():
+# The exact Hermes reorder, expressed on the surface the tracker actually consumes. The vehicle
+# dwelled at 0,1,2 but NEVER reached waypoint 3 (no WAYPOINT(3)->DWELL(3) episode). DDS keeps the
+# state topic ordered, so every DWELL(2) sample — even a delayed/duplicate one that arrives after
+# current_waypoint already advanced to 3 on the *other* topic — is still part of waypoint 2's single
+# episode. Because the tracker ignores current_waypoint entirely, waypoint 3 is NOT counted.
+def test_reorder_cannot_false_count_unreached_final_waypoint():
     t = DwellTracker()
-    t.on_waypoint(-1)
-    t.on_state("DWELL")
-    assert t.dwelled == set()
+    _feed(t, ["WAYPOINT", "DWELL", "DWELL"])  # waypoint 0 dwelled
+    _feed(t, ["WAYPOINT", "DWELL", "DWELL"])  # waypoint 1 dwelled
+    # waypoint 2 dwelled, with extra trailing DWELL(2) samples (the delayed/duplicate ones whose
+    # cross-topic peers reported current_waypoint=3 before they arrived):
+    _feed(t, ["WAYPOINT", "DWELL", "DWELL", "DWELL", "DWELL"])
+    assert t.episodes == 3
+    assert t.dwelled == {0, 1, 2}  # waypoint 3 is NOT counted — it never had its own dwell episode
 
 
-# Non-DWELL states never attribute a dwell, regardless of the active index.
+# Consecutive DWELL samples (the node republishes DWELL every tick for the whole hold) are one
+# episode, not one per sample.
+def test_consecutive_dwell_samples_are_a_single_episode():
+    t = DwellTracker()
+    _feed(t, ["WAYPOINT"] + ["DWELL"] * 20)
+    assert t.episodes == 1
+
+
+# Distinct legs are separated by the intervening non-DWELL (WAYPOINT) state, so two DWELL runs split
+# by a WAYPOINT are two episodes.
+def test_dwell_runs_split_by_waypoint_are_distinct_episodes():
+    t = DwellTracker()
+    _feed(t, ["DWELL", "DWELL", "WAYPOINT", "DWELL", "DWELL"])
+    assert t.episodes == 2
+
+
+# Non-DWELL states never start an episode, regardless of how many are seen.
 @pytest.mark.parametrize("state", ["TAKEOFF", "HOVER", "WAYPOINT", "RTH", "LANDING", "ABORT"])
 def test_non_dwell_states_do_not_count(state):
     t = DwellTracker()
-    t.on_waypoint(2)
-    t.on_state(state)
+    _feed(t, [state, state])
     assert t.dwelled == set()
