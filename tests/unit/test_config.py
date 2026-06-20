@@ -415,6 +415,52 @@ def test_fail_loud_out_of_range(tmp_path, body, match):
         load_mission_config(_write(tmp_path, body))
 
 
+# Hermes polish: a NON-numeric scalar numeric field fails loud with one consistent
+# "<field> must be a number" diagnostic — not a bare TypeError from a later range comparison (the
+# section fields are built straight into their dataclass un-cast) nor an un-fielded float() ValueError
+# (the top-level / dwell casts). Covers a top-level field, both section fields, and a waypoint dwell.
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (
+            "takeoff_alt_m: abc\nhover_time_s: 10\n" + _HOME_ENU + _NO_WAYPOINTS,
+            "takeoff_alt_m must be a number",
+        ),
+        (
+            "takeoff_alt_m: 5\nhover_time_s: abc\n" + _HOME_ENU + _NO_WAYPOINTS,
+            "hover_time_s must be a number",
+        ),
+        (
+            _HEAD
+            + "completion: {tolerance_m: abc, hold_time_s: 2.0}\n"
+            + _HOME_ENU
+            + _NO_WAYPOINTS,
+            "completion.tolerance_m must be a number",
+        ),
+        (
+            _HEAD + "abort: {low_battery_threshold: abc}\n" + _HOME_ENU + _NO_WAYPOINTS,
+            "abort.low_battery_threshold must be a number",
+        ),
+        (
+            _HEAD
+            + _HOME_ENU
+            + "waypoints:\n  - position: {x: 1, y: 1, z: 1}\n    frame: enu\n    dwell_s: abc\n",
+            r"waypoints\[0\]\.dwell_s must be a number",
+        ),
+    ],
+    ids=[
+        "takeoff_alt_nonnumeric",
+        "hover_time_nonnumeric",
+        "tolerance_nonnumeric",
+        "battery_nonnumeric",
+        "dwell_nonnumeric",
+    ],
+)
+def test_nonnumeric_scalar_fields_fail_loud(tmp_path, body, match):
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, body))
+
+
 # Review #3: an optional section (completion / abort) that is present-but-null, not a mapping, or
 # carries an unknown/misspelled key must fail loud with a ValueError (field context), not leak the
 # bare TypeError that `Completion(**...)` / `AbortConfig(**...)` would otherwise raise.

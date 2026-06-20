@@ -28,6 +28,7 @@ import time
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from dwell_tracker import DwellTracker
 from home_settle_tracker import HomeSettleTracker
 from mission_acceptance import Check  # reuse the one Check verdict shape
 from patrol_mission.frames import Point, to_ned_from_origin
@@ -113,19 +114,17 @@ class PatrolWatcher(Node):
         self.waypoints_visited: set[int] = (
             set()
         )  # active targets seen (current_waypoint>=0): underway
-        self.waypoints_dwelled: set[int] = (
-            set()
-        )  # indices observed in DWELL — reached, not just targeted
         self.was_armed = False
         self.disarmed_after_arm = False
         # Return-home decision lives in a pure, Layer-A-tested tracker; the watcher feeds it position
         # samples and gates them on RTH having started, so the takeoff climb through the home altitude
         # can't falsely latch "returned home" before RTH runs (see HomeSettleTracker / Hermes High).
         self._home_settle = HomeSettleTracker(self.home_ned, self.home_tol_m)
-        # Latest sample on each /patrol topic, correlated in _note_dwell so a waypoint counts as
-        # *reached* only once DWELL is observed with its index active (not merely targeted).
-        self._cur_state = ""
-        self._cur_wp = -1
+        # Dwell attribution also lives in a pure, Layer-A-tested tracker: a waypoint counts as
+        # *reached* only when the authoritative DWELL state is observed with its index active — never
+        # from a (reorderable) current_waypoint update alone, so a cross-topic reorder can't
+        # false-count the next waypoint as dwelled (see DwellTracker / Hermes High).
+        self._dwell = DwellTracker()
         pqos = patrol_state_qos()
         self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
         self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, pqos)
@@ -137,26 +136,14 @@ class PatrolWatcher(Node):
     def _on_state(self, msg: String) -> None:
         if not self.states_seen or self.states_seen[-1] != msg.data:
             self.states_seen.append(msg.data)
-        self._cur_state = msg.data
-        self._note_dwell()
+        # Attribute a dwell only from the authoritative DWELL state (with its index already cached);
+        # see DwellTracker for why the current_waypoint callback must NOT count one (Hermes High).
+        self._dwell.on_state(msg.data)
 
     def _on_wp(self, msg: Int32) -> None:
         if msg.data >= 0:
-            self.waypoints_visited.add(msg.data)
-        self._cur_wp = msg.data
-        self._note_dwell()
-
-    def _note_dwell(self) -> None:
-        """Count a waypoint as reached only when observed in DWELL with its index active (OQ-7).
-
-        The node publishes ``current_waypoint=i`` while still *flying toward* waypoint i (WAYPOINT
-        state), so counting any non-negative index as "visited" would pass the patrol gate on
-        approach, before arrival/dwell (Hermes High). ``current_waypoint`` stays ``i`` across both
-        WAYPOINT(i) and DWELL(i), so correlating the two /patrol topics — DWELL + index i — is sound
-        evidence that waypoint i was actually reached and dwelled, which is the AC-2 / OQ-7 contract.
-        """
-        if self._cur_state == "DWELL" and self._cur_wp >= 0:
-            self.waypoints_dwelled.add(self._cur_wp)
+            self.waypoints_visited.add(msg.data)  # active targets (underway), not yet reached
+        self._dwell.on_waypoint(msg.data)  # caches the index only — never counts a dwell
 
     def _on_status(self, msg: VehicleStatus) -> None:
         if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED:
@@ -187,6 +174,11 @@ class PatrolWatcher(Node):
         waypoint), so the disarm gate works for both scenarios.
         """
         return any(s in _AIRBORNE_STATES for s in self.states_seen)
+
+    @property
+    def waypoints_dwelled(self) -> set[int]:
+        """Indices observed in DWELL — reached + dwelled, not just targeted (delegates to the tracker)."""
+        return self._dwell.dwelled
 
     @property
     def all_waypoints_dwelled(self) -> bool:

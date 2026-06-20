@@ -119,18 +119,34 @@ def _validate_frame(frame: str, where: str) -> str:
     return frame
 
 
-def _positive(value: float, name: str) -> None:
-    if value <= 0:
+def _number(value: Any, name: str) -> float:
+    """Coerce a scalar numeric field to float, fail loud with field context on a non-numeric value.
+
+    A non-numeric numeric field would otherwise leak an inconsistent bare exception: an un-fielded
+    ``ValueError`` from a construction-time ``float(...)`` cast for ``takeoff_alt_m`` / ``hover_time_s``
+    / ``dwell_s``, but a bare ``TypeError`` from the later ``<=`` range comparison for the section
+    fields (``completion.*`` / ``abort.*``), which are built straight into their dataclass un-cast.
+    Funnel every scalar numeric field through here so operators get one consistent
+    ``"<field> must be a number, got <value>"`` diagnostic (Hermes polish).
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number, got {value!r}") from exc
+
+
+def _positive(value: Any, name: str) -> None:
+    if _number(value, name) <= 0:
         raise ValueError(f"{name} must be > 0, got {value}")
 
 
-def _non_negative(value: float, name: str) -> None:
-    if value < 0:
+def _non_negative(value: Any, name: str) -> None:
+    if _number(value, name) < 0:
         raise ValueError(f"{name} must be >= 0, got {value}")
 
 
-def _unit_interval(value: float, name: str) -> None:
-    if not 0.0 <= value <= 1.0:
+def _unit_interval(value: Any, name: str) -> None:
+    if not 0.0 <= _number(value, name) <= 1.0:
         raise ValueError(f"{name} must be in [0, 1], got {value}")
 
 
@@ -155,12 +171,7 @@ def _coord(p: dict[str, Any], where: str, axis: str) -> float:
     """Read one numeric position axis, fail loud on a missing or non-numeric value (Hermes)."""
     if axis not in p:
         raise ValueError(f"{where} position missing required axis {axis!r}")
-    try:
-        return float(p[axis])
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"{where} position axis {axis!r} must be a number, got {p[axis]!r}"
-        ) from exc
+    return _number(p[axis], f"{where} position axis {axis!r}")
 
 
 def _point(p: Any, where: str) -> Point:
@@ -307,7 +318,10 @@ def _checkpoint_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> 
     if cid not in checkpoints:
         raise ValueError(f"waypoint[{index}] references unknown checkpoint_id {cid!r}")
     return Waypoint(
-        position=checkpoints[cid], frame="enu", dwell_s=float(w["dwell_s"]), checkpoint_id=cid
+        position=checkpoints[cid],
+        frame="enu",
+        dwell_s=_number(w["dwell_s"], f"waypoints[{index}].dwell_s"),
+        checkpoint_id=cid,
     )
 
 
@@ -317,7 +331,7 @@ def _inline_waypoint(w: dict, index: int) -> Waypoint:
     return Waypoint(
         position=_point(w["position"], f"waypoint[{index}]"),
         frame=frame,
-        dwell_s=float(w["dwell_s"]),
+        dwell_s=_number(w["dwell_s"], f"waypoints[{index}].dwell_s"),
     )
 
 
@@ -380,8 +394,8 @@ def load_mission_config(
     waypoints = tuple(_parse_waypoint(w, i, checkpoints) for i, w in enumerate(raw_waypoints))
 
     cfg = MissionConfig(
-        takeoff_alt_m=float(_require(raw, "takeoff_alt_m")),
-        hover_time_s=float(_require(raw, "hover_time_s")),
+        takeoff_alt_m=_number(_require(raw, "takeoff_alt_m"), "takeoff_alt_m"),
+        hover_time_s=_number(_require(raw, "hover_time_s"), "hover_time_s"),
         completion=_section(raw, "completion", Completion),
         abort=_section(raw, "abort", AbortConfig),
         home_position=_point(home["position"], "home"),
