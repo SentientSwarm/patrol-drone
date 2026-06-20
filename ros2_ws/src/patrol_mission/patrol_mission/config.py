@@ -245,16 +245,31 @@ def _checkpoints_map(raw: list, checkpoints_yaml_path: str) -> dict[str, Point]:
     return checkpoints
 
 
+def _checkpoint_id(value: Any, where: str) -> str:
+    """A ``checkpoint_id`` must be a string — the 02/03 checkpoint namespace is string-keyed.
+
+    YAML happily parses ``checkpoint_id: 1`` as an ``int``; left unchecked it would be keyed into the
+    checkpoints map and stored on ``Waypoint.checkpoint_id`` (declared ``str``), silently violating
+    the shared-namespace contract and risking an ``int``/``str`` key mismatch between a checkpoint and
+    the waypoint that references it. Validate the type on both sides at the loader's fail-loud boundary
+    (Hermes Medium). ``bool`` is rejected too (``isinstance(True, str)`` is already False).
+    """
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{where} checkpoint_id must be a string, got {type(value).__name__} {value!r}"
+        )
+    return value
+
+
 def _checkpoint_entry(entry: Any) -> tuple[str, Point]:
     """Validate one checkpoints entry into ``(checkpoint_id, ENU position)``. Fail loud (INF-M3)."""
     entry = _require_mapping(entry, "checkpoints entry")
     if "checkpoint_id" not in entry:
         raise ValueError(f"checkpoints entry missing required 'checkpoint_id': {entry!r}")
+    cid = _checkpoint_id(entry["checkpoint_id"], "checkpoints entry")
     if "position" not in entry:
-        raise ValueError(f"checkpoint {entry['checkpoint_id']!r} missing required 'position'")
-    return entry["checkpoint_id"], _point(
-        entry["position"], f"checkpoint {entry['checkpoint_id']!r}"
-    )
+        raise ValueError(f"checkpoint {cid!r} missing required 'position'")
+    return cid, _point(entry["position"], f"checkpoint {cid!r}")
 
 
 def _references_checkpoint(raw_waypoints: list) -> bool:
@@ -329,7 +344,7 @@ def _check_waypoint_keys(w: dict, index: int, allowed: frozenset[str]) -> None:
 
 def _checkpoint_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> Waypoint:
     """Resolve a checkpoint-based waypoint against the loaded checkpoints (ENU). Fail loud (INF-M3)."""
-    cid = w["checkpoint_id"]
+    cid = _checkpoint_id(w["checkpoint_id"], f"waypoint[{index}]")
     if cid not in checkpoints:
         raise ValueError(f"waypoint[{index}] references unknown checkpoint_id {cid!r}")
     return Waypoint(

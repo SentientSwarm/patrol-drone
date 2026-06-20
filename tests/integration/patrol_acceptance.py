@@ -86,6 +86,23 @@ def home_tolerance_m(mission_yaml: str | None = None) -> float:
     return float(completion.get("tolerance_m", 0.5))
 
 
+def home_hold_time_s(mission_yaml: str | None = None) -> float:
+    """The continuous in-tolerance hold (s) RTH must sustain at home before LANDING — the same
+    ``completion.hold_time_s`` the state machine enforces via ``_within_tolerance_for_hold`` (OQ-4
+    default 2.0). Config-driven so the return-home oracle proves the real hold, not a transient
+    crossing (Hermes High), and never drifts from the flown criterion."""
+    completion = _mission_raw(mission_yaml).get("completion") or {}
+    return float(completion.get("hold_time_s", 2.0))
+
+
+def dwell_required_s(mission_yaml: str | None = None) -> tuple[float, ...]:
+    """Per-waypoint required dwell (s), index-aligned — what the patrol must HOLD at each waypoint
+    before advancing (the state machine's ``waypoints[i].dwell_s``, AC-2/AC-9). Read from the same
+    route YAML so the dwell oracle proves the configured hold, not mere DWELL entry (Hermes High)."""
+    waypoints = _mission_raw(mission_yaml)["waypoints"]
+    return tuple(float(w["dwell_s"]) for w in waypoints)
+
+
 # States that only occur once the vehicle is airborne. A disarm after any of these is a landing —
 # whether the mission flew the full patrol OR aborted early (an abort can fire during HOVER, before
 # any waypoint is visited), so this is what gates "disarmed after arming" rather than a waypoint.
@@ -102,29 +119,36 @@ class PatrolWatcher(Node):
         *,
         home_ned: Point | None = None,
         home_tol_m: float | None = None,
+        home_hold_s: float | None = None,
+        dwell_req_s: tuple[float, ...] | None = None,
         node_name: str = "patrol_acceptance_watcher",
     ):
         super().__init__(node_name)
         self._expected = expected_waypoints
-        # The home coordinate RTH must settle at, and the tolerance ball (default: read from the same
-        # checked-in mission YAML the launch uses), so the home-settle check is config-driven.
+        # The home coordinate RTH must settle at, the tolerance ball, and the continuous hold it must
+        # sustain there (default: read from the same checked-in mission YAML the launch uses), so the
+        # home-settle check is config-driven and matches the flown RTH->LANDING criterion exactly.
         self.home_ned = home_ned if home_ned is not None else home_target_ned()
         self.home_tol_m = home_tol_m if home_tol_m is not None else home_tolerance_m()
+        self.home_hold_s = home_hold_s if home_hold_s is not None else home_hold_time_s()
+        dwell_req = dwell_req_s if dwell_req_s is not None else dwell_required_s()
         self.states_seen: list[str] = []  # deduped-consecutive ordered mission_state history
         self.waypoints_visited: set[int] = (
             set()
         )  # active targets seen (current_waypoint>=0): underway
         self.was_armed = False
         self.disarmed_after_arm = False
-        # Return-home decision lives in a pure, Layer-A-tested tracker; the watcher feeds it position
-        # samples and gates them on RTH having started, so the takeoff climb through the home altitude
-        # can't falsely latch "returned home" before RTH runs (see HomeSettleTracker / Hermes High).
-        self._home_settle = HomeSettleTracker(self.home_ned, self.home_tol_m)
+        # Return-home decision lives in a pure, Layer-A-tested tracker; the watcher feeds it timestamped
+        # position samples gated on RTH having started, so the takeoff climb through the home altitude
+        # can't falsely latch "returned home" before RTH runs, and only a continuous hold_time_s hold
+        # within tolerance counts — not a transient crossing (see HomeSettleTracker / Hermes High).
+        self._home_settle = HomeSettleTracker(self.home_ned, self.home_tol_m, self.home_hold_s)
         # Dwell attribution also lives in a pure, Layer-A-tested tracker that counts DWELL *episodes*
         # in the per-topic-ordered mission_state stream ALONE — it never reads current_waypoint, so a
         # cross-topic reorder (current_waypoint=i+1 delivered before a pending DWELL(i)) structurally
-        # cannot false-count the next waypoint as dwelled (see DwellTracker / Hermes High).
-        self._dwell = DwellTracker()
+        # cannot false-count the next waypoint as dwelled — and credits a waypoint only once its episode
+        # has spanned the configured dwell_s, not on mere DWELL entry (see DwellTracker / Hermes High).
+        self._dwell = DwellTracker(dwell_req)
         pqos = patrol_state_qos()
         self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
         self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, pqos)
@@ -136,9 +160,10 @@ class PatrolWatcher(Node):
     def _on_state(self, msg: String) -> None:
         if not self.states_seen or self.states_seen[-1] != msg.data:
             self.states_seen.append(msg.data)
-        # Dwell attribution counts DWELL episodes from this (ordered) state stream alone; see
-        # DwellTracker for why current_waypoint must NOT participate (cross-topic reorder, Hermes High).
-        self._dwell.on_state(msg.data)
+        # Dwell attribution counts DWELL episodes from this (ordered) state stream alone, timestamped so
+        # the tracker can require each episode to span its configured dwell_s; see DwellTracker for why
+        # current_waypoint must NOT participate (cross-topic reorder, Hermes High).
+        self._dwell.on_state(msg.data, time.monotonic())
 
     def _on_wp(self, msg: Int32) -> None:
         if msg.data >= 0:
@@ -156,11 +181,12 @@ class PatrolWatcher(Node):
         The settle counts only *after* RTH starts: the takeoff climb passes through the configured
         home altitude at home x/y, so a pre-RTH sample sits at home_ned within tolerance and — if it
         latched — would falsely mark "returned home" before RTH ever runs (Hermes High). The pure
-        HomeSettleTracker owns that rule, the RTH->LANDING-style tolerance check, and the
-        closest-approach diagnostic; the watcher just supplies (position, rth_started, valid).
+        HomeSettleTracker owns that rule, the RTH->LANDING continuous-hold tolerance check, and the
+        closest-approach diagnostic; the watcher just supplies (position, now_s, rth_started, valid).
         """
         self._home_settle.update(
             (float(msg.x), float(msg.y), float(msg.z)),
+            time.monotonic(),
             rth_started=self.saw_rth,
             valid=bool(msg.xy_valid and msg.z_valid),
         )
@@ -176,8 +202,15 @@ class PatrolWatcher(Node):
 
     @property
     def waypoints_dwelled(self) -> set[int]:
-        """Indices observed in DWELL — reached + dwelled, not just targeted (delegates to the tracker)."""
+        """Indices reached AND held for the configured dwell_s — not just targeted (delegates to the
+        tracker, which is duration-aware so a transient DWELL entry does not count, Hermes High)."""
         return self._dwell.dwelled
+
+    @property
+    def dwell_episodes(self) -> int:
+        """DWELL episodes *started* (waypoints reached) — a diagnostic: if this exceeds the count of
+        ``waypoints_dwelled``, some leg entered DWELL but did not hold its configured dwell_s."""
+        return self._dwell.episodes
 
     @property
     def all_waypoints_dwelled(self) -> bool:
@@ -228,9 +261,9 @@ def evaluate_nominal(watcher: PatrolWatcher, expected_waypoints: int) -> list[Ch
         Check(
             "all_waypoints_dwelled",
             watcher.all_waypoints_dwelled,
-            f"dwelled at waypoint indices {sorted(watcher.waypoints_dwelled)} "
-            f"(need 0..{expected_waypoints - 1}); active targets seen "
-            f"{sorted(watcher.waypoints_visited)}",
+            f"held configured dwell at waypoint indices {sorted(watcher.waypoints_dwelled)} "
+            f"(need 0..{expected_waypoints - 1}); {watcher.dwell_episodes} DWELL episode(s) entered; "
+            f"active targets seen {sorted(watcher.waypoints_visited)}",
         ),
         Check(
             "returned_home",

@@ -252,6 +252,34 @@ def test_duplicate_checkpoint_id_raises(tmp_path):
         load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), cps)
 
 
+# TS-C2g (Hermes Medium): a non-string checkpoint_id is rejected on BOTH sides of the shared
+# namespace — in the checkpoints map and in a waypoint reference. YAML parses `checkpoint_id: 1` as
+# int, which would key the map (and Waypoint.checkpoint_id, declared str) with the wrong type and
+# silently break the string-keyed 02/03 contract / risk an int-vs-str key mismatch. Fail loud,
+# with field context naming the offending side.
+@pytest.mark.parametrize(
+    ("checkpoints_text", "waypoints_text", "match"),
+    [
+        pytest.param(
+            "- checkpoint_id: 1\n  position: {x: 1, y: 2, z: 3}\n",
+            _wp_checkpoint("cp_north"),  # valid ref, never reached — the map fails to load first
+            "checkpoints entry checkpoint_id must be a string",
+            id="in_map",
+        ),
+        pytest.param(
+            _CHECKPOINTS,  # a valid map; the int reference itself is the failure
+            "waypoints:\n  - checkpoint_id: 1\n    dwell_s: 3.0\n",
+            r"waypoint\[0\] checkpoint_id must be a string",
+            id="in_reference",
+        ),
+    ],
+)
+def test_non_string_checkpoint_id_raises(tmp_path, checkpoints_text, waypoints_text, match):
+    cps = _write_checkpoints(tmp_path, checkpoints_text)
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + waypoints_text), cps)
+
+
 # TS-C3: a route mixing checkpoint_id and inline waypoints resolves all of them in order.
 def test_mixed_checkpoint_and_inline(tmp_path):
     cps = _write_checkpoints(tmp_path)
