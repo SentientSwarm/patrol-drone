@@ -24,6 +24,7 @@ The observable patrol surface is ``/patrol/*`` (OQ-3): ``mission_state`` (the Mi
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 import rclpy
 import yaml
@@ -103,6 +104,29 @@ def dwell_required_s(mission_yaml: str | None = None) -> tuple[float, ...]:
     return tuple(float(w["dwell_s"]) for w in waypoints)
 
 
+@dataclass(frozen=True)
+class PatrolThresholds:
+    """Config-derived thresholds the acceptance trackers compare against (AC-2/AC-6), grouped so the
+    watcher's constructor stays narrow. Defaults read from the same checked-in route YAML the launch
+    feeds the node, so the oracle never drifts from the flown criteria; tests can inject explicit values.
+    """
+
+    home_ned: Point  # the home coordinate RTH must settle at (EKF-origin-relative NED)
+    home_tol_m: float  # completion-tolerance ball (m) for the home settle
+    home_hold_s: float  # continuous in-tolerance hold (s) RTH must sustain before LANDING
+    dwell_req_s: tuple[float, ...]  # per-waypoint required dwell (s), index-aligned
+
+    @classmethod
+    def from_mission_yaml(cls, mission_yaml: str | None = None) -> PatrolThresholds:
+        """Read every threshold from one mission YAML (the launch's checked-in route, by default)."""
+        return cls(
+            home_ned=home_target_ned(mission_yaml),
+            home_tol_m=home_tolerance_m(mission_yaml),
+            home_hold_s=home_hold_time_s(mission_yaml),
+            dwell_req_s=dwell_required_s(mission_yaml),
+        )
+
+
 # States that only occur once the vehicle is airborne. A disarm after any of these is a landing —
 # whether the mission flew the full patrol OR aborted early (an abort can fire during HOVER, before
 # any waypoint is visited), so this is what gates "disarmed after arming" rather than a waypoint.
@@ -117,38 +141,33 @@ class PatrolWatcher(Node):
         self,
         expected_waypoints: int,
         *,
-        home_ned: Point | None = None,
-        home_tol_m: float | None = None,
-        home_hold_s: float | None = None,
-        dwell_req_s: tuple[float, ...] | None = None,
+        thresholds: PatrolThresholds | None = None,
         node_name: str = "patrol_acceptance_watcher",
     ):
         super().__init__(node_name)
         self._expected = expected_waypoints
-        # The home coordinate RTH must settle at, the tolerance ball, and the continuous hold it must
-        # sustain there (default: read from the same checked-in mission YAML the launch uses), so the
-        # home-settle check is config-driven and matches the flown RTH->LANDING criterion exactly.
-        self.home_ned = home_ned if home_ned is not None else home_target_ned()
-        self.home_tol_m = home_tol_m if home_tol_m is not None else home_tolerance_m()
-        self.home_hold_s = home_hold_s if home_hold_s is not None else home_hold_time_s()
-        dwell_req = dwell_req_s if dwell_req_s is not None else dwell_required_s()
+        # The home coordinate RTH must settle at, the tolerance ball, the continuous hold it must sustain
+        # there, and the per-waypoint required dwell — grouped in PatrolThresholds and read from the same
+        # checked-in mission YAML the launch uses, so the oracle matches the flown criteria exactly.
+        th = thresholds if thresholds is not None else PatrolThresholds.from_mission_yaml()
+        self.home_ned = th.home_ned
+        self.home_tol_m = th.home_tol_m
+        self.home_hold_s = th.home_hold_s
         self.states_seen: list[str] = []  # deduped-consecutive ordered mission_state history
-        self.waypoints_visited: set[int] = (
-            set()
-        )  # active targets seen (current_waypoint>=0): underway
+        self.waypoints_visited: set[int] = set()  # active targets seen (current_waypoint>=0)
         self.was_armed = False
         self.disarmed_after_arm = False
         # Return-home decision lives in a pure, Layer-A-tested tracker; the watcher feeds it timestamped
         # position samples gated on RTH having started, so the takeoff climb through the home altitude
         # can't falsely latch "returned home" before RTH runs, and only a continuous hold_time_s hold
         # within tolerance counts — not a transient crossing (see HomeSettleTracker / Hermes High).
-        self._home_settle = HomeSettleTracker(self.home_ned, self.home_tol_m, self.home_hold_s)
+        self._home_settle = HomeSettleTracker(th.home_ned, th.home_tol_m, th.home_hold_s)
         # Dwell attribution also lives in a pure, Layer-A-tested tracker that counts DWELL *episodes*
         # in the per-topic-ordered mission_state stream ALONE — it never reads current_waypoint, so a
         # cross-topic reorder (current_waypoint=i+1 delivered before a pending DWELL(i)) structurally
         # cannot false-count the next waypoint as dwelled — and credits a waypoint only once its episode
         # has spanned the configured dwell_s, not on mere DWELL entry (see DwellTracker / Hermes High).
-        self._dwell = DwellTracker(dwell_req)
+        self._dwell = DwellTracker(th.dwell_req_s)
         pqos = patrol_state_qos()
         self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
         self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, pqos)
