@@ -19,6 +19,7 @@ from home_settle_tracker import HomeSettleTracker  # noqa: E402  (import after t
 HOME = (0.0, 0.0, -2.0)  # home at 2 m ENU -> -2 m NED down (matches the shipped patrol config)
 TOL = 0.5
 HOLD_S = 2.0  # completion.hold_time_s — the continuous in-tolerance hold RTH must sustain
+MAX_GAP = 1.0  # max_gap_s — a sample gap wider than this breaks the continuous-observation hold
 # A point well inside the tolerance ball around HOME, and one well outside it.
 AT_HOME = (0.0, 0.0, -2.0)
 AWAY = (10.0, 0.0, -2.0)
@@ -27,7 +28,7 @@ Sample = tuple[tuple[float, float, float], float]  # (position_ned, now_s)
 
 
 def _tracker() -> HomeSettleTracker:
-    return HomeSettleTracker(home_ned=HOME, tolerance_m=TOL, hold_time_s=HOLD_S)
+    return HomeSettleTracker(home_ned=HOME, tolerance_m=TOL, hold_time_s=HOLD_S, max_gap_s=MAX_GAP)
 
 
 def _feed(
@@ -57,12 +58,23 @@ def test_continuous_hold_latches():
 
 
 # Leaving the tolerance ball resets the hold clock: a crossing-then-return must hold the FULL
-# hold_time_s again. (Without the reset, the elapsed-from-first-entry time would false-latch here.)
+# hold_time_s again. Densely sampled (every 0.5 s) so only the tolerance break — not an observation
+# gap — resets the hold. (Without the reset, the elapsed-from-first-entry time would false-latch.)
 def test_leaving_tolerance_resets_hold_clock():
     t = _tracker()
-    _feed(t, [(AT_HOME, 0.0), (AWAY, 1.0), (AT_HOME, 2.0), (AT_HOME, 3.9)])
-    assert t.settled is False  # the hold restarted at 2.0 s; only 1.9 s elapsed by 3.9 s
-    _feed(t, [(AT_HOME, 4.0)])  # 2.0 s since the restart
+    _feed(
+        t,
+        [
+            (AT_HOME, 0.0),
+            (AT_HOME, 0.5),
+            (AWAY, 1.0),
+            (AT_HOME, 1.5),
+            (AT_HOME, 2.0),
+            (AT_HOME, 3.0),
+        ],
+    )
+    assert t.settled is False  # the hold restarted at 1.5 s; only 1.5 s elapsed by 3.0 s
+    _feed(t, [(AT_HOME, 3.5)])  # 2.0 s since the re-entry at 1.5 s
     assert t.settled is True
 
 
@@ -103,7 +115,9 @@ def test_invalid_fix_is_ignored():
 )
 def test_tolerance_edge_inclusive(position, settles):
     t = _tracker()
-    _feed(t, [(position, 0.0), (position, HOLD_S)])  # held for hold_time_s at the same offset
+    # Densely sampled across hold_time_s so no observation gap intervenes — only the tolerance edge
+    # decides: on the edge counts as in-tolerance and settles; just outside never enters the hold.
+    _feed(t, [(position, s * 0.5) for s in range(5)])  # 0.0 .. 2.0 s, every 0.5 s
     assert t.settled is settles
 
 
@@ -119,7 +133,25 @@ def test_min_distance_tracks_closest_post_rth_approach():
 # Once a genuine hold latches the settle, a later drift away does NOT un-latch it (return-home proven).
 def test_settle_latches_and_stays():
     t = _tracker()
-    _feed(t, [(AT_HOME, 0.0), (AT_HOME, HOLD_S)])
+    _feed(t, [(AT_HOME, s * 0.5) for s in range(5)])  # densely held for hold_time_s (0.0 .. 2.0 s)
     assert t.settled is True
-    _feed(t, [(AWAY, 3.0)])
+    _feed(t, [(AWAY, 2.5)])
+    assert t.settled is True
+
+
+# PR #8 post-mortem C: a sample gap wider than max_gap_s breaks the hold even across two in-tolerance
+# fixes — a telemetry blackout spanning the home ball must NOT pass as a continuous return-home.
+def test_observation_gap_breaks_window():
+    t = _tracker()
+    _feed(t, [(AT_HOME, 0.0), (AT_HOME, 8.0), (AT_HOME, 8.5), (AT_HOME, 9.0)])
+    assert t.settled is False  # the 8 s silence resets the hold; only 1.0 s densely held after it
+    _feed(t, [(AT_HOME, 9.5), (AT_HOME, 10.0)])  # 2.0 s continuously observed since the restart
+    assert t.settled is True
+
+
+# A gap exactly at max_gap_s is still continuous (boundary inclusive: > breaks, == holds), so a hold
+# sampled exactly at the gap limit still latches.
+def test_gap_at_boundary_does_not_break():
+    t = _tracker()
+    _feed(t, [(AT_HOME, k * MAX_GAP) for k in range(3)])  # gaps == max_gap_s, spanning hold_time_s
     assert t.settled is True

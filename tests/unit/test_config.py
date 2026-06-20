@@ -489,6 +489,59 @@ def test_nonnumeric_scalar_fields_fail_loud(tmp_path, body, match):
         load_mission_config(_write(tmp_path, body))
 
 
+# PR #8 post-mortem D: two scalars that float() would silently accept must fail loud at the numeric
+# boundary. A YAML boolean (bool is an int subclass, so float(True) == 1.0) would smuggle a 1/0
+# magnitude into a numeric field. A non-finite NaN/Inf slips past every range guard (nan/inf <= 0 are
+# both False, so _positive/_non_negative accept it) and then poisons a state-machine comparison.
+# Both raise the loader's contracted ValueError, across a top-level field, a section field, and a
+# waypoint dwell; a quoted "nan" coerces to non-finite and is caught the same way.
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (
+            "takeoff_alt_m: true\nhover_time_s: 10\n" + _HOME_ENU + _NO_WAYPOINTS,
+            "takeoff_alt_m must be a number",
+        ),
+        (
+            _HEAD + "abort: {low_battery_threshold: true}\n" + _HOME_ENU + _NO_WAYPOINTS,
+            "abort.low_battery_threshold must be a number",
+        ),
+        (
+            "takeoff_alt_m: .nan\nhover_time_s: 10\n" + _HOME_ENU + _NO_WAYPOINTS,
+            "takeoff_alt_m must be a finite number",
+        ),
+        (
+            "takeoff_alt_m: .inf\nhover_time_s: 10\n" + _HOME_ENU + _NO_WAYPOINTS,
+            "takeoff_alt_m must be a finite number",
+        ),
+        (
+            _HEAD
+            + 'completion: {tolerance_m: "nan", hold_time_s: 2.0}\n'
+            + _HOME_ENU
+            + _NO_WAYPOINTS,
+            "completion.tolerance_m must be a finite number",
+        ),
+        (
+            _HEAD
+            + _HOME_ENU
+            + "waypoints:\n  - position: {x: 1, y: 1, z: 1}\n    frame: enu\n    dwell_s: .inf\n",
+            r"waypoints\[0\]\.dwell_s must be a finite number",
+        ),
+    ],
+    ids=[
+        "bool_top_level",
+        "bool_section",
+        "nan_top_level",
+        "inf_top_level",
+        "quoted_nan_section",
+        "inf_waypoint_dwell",
+    ],
+)
+def test_non_finite_and_bool_numeric_fields_fail_loud(tmp_path, body, match):
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, body))
+
+
 # Review #3: an optional section (completion / abort) that is present-but-null, not a mapping, or
 # carries an unknown/misspelled key must fail loud with a ValueError (field context), not leak the
 # bare TypeError that `Completion(**...)` / `AbortConfig(**...)` would otherwise raise.

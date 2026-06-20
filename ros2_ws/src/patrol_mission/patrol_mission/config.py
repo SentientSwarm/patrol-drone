@@ -13,6 +13,7 @@ in M4; until then a ``checkpoint_id`` waypoint fails loud.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -135,7 +136,7 @@ def _validate_frame(frame: str, where: str) -> str:
 
 
 def _number(value: Any, name: str) -> float:
-    """Coerce a scalar numeric field to float, fail loud with field context on a non-numeric value.
+    """Coerce a scalar numeric field to a *finite* float, fail loud with field context on a bad value.
 
     A non-numeric numeric field would otherwise leak an inconsistent bare exception: an un-fielded
     ``ValueError`` from a construction-time ``float(...)`` cast for ``takeoff_alt_m`` / ``hover_time_s``
@@ -143,11 +144,29 @@ def _number(value: Any, name: str) -> float:
     fields (``completion.*`` / ``abort.*``), which are built straight into their dataclass un-cast.
     Funnel every scalar numeric field through here so operators get one consistent
     ``"<field> must be a number, got <value>"`` diagnostic (Hermes polish).
+
+    Two scalars that ``float()`` accepts but a numeric mission field must NOT (PR #8 post-mortem D —
+    "NaN, Inf, and booleans without proper coercion") are rejected here, at the same fail-loud
+    boundary:
+
+    * A YAML boolean (``true``/``false``). ``bool`` is an ``int`` subclass, so ``float(True)`` is
+      ``1.0`` — a boolean would silently become a 1/0 magnitude. A bool in a numeric field is a
+      config typo, not a quantity, so reject it before the cast can swallow it.
+    * A non-finite value (``NaN``/``Inf``, parsed from ``.nan`` / ``.inf`` or a quoted ``"nan"`` /
+      ``"inf"``). It would pass every range guard below — ``nan <= 0`` and ``inf <= 0`` are both
+      ``False``, so ``_positive`` / ``_non_negative`` accept it — then poison a downstream
+      distance/threshold comparison in the state machine. Reject it so a non-finite mission
+      parameter never flies.
     """
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number, got bool {value!r}")
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be a number, got {value!r}") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    return number
 
 
 def _positive(value: Any, name: str) -> None:

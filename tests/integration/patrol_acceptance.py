@@ -51,6 +51,12 @@ _EKF_ORIGIN_NED: Point = (0.0, 0.0, 0.0)
 # scenario provisional budget; MZ.1 re-measures.
 PATROL_TIMEOUT_S = 300.0
 
+# A vehicle-position sample gap longer than this breaks the home-settle hold: a silence this long
+# means observation was lost and we cannot claim the vehicle stayed within tolerance of home through
+# it, so the continuous hold must restart (mirrors mission_acceptance.MAX_SETTLE_SAMPLE_GAP_S / PR #8
+# post-mortem C). Sized above the nominal /fmu/out sampling interval so ordinary jitter never trips it.
+MAX_HOME_SAMPLE_GAP_S = 1.0
+
 
 def _patrol_mission_yaml() -> str:
     """The same checked-in YAML mission_patrol.launch.py feeds the node (via the installed share)."""
@@ -161,7 +167,9 @@ class PatrolWatcher(Node):
         # position samples gated on RTH having started, so the takeoff climb through the home altitude
         # can't falsely latch "returned home" before RTH runs, and only a continuous hold_time_s hold
         # within tolerance counts — not a transient crossing (see HomeSettleTracker / Hermes High).
-        self._home_settle = HomeSettleTracker(th.home_ned, th.home_tol_m, th.home_hold_s)
+        self._home_settle = HomeSettleTracker(
+            th.home_ned, th.home_tol_m, th.home_hold_s, max_gap_s=MAX_HOME_SAMPLE_GAP_S
+        )
         # Dwell attribution also lives in a pure, Layer-A-tested tracker that counts DWELL *episodes*
         # in the per-topic-ordered mission_state stream ALONE — it never reads current_waypoint, so a
         # cross-topic reorder (current_waypoint=i+1 delivered before a pending DWELL(i)) structurally
