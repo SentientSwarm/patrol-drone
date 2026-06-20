@@ -99,32 +99,41 @@ The `/compressed` companion is produced automatically by `image_transport`
 
 ## Running the patrol world (SITL)
 
-PX4 SITL + Gazebo are started outside ROS (PX4 is not a ROS node); the camera bridge and patrol node
-run as ROS launches. From a built workspace (`ros2_ws/install/setup.bash` sourced):
+The whole stage comes up with one command (the M5 manual check for AC-1 world-load / AC-4 camera /
+AC-3 patrol traversal). First make sure the host is ready, then run it:
 
 ```bash
-# 1. Point Gazebo at the repo assets + PX4's stock models, and select the patrol world + airframe.
-export GZ_SIM_RESOURCE_PATH="$PWD/sim/models:$PWD/sim/worlds:$PWD/sim/px4_sitl_overrides:\
-$HOME/PX4-Autopilot/Tools/simulation/gz/models"
-export PX4_GZ_WORLD=patrol_world
-export PX4_GZ_MODEL_NAME=gz_x500_patrol
+# Host capability gate, incl. the M5 camera/world checks (sim assets + drift, PX4 x500 base model,
+# M5 launch files installed, ros_gz_image / image_transport_plugins):
+scripts/env_doctor.sh --patrol-world
 
-# 2. Start the Micro XRCE-DDS agent, then PX4 SITL (spawns gz_x500_patrol into patrol_world).
-MicroXRCEAgent udp4 -p 8888 &
-make -C "$HOME/PX4-Autopilot" px4_sitl gz_x500
-
-# 3. Bridge the camera (Phase B / AC-4):
-ros2 launch patrol_bringup camera_bridge.launch.py
-ros2 topic hz /drone/camera/image_raw                 # expect a steady ~15 Hz
-
-# 4. Run the M4 patrol over the stage (Phase C / AC-3/SIM-5) — same checkpoints.yaml drives both:
-ros2 launch patrol_bringup patrol_world.launch.py \
-  checkpoints_yaml:="$PWD/sim/config/checkpoints.yaml"
+# Bring up patrol_world + gz_x500_patrol + the image bridge, verify the camera publishes, then fly
+# the M4 patrol over the checkpoints and verify it visits each. Logs in /tmp/patrol-world-uat.
+scripts/run_patrol_world_sitl.sh
+scripts/run_patrol_world_sitl.sh --no-patrol   # camera-only smoke (AC-4): skip the patrol
+scripts/run_patrol_world_sitl.sh --no-gui      # headless (camera still renders offscreen)
 ```
 
-> The SITL bring-up (steps 1–2) and the end-to-end traversal/topic-rate checks are exercised in the
-> nightly tier — the airframe-override/world-load specifics are validated there, not on every PR. The
-> composer Guards, the drift check, and the asset structure are validated by the Layer-A unit suite
-> (`tests/unit/test_compose_world.py`, `test_apriltag_models.py`) and CI's `world-drift` gate.
+**How the bring-up works (and why it differs from `run_sitl_mission.sh`).** PX4 SITL + Gazebo run
+outside ROS; only the camera bridge and patrol node are ROS launches. The stock M3/M4 runner uses
+`make px4_sitl gz_x500`, which lets PX4 start Gazebo and spawn the stock x500 into the *default*
+world. M5 needs a *custom* world **and** a *custom* camera model that isn't a PX4 airframe — and PX4
+only spawns models from its own tree via an airframe file (adding one is a PX4 fork, which A2
+forbids). So `run_patrol_world_sitl.sh` uses PX4's no-fork **"bring your own model" attach** mode:
+
+1. Export `GZ_SIM_RESOURCE_PATH` (repo `sim/` + PX4's stock models, so the world's `model://` tags and
+   the x500 our model merges both resolve) and `GZ_SIM_SERVER_CONFIG_PATH` (PX4's `server.config`, so
+   the Gazebo Sensors system that renders the camera loads).
+2. Start the Micro XRCE-DDS agent, then **Gazebo standalone** with `patrol_world.sdf`.
+3. **Spawn `gz_x500_patrol`** into the running world (gz `EntityFactory` create) at the takeoff origin.
+4. Start PX4 with `PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_NAME=gz_x500_patrol PX4_GZ_WORLD=patrol_world` so
+   it **attaches** to our model (`PX4_SIM_MODEL=gz_x500` supplies the x500 airframe params).
+5. Launch `camera_bridge.launch.py`, verify `/drone/camera/image_raw`, then fly
+   `mission_patrol.launch.py` against `sim/config/checkpoints.yaml` and verify the traversal.
+
+> **Status — nightly / manual.** `run_patrol_world_sitl.sh` has not been run headless in CI; its
+> env-var mechanism is derived from PX4 1.17's `px4-rc.gzsim` + `gz_env.sh`. The Layer-A unit suite
+> (`tests/unit/test_compose_world.py`, `test_apriltag_models.py`), the SDF/XML structure, and CI's
+> `world-drift` gate validate everything that doesn't need a running simulator.
 
 See the Phase 1 plan, Milestone M5, and `docs/phase1/03-sim-environment/design.md` for the full design.
