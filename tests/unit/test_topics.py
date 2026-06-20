@@ -58,7 +58,21 @@ def test_patrol_topics_are_on_the_patrol_surface():
 def test_patrol_topic_names_match_contract():
     assert topics.PATROL_MISSION_STATE == "/patrol/mission_state"
     assert topics.PATROL_CURRENT_WAYPOINT == "/patrol/current_waypoint"
+    assert topics.PATROL_DWELL == "/patrol/dwell"
     assert topics.PATROL_ABORT == "/patrol/abort"
+
+
+# The aggregate tuple is exactly the four distinct /patrol/* names (no dupes, none missed) — the
+# atomic /patrol/dwell capture trigger joins the orchestration surface (Hermes High).
+def test_patrol_topics_aggregate_is_complete_and_unique():
+    expected = {
+        topics.PATROL_MISSION_STATE,
+        topics.PATROL_CURRENT_WAYPOINT,
+        topics.PATROL_DWELL,
+        topics.PATROL_ABORT,
+    }
+    assert set(topics.PATROL_TOPICS) == expected
+    assert len(topics.PATROL_TOPICS) == len(expected)
 
 
 # The aggregate tuple is exactly the six distinct names (no dupes, none missed).

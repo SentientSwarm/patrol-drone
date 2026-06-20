@@ -39,15 +39,21 @@ FMU_TOPICS = (
 
 # /patrol/* — the mission-orchestration surface (M4, OQ-3). Plain std_msgs so MCAP records and
 # Foxglove renders them with no custom-type plugin (design §4.4.2). mission_state + current_waypoint
-# are the observable mission surface (and the DWELL+index capture trigger for 04, OQ-7); abort is the
-# inbound external-abort signal (MC-6). These are NOT /fmu/* — PX4 never sees them.
+# are the observable mission surface; the atomic /patrol/dwell event is 04's once-per-checkpoint
+# capture trigger (OQ-7); abort is the inbound external-abort signal (MC-6). These are NOT /fmu/* —
+# PX4 never sees them.
 PATROL_MISSION_STATE = "/patrol/mission_state"  # std_msgs/String — the returned MissionState name
 PATROL_CURRENT_WAYPOINT = "/patrol/current_waypoint"  # std_msgs/Int32 — active index (-1 = none)
+# std_msgs/Int32 — one-shot checkpoint index emitted on the rising edge into DWELL. The atomic OQ-7
+# capture trigger: a single message carries the dwelled waypoint identity, so 04 (and any consumer)
+# never correlates the two separate, non-atomic mission_state + current_waypoint topics (Hermes High).
+PATROL_DWELL = "/patrol/dwell"
 PATROL_ABORT = "/patrol/abort"  # std_msgs/Bool — inbound external-abort (MC-6)
 
 PATROL_TOPICS = (
     PATROL_MISSION_STATE,
     PATROL_CURRENT_WAYPOINT,
+    PATROL_DWELL,
     PATROL_ABORT,
 )
 

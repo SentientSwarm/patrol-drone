@@ -11,12 +11,14 @@ Layer-B: imports ``rclpy`` + ``px4_msgs`` + ``std_msgs``, so it is excluded from
 runner and from mypy (pyproject), and ships to the nightly container via ``docker cp tests``. It
 defines no ``test_*`` functions, so neither pytest tier collects it as a test.
 
-The observable patrol surface is ``/patrol/*`` (OQ-3): ``mission_state`` (the MissionState name) and
-``current_waypoint`` (the active index). Arm/disarm comes from ``/fmu/out/vehicle_status`` (the same
-``_v1`` output the basic harness reads). The acceptance criteria:
+The observable patrol surface is ``/patrol/*`` (OQ-3): ``mission_state`` (the MissionState name),
+``current_waypoint`` (the active index), and ``dwell`` (the atomic OQ-7 capture trigger — one Int32
+per DWELL entry carrying the dwelled waypoint identity). Arm/disarm comes from
+``/fmu/out/vehicle_status`` (the same ``_v1`` output the basic harness reads). The acceptance criteria:
 
   AC-2 (nominal patrol): armed -> every configured waypoint index observed in DWELL (reached and
-        dwelled, not merely targeted) -> RTH observed -> disarmed after arming.
+        dwelled for its configured dwell_s, not merely targeted) AND its atomic /patrol/dwell event
+        fired -> RTH observed -> disarmed after arming.
   AC-6 (external abort): an external ``/patrol/abort`` published mid-patrol drives an observable
         ABORT then RTH, then disarm (asserted by the abort scenario in the test, using this watcher).
 """
@@ -33,7 +35,7 @@ from dwell_tracker import DwellTracker
 from home_settle_tracker import HomeSettleTracker
 from mission_acceptance import Check  # reuse the one Check verdict shape
 from patrol_mission.frames import Point, to_ned_from_origin
-from patrol_mission.qos import patrol_state_qos, px4_qos
+from patrol_mission.qos import patrol_event_qos, patrol_state_qos, px4_qos
 from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from std_msgs.msg import Int32, String
@@ -51,11 +53,13 @@ _EKF_ORIGIN_NED: Point = (0.0, 0.0, 0.0)
 # scenario provisional budget; MZ.1 re-measures.
 PATROL_TIMEOUT_S = 300.0
 
-# A vehicle-position sample gap longer than this breaks the home-settle hold: a silence this long
-# means observation was lost and we cannot claim the vehicle stayed within tolerance of home through
-# it, so the continuous hold must restart (mirrors mission_acceptance.MAX_SETTLE_SAMPLE_GAP_S / PR #8
-# post-mortem C). Sized above the nominal /fmu/out sampling interval so ordinary jitter never trips it.
-MAX_HOME_SAMPLE_GAP_S = 1.0
+# An observation gap longer than this breaks a continuous-hold window — both the home-settle hold AND
+# a DWELL episode: a silence this long means observation was lost, so we cannot claim the vehicle
+# stayed within tolerance of home (or held a waypoint) through it, and the hold must restart (mirrors
+# mission_acceptance.MAX_SETTLE_SAMPLE_GAP_S / PR #8 post-mortem C). One constant for both trackers so
+# the oracle never drifts. Sized above the nominal /fmu/out + /patrol sampling interval so ordinary
+# jitter never trips it.
+MAX_PATROL_SAMPLE_GAP_S = 1.0
 
 
 def _patrol_mission_yaml() -> str:
@@ -161,6 +165,7 @@ class PatrolWatcher(Node):
         self.home_hold_s = th.home_hold_s
         self.states_seen: list[str] = []  # deduped-consecutive ordered mission_state history
         self.waypoints_visited: set[int] = set()  # active targets seen (current_waypoint>=0)
+        self.dwell_events: list[int] = []  # waypoint indices from the atomic /patrol/dwell event
         self.was_armed = False
         self.disarmed_after_arm = False
         # Return-home decision lives in a pure, Layer-A-tested tracker; the watcher feeds it timestamped
@@ -168,17 +173,21 @@ class PatrolWatcher(Node):
         # can't falsely latch "returned home" before RTH runs, and only a continuous hold_time_s hold
         # within tolerance counts — not a transient crossing (see HomeSettleTracker / Hermes High).
         self._home_settle = HomeSettleTracker(
-            th.home_ned, th.home_tol_m, th.home_hold_s, max_gap_s=MAX_HOME_SAMPLE_GAP_S
+            th.home_ned, th.home_tol_m, th.home_hold_s, max_gap_s=MAX_PATROL_SAMPLE_GAP_S
         )
-        # Dwell attribution also lives in a pure, Layer-A-tested tracker that counts DWELL *episodes*
-        # in the per-topic-ordered mission_state stream ALONE — it never reads current_waypoint, so a
-        # cross-topic reorder (current_waypoint=i+1 delivered before a pending DWELL(i)) structurally
-        # cannot false-count the next waypoint as dwelled — and credits a waypoint only once its episode
-        # has spanned the configured dwell_s, not on mere DWELL entry (see DwellTracker / Hermes High).
-        self._dwell = DwellTracker(th.dwell_req_s)
+        # Dwell DURATION lives in a pure, Layer-A-tested tracker that counts DWELL *episodes* in the
+        # per-topic-ordered mission_state stream ALONE — it never reads current_waypoint, so a
+        # cross-topic reorder cannot false-count — credits a waypoint only once its episode has spanned
+        # the configured dwell_s (not mere DWELL entry), and restarts that span on an observation gap
+        # wider than max_gap_s so a blackout is never credited as dwell (see DwellTracker / Hermes).
+        self._dwell = DwellTracker(th.dwell_req_s, max_gap_s=MAX_PATROL_SAMPLE_GAP_S)
         pqos = patrol_state_qos()
         self.create_subscription(String, topics.PATROL_MISSION_STATE, self._on_state, pqos)
         self.create_subscription(Int32, topics.PATROL_CURRENT_WAYPOINT, self._on_wp, pqos)
+        # Dwell IDENTITY comes from the atomic /patrol/dwell event (one Int32 per DWELL entry): a
+        # single message carries the dwelled waypoint, so attribution is race-free without correlating
+        # the two non-atomic state topics. Acceptance requires both this and the duration proof above.
+        self.create_subscription(Int32, topics.PATROL_DWELL, self._on_dwell, patrol_event_qos())
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, px4_qos())
         self.create_subscription(
             VehicleLocalPosition, topics.VEHICLE_LOCAL_POSITION, self._on_local_pos, px4_qos()
@@ -195,6 +204,11 @@ class PatrolWatcher(Node):
     def _on_wp(self, msg: Int32) -> None:
         if msg.data >= 0:
             self.waypoints_visited.add(msg.data)  # active targets (underway) — diagnostic only
+
+    def _on_dwell(self, msg: Int32) -> None:
+        # The atomic OQ-7 capture trigger: one event per DWELL entry carrying the dwelled waypoint
+        # index. Race-free identity (a single message, no two-topic correlation), recorded in order.
+        self.dwell_events.append(int(msg.data))
 
     def _on_status(self, msg: VehicleStatus) -> None:
         if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED:
@@ -245,6 +259,15 @@ class PatrolWatcher(Node):
         return self.waypoints_dwelled >= set(range(self._expected))
 
     @property
+    def all_checkpoint_events_seen(self) -> bool:
+        """Every configured waypoint emitted its atomic /patrol/dwell event — race-free identity proof.
+
+        The duration proof (``all_waypoints_dwelled``) is order-inferred from the state stream; this
+        cross-checks that each waypoint *identity* 0..N-1 actually fired its one-shot capture trigger,
+        so acceptance never passes on the state stream alone (Hermes High)."""
+        return set(self.dwell_events) >= set(range(self._expected))
+
+    @property
     def saw_rth(self) -> bool:
         return "RTH" in self.states_seen
 
@@ -276,6 +299,7 @@ class PatrolWatcher(Node):
         return (
             self.was_armed
             and self.all_waypoints_dwelled
+            and self.all_checkpoint_events_seen
             and self.returned_home
             and self.disarmed_after_arm
         )
@@ -291,6 +315,12 @@ def evaluate_nominal(watcher: PatrolWatcher, expected_waypoints: int) -> list[Ch
             f"held configured dwell at waypoint indices {sorted(watcher.waypoints_dwelled)} "
             f"(need 0..{expected_waypoints - 1}); {watcher.dwell_episodes} DWELL episode(s) entered; "
             f"active targets seen {sorted(watcher.waypoints_visited)}",
+        ),
+        Check(
+            "checkpoint_events",
+            watcher.all_checkpoint_events_seen,
+            f"atomic /patrol/dwell event fired for waypoint indices {watcher.dwell_events} "
+            f"(need 0..{expected_waypoints - 1}) — race-free per-checkpoint capture trigger (OQ-7)",
         ),
         Check(
             "returned_home",

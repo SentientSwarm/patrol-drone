@@ -30,6 +30,12 @@ def _feed(t: DwellTracker, states: list[str], *, dt: float = 1.0, start: float =
         t.on_state(s, start + k * dt)
 
 
+def _feed_at(t: DwellTracker, samples: list[tuple[str, float]]) -> None:
+    """Replay an explicitly-timestamped mission_state stream (for sparse / gapped cadences)."""
+    for state, ts in samples:
+        t.on_state(state, ts)
+
+
 def _one_waypoint(required: float = DWELL_S) -> DwellTracker:
     return DwellTracker(dwell_required_s=(required,))
 
@@ -159,3 +165,38 @@ def test_non_dwell_states_do_not_count(state):
     _feed(t, [state, state])
     assert t.episodes == 0
     assert t.dwelled == set()
+
+
+# Hermes Medium: an observation gap wider than max_gap_s between two DWELL samples must NOT be credited
+# as continuous dwell. Two DWELL samples 10 s apart span 10 s of wall clock but prove no continuous
+# hold — the gap restarts the episode clock, so the waypoint is reached (an episode) but not credited.
+def test_observation_gap_is_not_credited_as_dwell():
+    t = _one_waypoint()  # max_gap_s defaults to 1.0
+    _feed_at(t, [("WAYPOINT", 0.0), ("DWELL", 1.0), ("DWELL", 11.0)])  # 10 s silence mid-episode
+    assert t.episodes == 1  # the waypoint WAS reached...
+    assert t.dwelled == set()  # ...but the gap broke the hold; the post-gap span is 0 s
+
+
+# No regression: a sparse-but-dense-enough cadence (every gap <= max_gap_s) still credits normally.
+# Gaps exactly equal to max_gap_s do not break (the break is strict `>`), mirroring HomeSettleTracker.
+def test_gap_at_or_below_threshold_still_credits():
+    t = _one_waypoint()  # max_gap_s 1.0
+    _feed_at(t, [("WAYPOINT", 0.0), ("DWELL", 1.0), ("DWELL", 2.0), ("DWELL", 3.0), ("DWELL", 4.0)])
+    assert t.dwelled == {0}  # gaps all 1.0 == max_gap_s; span 3.0 >= 3.0
+
+
+# A gap mid-episode restarts the clock: a full dwell_s must be observed continuously AFTER the resume,
+# not measured from the original entry across the blackout.
+def test_gap_mid_episode_requires_a_fresh_full_span_after_resume():
+    t = _one_waypoint()
+    _feed_at(t, [("WAYPOINT", 0.0), ("DWELL", 1.0), ("DWELL", 2.0), ("DWELL", 12.0)])  # gap@12
+    assert t.dwelled == set()  # post-gap span 0 s — entry-across-blackout (11 s) is NOT credited
+    _feed_at(t, [("DWELL", 13.0), ("DWELL", 14.0), ("DWELL", 15.0)])  # 3 s held since the restart
+    assert t.dwelled == {0}
+
+
+# The max_gap_s threshold is honored as configured: a wider tolerance keeps a sparse stream as one hold.
+def test_configured_max_gap_s_widens_the_tolerated_silence():
+    t = DwellTracker(dwell_required_s=(DWELL_S,), max_gap_s=5.0)
+    _feed_at(t, [("WAYPOINT", 0.0), ("DWELL", 1.0), ("DWELL", 4.0), ("DWELL", 7.0)])  # gaps 3 <= 5
+    assert t.dwelled == {0}  # never broken; span 6.0 >= 3.0

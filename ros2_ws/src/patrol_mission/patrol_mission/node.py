@@ -37,7 +37,12 @@ from patrol_mission import topics
 from patrol_mission.commands import Px4CommandKind, build_vehicle_commands
 from patrol_mission.config import load_mission_config
 from patrol_mission.frames import Point, to_ned_from_origin
-from patrol_mission.qos import patrol_abort_qos, patrol_state_qos, px4_qos
+from patrol_mission.qos import (
+    patrol_abort_qos,
+    patrol_event_qos,
+    patrol_state_qos,
+    px4_qos,
+)
 from patrol_mission.state_machine import (
     Command,
     MissionState,
@@ -102,6 +107,9 @@ class PatrolMissionNode(Node):
         state_qos = patrol_state_qos()
         self._pub_state = self.create_publisher(String, topics.PATROL_MISSION_STATE, state_qos)
         self._pub_wp = self.create_publisher(Int32, topics.PATROL_CURRENT_WAYPOINT, state_qos)
+        # /patrol/dwell — the atomic OQ-7 capture trigger: one Int32 (the dwelled waypoint index) on
+        # the rising edge into DWELL, so 04 never correlates the two non-atomic state topics above.
+        self._pub_dwell = self.create_publisher(Int32, topics.PATROL_DWELL, patrol_event_qos())
         self.create_subscription(Bool, topics.PATROL_ABORT, self._on_abort, patrol_abort_qos())
 
         # Init to None (not a default-constructed message): a default VehicleStatus reports
@@ -191,18 +199,33 @@ class PatrolMissionNode(Node):
             self._sm.reset_timing()
             self._progression_paused = False
         telem = self._build_telemetry(pos, status, now_s)
+        prev_state = self._state
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)
-        self._publish_patrol(cmd)  # observable mission surface (OQ-3) + 04 capture trigger (OQ-7)
+        self._publish_patrol(cmd)  # observable mission surface (OQ-3)
+        self._publish_dwell_event(prev_state, cmd)  # atomic 04 capture trigger (OQ-7)
         if self._warmup < _OFFBOARD_STREAM_WARMUP_TICKS:
             self._warmup += 1
+
+    def _publish_dwell_event(self, prev_state: MissionState, cmd: Command) -> None:
+        """Emit the atomic /patrol/dwell capture trigger once per checkpoint (OQ-7).
+
+        Fired only on the rising edge into DWELL (prev != DWELL, now == DWELL), so a single Int32
+        carries the dwelled waypoint identity exactly once — not every 10 Hz tick of the hold. A
+        consumer (04) gets an unambiguous per-checkpoint trigger with no two-topic correlation, so a
+        cross-topic reorder of mission_state vs current_waypoint structurally cannot mis-attribute a
+        capture (Hermes High).
+        """
+        if prev_state is not MissionState.DWELL and self._state is MissionState.DWELL:
+            self._pub_dwell.publish(Int32(data=cmd.current_waypoint))
 
     def _publish_patrol(self, cmd: Command) -> None:
         """Publish the /patrol/* mission surface (OQ-3).
 
         mission_state is derived from the just-updated ``self._state`` enum (the single source of
-        truth — the Command does not duplicate it); current_waypoint is the active index. DWELL +
-        that index is 04's once-per-checkpoint capture trigger (OQ-7).
+        truth — the Command does not duplicate it); current_waypoint is the active index. This is the
+        observable/Foxglove surface; 04's once-per-checkpoint capture trigger is the atomic
+        ``/patrol/dwell`` event (OQ-7), not a correlation of these two non-atomic topics.
         """
         state_msg = String()
         state_msg.data = self._state.name

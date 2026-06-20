@@ -351,6 +351,50 @@ def test_patrol_surface_published_from_returned_state(node: Any, node_mod: Modul
     assert _pub(node, node_mod.topics.PATROL_CURRENT_WAYPOINT).published[-1].data == -1
 
 
+# Hermes High (OQ-7): the atomic /patrol/dwell capture trigger fires exactly once per DWELL episode —
+# on the WAYPOINT->DWELL rising edge, carrying the dwelled waypoint index — and NOT on the held ticks
+# that republish DWELL, so a downstream consumer gets one race-free event per checkpoint.
+def test_dwell_event_fires_once_per_episode_through_tick(
+    node: Any, node_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    dwell, wp = node_mod.MissionState.DWELL, node_mod.MissionState.WAYPOINT
+    sp = (0.0, 0.0, -2.0)
+    seq = [
+        (wp, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # approach: no event
+        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # entry: ONE event (idx 1)
+        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # held: no re-emit
+        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # held: no re-emit
+        (wp, node_mod.Command(current_waypoint=2, setpoint_ned=sp)),  # advance: no event
+    ]
+    it = iter(seq)
+    monkeypatch.setattr(node._sm, "tick", lambda _state, _telem: next(it))
+
+    for _ in seq:
+        _feed_valid_fresh(node, node_mod)
+        node._on_tick()
+
+    published = _pub(node, node_mod.topics.PATROL_DWELL).published
+    assert [m.data for m in published] == [1]  # one atomic event, the dwelled index, on entry only
+
+
+# The edge predicate itself: a rising edge into DWELL emits the index once; a prev-already-DWELL tick
+# (the hold) and any non-DWELL current state emit nothing.
+def test_publish_dwell_event_edge_predicate(node: Any, node_mod: ModuleType):
+    pub = _pub(node, node_mod.topics.PATROL_DWELL)
+    cmd = node_mod.Command(current_waypoint=3)
+
+    node._state = node_mod.MissionState.WAYPOINT  # current state not DWELL -> nothing
+    node._publish_dwell_event(node_mod.MissionState.WAYPOINT, cmd)
+    assert pub.published == []
+
+    node._state = node_mod.MissionState.DWELL  # WAYPOINT -> DWELL rising edge -> one event
+    node._publish_dwell_event(node_mod.MissionState.WAYPOINT, cmd)
+    assert [m.data for m in pub.published] == [3]
+
+    node._publish_dwell_event(node_mod.MissionState.DWELL, cmd)  # held (prev already DWELL) -> none
+    assert [m.data for m in pub.published] == [3]
+
+
 # T2.4 (MC-6): an external /patrol/abort True wired into telemetry drives the ABORT transition,
 # observable on /patrol/mission_state.
 def test_external_abort_wired_into_telemetry_drives_abort(node: Any, node_mod: ModuleType):

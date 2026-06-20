@@ -297,8 +297,9 @@ class MissionStateMachine:
         i = self._p.waypoint_index
         if self._elapsed_since_entry(telem, self._cfg.waypoints[i].dwell_s):
             return self._advance_from_dwell(i)
-        # Hold the waypoint while dwelling; DWELL + this index is 04's once-per-checkpoint capture
-        # trigger (OQ-7), surfaced on /patrol/{mission_state,current_waypoint} by the node.
+        # Hold the waypoint while dwelling. The node emits one atomic /patrol/dwell event (this index)
+        # on the rising edge into DWELL — that single message is 04's once-per-checkpoint capture
+        # trigger (OQ-7), not a correlation of the separate /patrol/{mission_state,current_waypoint}.
         return MissionState.DWELL, Command(setpoint_ned=self._wps[i], current_waypoint=i)
 
     def _advance_from_dwell(self, i: int) -> tuple[MissionState, Command]:

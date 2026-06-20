@@ -30,6 +30,14 @@ real dwell only once it has spanned its configured ``dwell_s``, measured from th
 sample to the sample that ends the episode (the node republishes ``DWELL`` every 10 Hz tick for the
 whole hold, then publishes the next state on the tick the hold completes — so the entry→exit span is
 ``>= dwell_s``). A transient one-tick ``DWELL`` spans ~0 s and is correctly rejected.
+
+Why **observation gaps** must not count (Hermes Medium). The span is measured in wall clock, so two
+sparse ``DWELL`` samples delivered far apart (a starved executor, a telemetry blackout) could
+otherwise credit a hold that was never continuously observed — making the oracle *less* conservative
+than the node, which pauses progression and ``reset_timing()``s the same window on stale telemetry. A
+gap wider than ``max_gap_s`` between consecutive ``DWELL`` samples therefore restarts the episode
+clock (mirrors :class:`home_settle_tracker.HomeSettleTracker`), so each credited dwell is backed by a
+continuously observed span.
 """
 
 from __future__ import annotations
@@ -48,26 +56,43 @@ class DwellTracker:
     """
 
     dwell_required_s: tuple[float, ...]  # index-aligned required dwell per waypoint, from the route
+    max_gap_s: float = 1.0  # a gap between DWELL samples wider than this breaks the continuous hold
     _episode_index: int = -1  # index of the current/last DWELL episode (-1 before any)
     _in_dwell: bool = False
-    _entered_s: float = 0.0  # timestamp of the rising edge into the current episode
+    _entered_s: float = 0.0  # timestamp of the rising edge (or post-gap restart) of the episode
+    _last_sample_s: float | None = None  # timestamp of the previous DWELL sample in this episode
     _dwelled: set[int] = field(default_factory=set)  # indices whose episode met its required dwell
 
     def on_state(self, state: str, now_s: float) -> None:
         """Fold one timestamped ``mission_state`` sample in.
 
         A rising edge into ``DWELL`` opens a new episode for the next waypoint index; while in (and on
-        leaving) the episode, credit the waypoint once its span has reached the configured dwell.
+        leaving) the episode, credit the waypoint once its span has reached the configured dwell. An
+        observation gap wider than ``max_gap_s`` between two ``DWELL`` samples breaks the continuous
+        hold and restarts the episode clock, so a starved/blackout span cannot be credited as dwell
+        time — keeping the oracle at least as conservative as the node, which pauses progression and
+        ``reset_timing()``s the same window on stale telemetry (Hermes Medium).
         """
-        if state == _DWELL:
-            if not self._in_dwell:  # rising edge: a new episode for waypoint _episode_index + 1
-                self._episode_index += 1
-                self._entered_s = now_s
-                self._in_dwell = True
-            self._credit_if_held(now_s)
-        elif self._in_dwell:  # falling edge: finalize the episode with the exit-sample time
-            self._credit_if_held(now_s)
-            self._in_dwell = False
+        if state != _DWELL:
+            if self._in_dwell:  # falling edge: finalize the episode with the exit-sample time
+                self._credit_if_held(now_s)
+                self._in_dwell = False
+            return
+        gap_broke = (
+            self._in_dwell
+            and self._last_sample_s is not None
+            and (now_s - self._last_sample_s) > self.max_gap_s
+        )
+        self._last_sample_s = now_s
+        if not self._in_dwell:  # rising edge: a new episode for waypoint _episode_index + 1
+            self._episode_index += 1
+            self._entered_s = now_s
+            self._in_dwell = True
+        elif (
+            gap_broke
+        ):  # mid-episode observation gap: the continuous hold is broken, restart the clock
+            self._entered_s = now_s
+        self._credit_if_held(now_s)
 
     def _credit_if_held(self, now_s: float) -> None:
         """Credit the current episode's waypoint iff it has now spanned its configured ``dwell_s``."""
