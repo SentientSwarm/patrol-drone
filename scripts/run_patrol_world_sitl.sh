@@ -40,7 +40,7 @@ ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 PX4_DIR="${PX4_DIR:-${HOME}/PX4-Autopilot}"
 QGC_APPIMAGE="${QGC_APPIMAGE:-${HOME}/Apps/QGroundControl-x86_64.AppImage}"
 WS_SETUP="${REPO_ROOT}/ros2_ws/install/setup.bash"
-LOG_DIR="${PATROL_UAT_LOG_DIR:-/tmp/patrol-world-uat}"
+LOG_DIR="${PATROL_UAT_LOG_DIR:-}"  # empty -> a fresh mktemp dir, set in main()
 
 WORLD_NAME="patrol_world"
 WORLD_SDF="${REPO_ROOT}/sim/worlds/patrol_world.sdf"
@@ -78,7 +78,7 @@ Usage: scripts/run_patrol_world_sitl.sh [options]
 
 Brings up the M5 patrol stage (patrol_world + gz_x500_patrol camera + image bridge), verifies the
 camera publishes, optionally flies the M4 patrol, then tears down. Logs in $PATROL_UAT_LOG_DIR
-(default /tmp/patrol-world-uat).
+(default: a fresh mktemp dir under $TMPDIR; set $PATROL_UAT_LOG_DIR for a stable path).
 
   --no-gui        Headless: run Gazebo with no GUI (HEADLESS-style; the camera still renders offscreen).
   --no-patrol     Bring up + verify the camera only; skip flying the M4 patrol.
@@ -124,7 +124,7 @@ prepare_agent_env() {
     local agent_dir
     agent_dir="$(dirname "${XRCE_AGENT_BIN}")"
     export PATH="${agent_dir}:${PATH}"
-    [[ -n "${XRCE_AGENT_LIBDIR}" ]] && export LD_LIBRARY_PATH="${XRCE_AGENT_LIBDIR}:${LD_LIBRARY_PATH:-}"
+    [[ -n "${XRCE_AGENT_LIBDIR}" ]] && export LD_LIBRARY_PATH="${XRCE_AGENT_LIBDIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
   fi
 }
 
@@ -142,7 +142,7 @@ source_ros() {
 # PX4's server config so the camera Sensors system loads. GZ_SIM_RESOURCE_PATH is APPENDED to by PX4's
 # gz_env.sh, so a value set here survives.
 export_gz_env() {
-  export GZ_SIM_RESOURCE_PATH="${REPO_ROOT}/sim/models:${REPO_ROOT}/sim/worlds:${REPO_ROOT}/sim/px4_sitl_overrides:${PX4_DIR}/Tools/simulation/gz/models:${GZ_SIM_RESOURCE_PATH:-}"
+  export GZ_SIM_RESOURCE_PATH="${REPO_ROOT}/sim/models:${REPO_ROOT}/sim/worlds:${REPO_ROOT}/sim/px4_sitl_overrides:${PX4_DIR}/Tools/simulation/gz/models${GZ_SIM_RESOURCE_PATH:+:${GZ_SIM_RESOURCE_PATH}}"
   [[ -f "${GZ_SERVER_CONFIG}" ]] && export GZ_SIM_SERVER_CONFIG_PATH="${GZ_SERVER_CONFIG}"
 }
 
@@ -276,7 +276,11 @@ report_keep_up() {
 
 main() {
   parse_args "$@"
-  mkdir -p "${LOG_DIR}"
+  if [[ -n "${LOG_DIR}" ]]; then
+    mkdir -p "${LOG_DIR}"
+  else
+    LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/patrol-world-uat.XXXXXX")"
+  fi
   export DOCTOR_PATROL_WORLD=1
   [[ ${WITH_GUI} -eq 0 ]] && export DOCTOR_HEADLESS=1
   prepare_agent_env

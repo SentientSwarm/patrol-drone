@@ -79,6 +79,7 @@ TAG_THICKNESS_M = 0.02  # thin plate
 TAG_FAMILY = "tag36h11"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MODELS_DIR = REPO_ROOT / "sim" / "models"
 
 
 def _model_name(tag_id: int) -> str:
@@ -92,7 +93,7 @@ def _texture_name(tag_id: int) -> str:
 
 
 def model_dir(tag_id: int) -> Path:
-    return REPO_ROOT / "sim" / "models" / _model_name(tag_id)
+    return MODELS_DIR / _model_name(tag_id)
 
 
 # --- texture (PNG) -------------------------------------------------------------------------------
@@ -113,8 +114,26 @@ def _grayscale_rows(grid: tuple[str, ...], cell_px: int) -> bytes:
     return bytes(rows)
 
 
+def _validate_grid(grid: tuple[str, ...]) -> None:
+    """Fail loud on a grid that would render a deterministic-but-wrong texture.
+
+    Every char except '1' maps to a black pixel and `side` assumes a square grid, so a typo ('O'/'2'/
+    a stray space) or a ragged/non-square row silently corrupts the marker. Require: square (each row
+    as long as the grid is tall) and binary ('0'/'1' only)."""
+    height = len(grid)
+    for i, row in enumerate(grid):
+        if len(row) != height:
+            raise ValueError(
+                f"tag grid row {i} has length {len(row)}, expected {height} (grid must be square)"
+            )
+        non_binary = sorted(set(row) - {"0", "1"})
+        if non_binary:
+            raise ValueError(f"tag grid row {i} has non-binary cells {non_binary!r}: {row!r}")
+
+
 def render_png(grid: tuple[str, ...], cell_px: int = CELL_PX) -> bytes:
     """Encode a tag grid as an 8-bit grayscale PNG (colour type 0). Deterministic."""
+    _validate_grid(grid)
     side = len(grid) * cell_px
     ihdr = struct.pack(">IIBBBBB", side, side, 8, 0, 0, 0, 0)
     idat = zlib.compress(_grayscale_rows(grid, cell_px), 9)
@@ -217,6 +236,19 @@ def stale_model_files() -> list[str]:
             if not path.exists() or path.read_bytes() != data:
                 drift.append(str(path.relative_to(REPO_ROOT)))
     return drift
+
+
+def orphan_model_dirs() -> list[str]:
+    """Committed apriltag_36h11_* dirs with no entry in CANONICAL_TAG36H11, as repo-relative paths.
+
+    A checkpoint/tag removal that deletes the YAML entry + grid but leaves the generated model dir on
+    disk would otherwise pass the drift gate silently — this is the inverse of stale_model_files()
+    (which only walks the canonical set forward)."""
+    canonical = {_model_name(tag_id) for tag_id in CANONICAL_TAG36H11}
+    orphans = [
+        p for p in MODELS_DIR.glob("apriltag_36h11_*") if p.is_dir() and p.name not in canonical
+    ]
+    return sorted(str(p.relative_to(REPO_ROOT)) for p in orphans)
 
 
 def main(argv: list[str] | None = None) -> int:

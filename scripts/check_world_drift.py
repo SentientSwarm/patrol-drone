@@ -35,7 +35,14 @@ def _world_problems() -> list[str]:
 
 
 def _model_problems() -> list[str]:
-    return [f"stale generated model file: {rel}" for rel in gen_apriltag_models.stale_model_files()]
+    stale = [
+        f"stale generated model file: {rel}" for rel in gen_apriltag_models.stale_model_files()
+    ]
+    orphans = [
+        f"orphan apriltag model dir (remove it; no canonical tag): {rel}"
+        for rel in gen_apriltag_models.orphan_model_dirs()
+    ]
+    return stale + orphans
 
 
 def run_checks() -> list[str]:

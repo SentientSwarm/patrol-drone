@@ -20,6 +20,22 @@ def test_committed_models_match_generator():
     assert gm.stale_model_files() == [], "run: python3 sim/tools/gen_apriltag_models.py"
 
 
+def test_orphan_model_dirs_reports_injected_dir(tmp_path, monkeypatch):
+    models = tmp_path / "sim" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(gm, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(gm, "MODELS_DIR", models)
+    (models / "apriltag_36h11_0").mkdir()  # canonical id -> not an orphan
+    (models / "apriltag_36h11_99").mkdir()  # orphan -> reported
+    assert gm.orphan_model_dirs() == ["sim/models/apriltag_36h11_99"]
+
+
+def test_no_orphan_model_dirs_in_committed_tree():
+    # Real MODELS_DIR / REPO_ROOT — locks the current tree clean (mirrors
+    # test_committed_models_match_generator). No monkeypatch, so relative_to(REPO_ROOT) resolves.
+    assert gm.orphan_model_dirs() == []
+
+
 @pytest.mark.parametrize("tag_id", sorted(gm.CANONICAL_TAG36H11))
 def test_model_dir_naming_is_the_contract(tag_id):
     # The dir / model:// name is apriltag_36h11_<id> (the composer emits model://apriltag_36h11_<id>).
@@ -44,6 +60,19 @@ def test_render_png_is_valid_square_grayscale(tag_id):
 def test_render_png_is_deterministic():
     grid = gm.CANONICAL_TAG36H11[0]
     assert gm.render_png(grid) == gm.render_png(grid)
+
+
+@pytest.mark.parametrize(
+    "bad_grid",
+    [
+        ("11", "1O"),  # non-binary cell ('O' typo)
+        ("111", "11"),  # ragged row
+        ("11", "11", "11"),  # non-square (3x2)
+    ],
+)
+def test_render_png_rejects_malformed_grid(bad_grid):
+    with pytest.raises(ValueError, match="tag grid row"):
+        gm.render_png(bad_grid)
 
 
 def test_canonical_grids_are_10x10_with_quiet_zone():
