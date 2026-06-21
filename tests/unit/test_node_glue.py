@@ -458,9 +458,7 @@ def _advance_clock_s(node: Any, seconds: float) -> None:
 # battery window while pos/status stay fresh; the stale low reading must NOT drive the abort.
 def test_stale_battery_sample_reports_unknown_not_live_evidence(node: Any, node_mod: ModuleType):
     _feed_battery(node, node_mod, remaining=0.1)  # below the 0.20 threshold — would abort if live
-    _advance_clock_s(
-        node, node_mod._BATTERY_TIMEOUT_S + 1.0
-    )  # age the battery past its window
+    _advance_clock_s(node, node_mod._BATTERY_TIMEOUT_S + 1.0)  # age the battery past its window
     _feed_valid_fresh(
         node, node_mod
     )  # pos/status fresh at the advanced time -> tick reaches the SM
