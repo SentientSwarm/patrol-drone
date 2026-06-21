@@ -36,19 +36,24 @@ class Px4Command:
     param2: float = 0.0
 
 
-def build_vehicle_commands(cmd: Command, warmup_elapsed: bool) -> list[Px4Command]:
+def build_vehicle_commands(
+    cmd: Command, warmup_elapsed: bool, offboard_requested: bool
+) -> list[Px4Command]:
     """The ordered VehicleCommands for a decision-layer ``Command`` this tick.
 
-    Mode/arm are held until the offboard setpoint stream is established
-    (``warmup_elapsed``, A-2) and offboard is requested **before** arm — PX4 rejects
-    arming outside offboard (the proven px4_ros_com order). ``land`` is intentionally
-    not warmup-gated: landing must be commandable regardless of the offboard warmup.
+    Mode/arm are held until the offboard setpoint stream is established (``warmup_elapsed``, A-2).
+    Arm is additionally held until offboard has been requested on a **prior** tick
+    (``offboard_requested``) — so the very first ``ARM`` never rides in the same tick as the first
+    ``DO_SET_MODE``. On a BEST_EFFORT/depth-1 publisher a same-tick arm can reach PX4 before the mode
+    switch settles and be rejected (the proven px4_ros_com pattern separates them across iterations);
+    the one-tick gap removes that race and the nightly-SITL flakiness it caused (M3 review). ``land``
+    is intentionally never gated: landing must be commandable regardless of the offboard warmup.
     """
     out: list[Px4Command] = []
     if warmup_elapsed:
         if cmd.set_offboard:
             out.append(Px4Command(Px4CommandKind.SET_OFFBOARD, param1=1.0, param2=6.0))
-        if cmd.arm:
+        if cmd.arm and offboard_requested:
             out.append(Px4Command(Px4CommandKind.ARM, param1=1.0))
     if cmd.land:
         out.append(Px4Command(Px4CommandKind.LAND))

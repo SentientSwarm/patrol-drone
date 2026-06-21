@@ -15,7 +15,7 @@ from patrol_mission import topics
 
 # The contract split by version surface: outputs are MESSAGE_VERSION>=1 (suffixed); the offboard
 # input trio is unversioned / v0 (bare). See the module docstring for why the asymmetry matters.
-_VERSIONED_OUT = (topics.VEHICLE_LOCAL_POSITION, topics.VEHICLE_STATUS)
+_VERSIONED_OUT = (topics.VEHICLE_LOCAL_POSITION, topics.VEHICLE_STATUS, topics.BATTERY_STATUS)
 _UNVERSIONED_IN = (topics.OFFBOARD_CONTROL_MODE, topics.TRAJECTORY_SETPOINT, topics.VEHICLE_COMMAND)
 
 
@@ -38,18 +38,64 @@ def test_fmu_topics_are_on_the_fmu_surface():
         assert name.startswith(("/fmu/in/", "/fmu/out/")), f"{name!r} is not a /fmu/* topic"
 
 
-# Pin the exact contract (out: position+status, _v1; in: the offboard-control trio, bare).
+# Pin the exact contract (out: position+status+battery, _v1; in: the offboard-control trio, bare).
 # Catches an accidental rename as well as a wrong-surface suffix.
 def test_topic_names_match_the_platform_contract():
     assert topics.VEHICLE_LOCAL_POSITION == "/fmu/out/vehicle_local_position_v1"
     assert topics.VEHICLE_STATUS == "/fmu/out/vehicle_status_v1"
+    assert topics.BATTERY_STATUS == "/fmu/out/battery_status_v1"
     assert topics.OFFBOARD_CONTROL_MODE == "/fmu/in/offboard_control_mode"
     assert topics.TRAJECTORY_SETPOINT == "/fmu/in/trajectory_setpoint"
     assert topics.VEHICLE_COMMAND == "/fmu/in/vehicle_command"
 
 
-# The aggregate tuple is exactly the five distinct names (no dupes, none missed).
+# The /patrol/* surface (M4, OQ-3): std_msgs orchestration topics, distinct from /fmu/*.
+def test_patrol_topics_are_on_the_patrol_surface():
+    for name in topics.PATROL_TOPICS:
+        assert name.startswith("/patrol/"), f"{name!r} is not a /patrol/* topic"
+
+
+def test_patrol_topic_names_match_contract():
+    assert topics.PATROL_MISSION_STATE == "/patrol/mission_state"
+    assert topics.PATROL_CURRENT_WAYPOINT == "/patrol/current_waypoint"
+    assert topics.PATROL_DWELL == "/patrol/dwell"
+    assert topics.PATROL_ABORT == "/patrol/abort"
+
+
+# The aggregate tuple is exactly the four distinct /patrol/* names (no dupes, none missed) — the
+# atomic /patrol/dwell capture trigger joins the orchestration surface (Hermes High).
+def test_patrol_topics_aggregate_is_complete_and_unique():
+    expected = {
+        topics.PATROL_MISSION_STATE,
+        topics.PATROL_CURRENT_WAYPOINT,
+        topics.PATROL_DWELL,
+        topics.PATROL_ABORT,
+    }
+    assert set(topics.PATROL_TOPICS) == expected
+    assert len(topics.PATROL_TOPICS) == len(expected)
+
+
+# The aggregate tuple is exactly the six distinct names (no dupes, none missed).
 def test_fmu_topics_aggregate_is_complete_and_unique():
     expected = {*_VERSIONED_OUT, *_UNVERSIONED_IN}
     assert set(topics.FMU_TOPICS) == expected
     assert len(topics.FMU_TOPICS) == len(expected)
+
+
+# named_topic backs `python -m patrol_mission.topics <NAME>` (Hermes Low): shell/CI resolve the
+# canonical, version-sensitive name from this one source instead of re-hardcoding the _v1 literal.
+def test_named_topic_resolves_known_constants():
+    assert topics.named_topic("VEHICLE_STATUS") == topics.VEHICLE_STATUS
+    assert topics.named_topic("PATROL_ABORT") == topics.PATROL_ABORT
+
+
+# An unknown name returns None (the CLI turns that into a non-zero exit + usage on stderr).
+def test_named_topic_unknown_returns_none():
+    assert topics.named_topic("NOT_A_TOPIC") is None
+    assert topics.named_topic("") is None
+
+
+# The resolver map is exactly the /fmu/* and /patrol/* surfaces — auto-derived, so a newly added
+# topic constant is reachable from the CLI with no second list to keep in sync.
+def test_named_topic_map_covers_every_surface():
+    assert set(topics._NAMED_TOPICS.values()) == {*topics.FMU_TOPICS, *topics.PATROL_TOPICS}

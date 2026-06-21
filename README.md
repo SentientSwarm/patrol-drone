@@ -104,6 +104,36 @@ pub/sub) and drives `tick()`; the route/params come from the checked-in
 source). The full arm→takeoff→hover→land run against live SITL is exercised by the nightly SITL
 job (never a per-PR gate).
 
+## Quickstart — M4 bring-up (multi-waypoint patrol + safety)
+
+**M4** thickens the skeleton into a real patrol: visit 4+ waypoints in order with a dwell at each,
+return to home, and land — plus the abort safety floor and the downstream `/patrol/*` contracts:
+
+```bash
+# with the SITL bridge live, run from the repo root in a sourced shell. The patrol's checkpoint_id
+# waypoints resolve against 03's checkpoints file, so pass its absolute path — there is no
+# CWD-relative default (OQ-2); the UAT runner below does this for you.
+ros2 launch patrol_bringup mission_patrol.launch.py \
+  checkpoints_yaml:="$(pwd)/sim/config/checkpoints.yaml"   # arm → takeoff → patrol → dwell → RTH → land
+```
+
+The route is the checked-in [`patrol_mission.yaml`](ros2_ws/src/patrol_bringup/config/patrol_mission.yaml),
+whose `checkpoint_id` waypoints resolve against [`sim/config/checkpoints.yaml`](sim/config/checkpoints.yaml)
+(an interim 02 stand-in until 03 lands its own). The mission's observable surface is `/patrol/*`
+(`mission_state`, `current_waypoint`, `abort` — plain `std_msgs`, so 05 records and Foxglove renders
+them with no custom plugin). An external abort is the safety floor:
+
+```bash
+# /patrol/abort is reliable + volatile; `ros2 topic pub -1` waits for the node's subscription before
+# publishing, so a plain default publish is delivered (the abort sticks through RTH in the state
+# machine, not via topic durability):
+ros2 topic pub -1 /patrol/abort std_msgs/Bool '{data: true}'   # mid-patrol → observable ABORT → RTH
+```
+
+Abort/waypoint/RTH transitions are all unit-tested (including the scaffolded manual-takeover/timeout
+guards); the patrol + mid-patrol-abort run against live SITL is exercised by the nightly job. See
+[`docs/uat/m4.md`](docs/uat/m4.md) for the one-command UAT runbook (`run_sitl_mission.sh --patrol`).
+
 ## Stack at a glance
 
 | Layer | Choice |

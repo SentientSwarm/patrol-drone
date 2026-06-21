@@ -1,12 +1,12 @@
 # mission_basic.yaml (02-owned) — minimal basic-mission params (MC-1, design Appendix C.2).
-# No waypoints: arm -> takeoff to takeoff_alt_m -> hover hover_time_s -> land (in place).
-# M3 lands where it hovers (HOVER -> LANDING); an explicit RTH-to-home step is M4. Home and the
-# takeoff point share xy here, so M3's land-in-place already touches down at home xy regardless.
+# No waypoints: arm -> takeoff to takeoff_alt_m -> hover hover_time_s -> RTH -> land.
+# M4 generalized HOVER so a no-waypoint mission routes HOVER -> RTH (design §4.2.3 table): the basic
+# mission now returns to the home waypoint and lands there, rather than landing in place. Home sits
+# at 2 m ENU (matching design Appendix C.2) so RTH settles at 2 m AGL and PX4's land controller
+# handles the final descent — cleaner than descending to the ground plane under offboard.
 takeoff_alt_m: 5.0
 hover_time_s: 10.0
 completion: { tolerance_m: 0.5, hold_time_s: 2.0 }   # OQ-4 defaults (overridable)
-abort: { low_battery_threshold: 0.20 }               # OQ-6 (battery_status.remaining fraction); parsed now, enforced in M4
-# home at the EKF-origin ground plane (z: 0.0); takeoff_alt_m is AGL above home. The basic-mission
-# takeoff target is home x/y at -takeoff_alt_m, so home z is not used for takeoff here (M4 RTH may).
-home: { position: { x: 0.0, y: 0.0, z: 0.0 }, frame: "enu" }
+abort: { low_battery_threshold: 0.20 }               # OQ-6 (battery_status.remaining fraction)
+home: { position: { x: 0.0, y: 0.0, z: 2.0 }, frame: "enu" }
 waypoints: []

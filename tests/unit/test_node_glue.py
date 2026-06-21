@@ -120,6 +120,7 @@ def _stub_module(name: str, **attrs: Any) -> ModuleType:
 def _px4_msg_module() -> ModuleType:
     return _stub_module(
         "px4_msgs.msg",
+        BatteryStatus=_Msg,
         OffboardControlMode=_Msg,
         TrajectorySetpoint=_Msg,
         VehicleCommand=_VehicleCommand,
@@ -128,8 +129,14 @@ def _px4_msg_module() -> ModuleType:
     )
 
 
+def _std_msg_module() -> ModuleType:
+    # std_msgs/{Bool,Int32,String} — the node's /patrol/* surface. Permissive _Msg: `.data` is set
+    # at publish time and read back off the recording publisher in the assertions.
+    return _stub_module("std_msgs.msg", Bool=_Msg, Int32=_Msg, String=_Msg)
+
+
 def _qos_module() -> ModuleType:
-    enum = SimpleNamespace(BEST_EFFORT=1, TRANSIENT_LOCAL=1, KEEP_LAST=1)
+    enum = SimpleNamespace(BEST_EFFORT=1, RELIABLE=2, TRANSIENT_LOCAL=1, VOLATILE=2, KEEP_LAST=1)
     return _stub_module(
         "rclpy.qos",
         QoSProfile=_QoSProfile,
@@ -148,6 +155,8 @@ def node_mod(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
         "rclpy.qos": _qos_module(),
         "px4_msgs": _stub_module("px4_msgs"),
         "px4_msgs.msg": _px4_msg_module(),
+        "std_msgs": _stub_module("std_msgs"),
+        "std_msgs.msg": _std_msg_module(),
     }
     for name, mod in stubs.items():
         monkeypatch.setitem(sys.modules, name, mod)
@@ -183,6 +192,16 @@ def _status(node_mod: ModuleType, *, armed: bool = False, offboard: bool = False
 def _feed_valid_fresh(node: Any, node_mod: ModuleType, **status_kw: Any) -> None:
     node._on_pos(_valid_pos(node_mod))
     node._on_status(_status(node_mod, **status_kw))
+
+
+def _feed_battery(
+    node: Any, node_mod: ModuleType, *, remaining: float, connected: bool = True
+) -> None:
+    node._on_battery(node_mod.BatteryStatus(remaining=remaining, connected=connected))
+
+
+def _feed_abort(node: Any, *, value: bool) -> None:
+    node._on_abort(_Msg(data=value))
 
 
 def _pub(node: Any, topic: str) -> _FakePublisher:
@@ -285,21 +304,27 @@ def test_valid_fresh_tick_dispatches_and_advances_warmup(node: Any, node_mod: Mo
     assert _pub(node, node_mod.topics.VEHICLE_COMMAND).published == []
 
 
-def test_issue_maps_kinds_to_px4_ids_offboard_before_arm(node: Any, node_mod: ModuleType):
-    # Past the warmup window and in ARMING (not yet armed): the node must issue SET_OFFBOARD then ARM.
+def test_issue_defers_arm_one_tick_after_offboard(node: Any, node_mod: ModuleType):
+    # Past warmup, in ARMING (not yet armed): the FIRST tick issues SET_OFFBOARD ONLY — the arm is
+    # held one tick so it can't race the mode switch (M3 review #2). The SECOND tick (offboard now
+    # requested) issues SET_OFFBOARD then ARM, with the PX4 params.
     node._warmup = node_mod._OFFBOARD_STREAM_WARMUP_TICKS
     node._state = node_mod.MissionState.ARMING
     _feed_valid_fresh(node, node_mod, armed=False, offboard=False)
 
-    node._on_tick()
+    node._on_tick()  # tick 1: offboard only, arm deferred
+    cmds = _pub(node, node_mod.topics.VEHICLE_COMMAND).published
+    assert [c.command for c in cmds] == [node_mod.VehicleCommand.VEHICLE_CMD_DO_SET_MODE]
+    assert (cmds[0].param1, cmds[0].param2) == (1.0, 6.0)  # custom-offboard mode params
 
+    node._on_tick()  # tick 2: offboard (re-requested) then arm
     cmds = _pub(node, node_mod.topics.VEHICLE_COMMAND).published
     assert [c.command for c in cmds] == [
         node_mod.VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
+        node_mod.VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
         node_mod.VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
     ]
-    assert (cmds[0].param1, cmds[0].param2) == (1.0, 6.0)  # custom-offboard mode params
-    assert cmds[1].param1 == 1.0  # arm
+    assert cmds[-1].param1 == 1.0  # arm
 
 
 def test_issue_maps_land_ungated_by_warmup(node: Any, node_mod: ModuleType):
@@ -313,3 +338,143 @@ def test_issue_maps_land_ungated_by_warmup(node: Any, node_mod: ModuleType):
     assert node._warmup < node_mod._OFFBOARD_STREAM_WARMUP_TICKS  # still warming up, yet...
     cmds = _pub(node, node_mod.topics.VEHICLE_COMMAND).published
     assert [c.command for c in cmds] == [node_mod.VehicleCommand.VEHICLE_CMD_NAV_LAND]
+
+
+# T2.4 (OQ-3): the node publishes the observable /patrol/* surface every progressing tick —
+# mission_state derived from the returned enum name (one source) + the active waypoint index.
+def test_patrol_surface_published_from_returned_state(node: Any, node_mod: ModuleType):
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()  # IDLE -> ARMING
+
+    assert _pub(node, node_mod.topics.PATROL_MISSION_STATE).published[-1].data == "ARMING"
+    assert _pub(node, node_mod.topics.PATROL_CURRENT_WAYPOINT).published[-1].data == -1
+
+
+# Hermes High (OQ-7): the atomic /patrol/dwell capture trigger fires exactly once per DWELL episode —
+# on the WAYPOINT->DWELL rising edge, carrying the dwelled waypoint index — and NOT on the held ticks
+# that republish DWELL, so a downstream consumer gets one race-free event per checkpoint.
+def test_dwell_event_fires_once_per_episode_through_tick(
+    node: Any, node_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    dwell, wp = node_mod.MissionState.DWELL, node_mod.MissionState.WAYPOINT
+    sp = (0.0, 0.0, -2.0)
+    seq = [
+        (wp, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # approach: no event
+        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # entry: ONE event (idx 1)
+        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # held: no re-emit
+        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # held: no re-emit
+        (wp, node_mod.Command(current_waypoint=2, setpoint_ned=sp)),  # advance: no event
+    ]
+    it = iter(seq)
+    monkeypatch.setattr(node._sm, "tick", lambda _state, _telem: next(it))
+
+    for _ in seq:
+        _feed_valid_fresh(node, node_mod)
+        node._on_tick()
+
+    published = _pub(node, node_mod.topics.PATROL_DWELL).published
+    assert [m.data for m in published] == [1]  # one atomic event, the dwelled index, on entry only
+
+
+# The edge predicate itself: a rising edge into DWELL emits the index once; a prev-already-DWELL tick
+# (the hold) and any non-DWELL current state emit nothing.
+def test_publish_dwell_event_edge_predicate(node: Any, node_mod: ModuleType):
+    pub = _pub(node, node_mod.topics.PATROL_DWELL)
+    cmd = node_mod.Command(current_waypoint=3)
+
+    node._state = node_mod.MissionState.WAYPOINT  # current state not DWELL -> nothing
+    node._publish_dwell_event(node_mod.MissionState.WAYPOINT, cmd)
+    assert pub.published == []
+
+    node._state = node_mod.MissionState.DWELL  # WAYPOINT -> DWELL rising edge -> one event
+    node._publish_dwell_event(node_mod.MissionState.WAYPOINT, cmd)
+    assert [m.data for m in pub.published] == [3]
+
+    node._publish_dwell_event(node_mod.MissionState.DWELL, cmd)  # held (prev already DWELL) -> none
+    assert [m.data for m in pub.published] == [3]
+
+
+# T2.4 (MC-6): an external /patrol/abort True wired into telemetry drives the ABORT transition,
+# observable on /patrol/mission_state.
+def test_external_abort_wired_into_telemetry_drives_abort(node: Any, node_mod: ModuleType):
+    _feed_abort(node, value=True)
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ABORT
+    assert _pub(node, node_mod.topics.PATROL_MISSION_STATE).published[-1].data == "ABORT"
+
+
+# T2.4 (MC-6/AC-7): a BatteryStatus below the configured threshold drives the low-battery abort.
+def test_low_battery_telemetry_drives_abort(node: Any, node_mod: ModuleType):
+    _feed_battery(node, node_mod, remaining=0.1)  # mission_basic.yaml threshold is 0.20
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ABORT
+
+
+# T2.4: an ABSENT BatteryStatus must not fabricate a low-battery abort (defaults to full) — the
+# mission progresses normally (IDLE -> ARMING) when only pos+status are present.
+def test_absent_battery_does_not_abort(node: Any, node_mod: ModuleType):
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ARMING
+
+
+# Hermes High: PX4 reports remaining=-1 (and connected=False) when capacity is unknown — not yet
+# estimated after boot, or the battery disconnected. The node must not feed that as a near-empty
+# battery and false-abort; the mission progresses normally (IDLE -> ARMING).
+@pytest.mark.parametrize(
+    ("remaining", "connected"),
+    [(-1.0, True), (0.5, False)],
+    ids=["invalid_sentinel", "disconnected"],
+)
+def test_unknown_battery_reading_does_not_abort(
+    node: Any, node_mod: ModuleType, remaining: float, connected: bool
+):
+    _feed_battery(node, node_mod, remaining=remaining, connected=connected)
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ARMING
+
+
+def _advance_clock_s(node: Any, seconds: float) -> None:
+    """Move the fake node clock forward by ``seconds`` (so cached samples age)."""
+    node.clock.ns += int(seconds * 1e9)
+
+
+# Hermes Medium (PR #8 R11): a low battery sample that goes STALE must stop counting as live safety
+# evidence. A high-then-silent battery (the stream stalls after a reading) must not keep the cached
+# value forever — once it ages past _BATTERY_TIMEOUT_S the node forwards "unknown" (-1.0), which the
+# low-battery guard ignores. Here a genuinely-low 0.1 sample is fed, then the clock advances past the
+# battery window while pos/status stay fresh; the stale low reading must NOT drive the abort.
+def test_stale_battery_sample_reports_unknown_not_live_evidence(node: Any, node_mod: ModuleType):
+    _feed_battery(node, node_mod, remaining=0.1)  # below the 0.20 threshold — would abort if live
+    _advance_clock_s(node, node_mod._BATTERY_TIMEOUT_S + 1.0)  # age the battery past its window
+    _feed_valid_fresh(
+        node, node_mod
+    )  # pos/status fresh at the advanced time -> tick reaches the SM
+
+    node._on_tick()
+
+    assert node._fresh_battery(node._clock_s()) == -1.0  # forwarded as unknown, not the cached 0.1
+    assert node._state is node_mod.MissionState.ARMING  # so the stale low reading does NOT abort
+
+
+# No regression: a low battery still within _BATTERY_TIMEOUT_S is live evidence and still aborts.
+def test_fresh_low_battery_within_window_still_aborts(node: Any, node_mod: ModuleType):
+    _feed_battery(node, node_mod, remaining=0.1)
+    _advance_clock_s(node, node_mod._BATTERY_TIMEOUT_S - 1.0)  # still inside the window
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ABORT

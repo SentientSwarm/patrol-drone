@@ -253,7 +253,7 @@ This discipline keeps the design honest and the PRD lean.
 - **Consumes from 01-platform:** `/fmu/out/*` (notably `vehicle_local_position`, battery state), `/fmu/in/*` offboard setpoint/command topics, `px4_msgs`, ROS 2 Jazzy + uXRCE-DDS agent + container build.
 - **Consumes from 03-sim-environment:** checkpoint world + checkpoint positions (the shared checkpoint mapping) + RGB camera topic; the mission flies to those positions.
 - **Consumes from 05-logging-replay:** the bag-recorder launch include/wrapper invoked at mission start from `mission_patrol.launch.py`.
-- **Provides to 03/04/05:** mission/route YAML schema, `mission_*.launch.py` entry-points, `/patrol/{mission_state,current_waypoint,abort}`, the checkpoint-arrival capture-trigger semantic, and the `MissionStateMachine` contract.
+- **Provides to 03/04/05:** mission/route YAML schema, `mission_*.launch.py` entry-points, `/patrol/{mission_state,current_waypoint,dwell,abort}` (the atomic `/patrol/dwell` capture event added 2026-06-21, PR #8), the checkpoint-arrival capture-trigger semantic, and the `MissionStateMachine` contract.
 
 ### Checkpoint mapping contract (settled default — confirmed at combined review (2026-06-03))
 The mission reads checkpoint positions from a single shared YAML `sim/config/checkpoints.yaml`, **owned by 03-sim-environment**, a list of `{checkpoint_id: string, position: {x,y,z} in the world/ENU frame, tag_family: string, tag_id: int}`. This docset (02) reads the `position` entries to build waypoints (converting world/ENU → PX4 NED at the MC-7 boundary). 03 places the AprilTag models + camera from the same file; 04 maps a detected `tag_id` → `checkpoint_id`. The mission YAML (MC-3) references checkpoint IDs from this shared file rather than duplicating positions. *This default is recorded as OQ-2 / OQ-7 pending the human's combined cross-docset review.*
@@ -291,7 +291,7 @@ The mission reads checkpoint positions from a single shared YAML `sim/config/che
 | 05-logging-replay | Records `/patrol/{mission_state,current_waypoint,abort}` and is invoked by `mission_patrol.launch.py` | 02's launch file includes 05's recorder wrapper; topic types must be Foxglove-renderable so 05's bag is usable. |
 
 ### Interface changes
-- New owned contracts (no prior versions to break): mission/route YAML schema; `/patrol/mission_state`, `/patrol/current_waypoint`, `/patrol/abort`; the `MissionStateMachine` `tick(current_state, telemetry) -> command` contract; the checkpoint-arrival capture-trigger semantic; `mission_basic.launch.py` and `mission_patrol.launch.py`.
+- New owned contracts (no prior versions to break): mission/route YAML schema; `/patrol/mission_state`, `/patrol/current_waypoint`, `/patrol/dwell` (atomic capture event, added 2026-06-21 PR #8), `/patrol/abort`; the `MissionStateMachine` `tick(current_state, telemetry) -> command` contract; the checkpoint-arrival capture-trigger semantic; `mission_basic.launch.py` and `mission_patrol.launch.py`.
 - Consumed contract default (pending confirmation): checkpoint mapping `sim/config/checkpoints.yaml` owned by 03 (see OQ-2).
 
 ### Deployment coordination

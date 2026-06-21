@@ -40,3 +40,16 @@ def to_ned_from_origin(point: Point, frame: str, ekf_origin_ned: Point) -> Point
         xe, ye, ze = (float(c) for c in point)
         return (ye + ox, xe + oy, -ze + oz)
     raise ValueError(f"unknown frame {frame!r}: expected 'ned' or 'enu'")
+
+
+def takeoff_target_ned(home_ned: Point, takeoff_alt_m: float) -> Point:
+    """The takeoff/hover setpoint: ``takeoff_alt_m`` above home, in EKF-origin NED.
+
+    NED "down" increases downward, so "altitude above home" subtracts from home's own down
+    coordinate — correct for *any* home altitude, not just home sitting on the EKF-origin ground
+    plane. The state machine flies to this point, and the basic-mission acceptance harness derives
+    its settle band from it, so both share this one derivation rather than each hardcoding
+    ``-takeoff_alt_m`` (which silently drifts the moment home is not at z=0; Hermes).
+    """
+    hx, hy, hz = (float(c) for c in home_ned)
+    return (hx, hy, hz - float(takeoff_alt_m))
