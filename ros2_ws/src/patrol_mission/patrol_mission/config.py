@@ -24,6 +24,15 @@ from patrol_mission.frames import Point
 
 _VALID_FRAMES = ("enu", "ned")
 
+# Every top-level mission key the loader recognizes. A key outside this set is a typo (a misspelled
+# section name like `completino:` would otherwise be silently ignored — `_section` only fails loud on
+# an unknown key *inside* a present section, via `raw.get(key, {})` defaulting an absent section to
+# {} — so defaults would apply and a config error would fly, Hermes Medium PR #8 R11). Validated up
+# front so a misspelled section fails loud at the same boundary as a missing required field.
+_KNOWN_TOP_LEVEL_KEYS = frozenset(
+    {"takeoff_alt_m", "hover_time_s", "completion", "abort", "home", "waypoints"}
+)
+
 
 @dataclass(frozen=True)
 class Completion:
@@ -60,11 +69,26 @@ class MissionConfig:
     waypoints: tuple[Waypoint, ...]
 
 
-def _require(raw: dict[str, Any], key: str) -> Any:
-    """Fetch a required top-level field or fail loud."""
+def _require(raw: dict[str, Any], key: str, what: str = "mission config") -> Any:
+    """Fetch a required field or fail loud, with mapping context (defaults to the top-level doc).
+
+    ``what`` names the mapping the key is required in, so a nested miss reads with context — e.g.
+    ``_require(home, "position", "mission config 'home'")`` raises "...'home' missing required field
+    'position'" rather than an unqualified top-level-sounding message (Hermes PR #8 R11 polish).
+    """
     if key not in raw:
-        raise ValueError(f"mission config missing required field {key!r}")
+        raise ValueError(f"{what} missing required field {key!r}")
     return raw[key]
+
+
+def _reject_unknown_top_level_keys(raw: dict[str, Any]) -> None:
+    """Fail loud on any top-level mission key outside the known set (a misspelled section, Hermes)."""
+    unknown = set(raw) - _KNOWN_TOP_LEVEL_KEYS
+    if unknown:
+        raise ValueError(
+            f"mission config has unknown top-level key(s) {sorted(unknown)}; "
+            f"allowed {sorted(_KNOWN_TOP_LEVEL_KEYS)}"
+        )
 
 
 def _require_mapping(value: Any, what: str) -> dict[str, Any]:
@@ -437,6 +461,7 @@ def load_mission_config(
     with open(mission_yaml_path) as fh:
         raw = _require_mapping(yaml.safe_load(fh), "mission config")
 
+    _reject_unknown_top_level_keys(raw)
     home = _require_mapping(_require(raw, "home"), "mission config 'home'")
     raw_waypoints = _waypoint_entries(raw)
     checkpoints = _resolve_checkpoints(raw_waypoints, checkpoints_yaml_path)
@@ -447,8 +472,8 @@ def load_mission_config(
         hover_time_s=_number(_require(raw, "hover_time_s"), "hover_time_s"),
         completion=_section(raw, "completion", Completion),
         abort=_section(raw, "abort", AbortConfig),
-        home_position=_point(home["position"], "home"),
-        home_frame=_validate_frame(home["frame"], "home"),
+        home_position=_point(_require(home, "position", "mission config 'home'"), "home"),
+        home_frame=_validate_frame(_require(home, "frame", "mission config 'home'"), "home"),
         waypoints=waypoints,
     )
     _validate_semantics(cfg)

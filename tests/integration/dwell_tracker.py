@@ -34,10 +34,15 @@ whole hold, then publishes the next state on the tick the hold completes — so 
 Why **observation gaps** must not count (Hermes Medium). The span is measured in wall clock, so two
 sparse ``DWELL`` samples delivered far apart (a starved executor, a telemetry blackout) could
 otherwise credit a hold that was never continuously observed — making the oracle *less* conservative
-than the node, which pauses progression and ``reset_timing()``s the same window on stale telemetry. A
-gap wider than ``max_gap_s`` between consecutive ``DWELL`` samples therefore restarts the episode
-clock (mirrors :class:`home_settle_tracker.HomeSettleTracker`), so each credited dwell is backed by a
-continuously observed span.
+than the node, which pauses progression and ``reset_timing()``s the same window on stale telemetry.
+The ``max_gap_s`` guard therefore applies on **both** edges of an episode, symmetrically: a gap wider
+than ``max_gap_s`` between consecutive in-``DWELL`` samples restarts the episode clock, and an exit
+(falling-edge) sample arriving more than ``max_gap_s`` after the last ``DWELL`` sample does not credit
+the held span at all (a single ``DWELL`` sample then a far-later non-``DWELL`` state proves no
+continuous hold). Without the falling-edge half, a ``DWELL@1`` then ``RTH@11`` would credit a 10 s
+"hold" never observed in between. With both halves (mirroring
+:class:`home_settle_tracker.HomeSettleTracker`), every credited dwell is backed by a continuously
+observed span, on every transition.
 """
 
 from __future__ import annotations
@@ -74,8 +79,18 @@ class DwellTracker:
         ``reset_timing()``s the same window on stale telemetry (Hermes Medium).
         """
         if state != _DWELL:
-            if self._in_dwell:  # falling edge: finalize the episode with the exit-sample time
-                self._credit_if_held(now_s)
+            if self._in_dwell:  # falling edge: finalize the episode
+                # An exit sample arriving more than max_gap_s after the last DWELL sample proves no
+                # continuous hold through the gap (a starved executor / telemetry blackout, then the
+                # node has already moved on), so the exit timestamp must NOT be credited. Only an exit
+                # tight against the last DWELL sample (within max_gap_s) finalizes the held span —
+                # the mirror of the in-DWELL guard below, so BOTH the DWELL->DWELL and the
+                # DWELL->exit edges are gap-aware (Hermes Medium).
+                if (
+                    self._last_sample_s is not None
+                    and (now_s - self._last_sample_s) <= self.max_gap_s
+                ):
+                    self._credit_if_held(now_s)
                 self._in_dwell = False
             return
         gap_broke = (

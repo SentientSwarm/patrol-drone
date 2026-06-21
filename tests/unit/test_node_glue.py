@@ -444,3 +444,39 @@ def test_unknown_battery_reading_does_not_abort(
     node._on_tick()
 
     assert node._state is node_mod.MissionState.ARMING
+
+
+def _advance_clock_s(node: Any, seconds: float) -> None:
+    """Move the fake node clock forward by ``seconds`` (so cached samples age)."""
+    node.clock.ns += int(seconds * 1e9)
+
+
+# Hermes Medium (PR #8 R11): a low battery sample that goes STALE must stop counting as live safety
+# evidence. A high-then-silent battery (the stream stalls after a reading) must not keep the cached
+# value forever — once it ages past _BATTERY_TIMEOUT_S the node forwards "unknown" (-1.0), which the
+# low-battery guard ignores. Here a genuinely-low 0.1 sample is fed, then the clock advances past the
+# battery window while pos/status stay fresh; the stale low reading must NOT drive the abort.
+def test_stale_battery_sample_reports_unknown_not_live_evidence(node: Any, node_mod: ModuleType):
+    _feed_battery(node, node_mod, remaining=0.1)  # below the 0.20 threshold — would abort if live
+    _advance_clock_s(
+        node, node_mod._BATTERY_TIMEOUT_S + 1.0
+    )  # age the battery past its window
+    _feed_valid_fresh(
+        node, node_mod
+    )  # pos/status fresh at the advanced time -> tick reaches the SM
+
+    node._on_tick()
+
+    assert node._fresh_battery(node._clock_s()) == -1.0  # forwarded as unknown, not the cached 0.1
+    assert node._state is node_mod.MissionState.ARMING  # so the stale low reading does NOT abort
+
+
+# No regression: a low battery still within _BATTERY_TIMEOUT_S is live evidence and still aborts.
+def test_fresh_low_battery_within_window_still_aborts(node: Any, node_mod: ModuleType):
+    _feed_battery(node, node_mod, remaining=0.1)
+    _advance_clock_s(node, node_mod._BATTERY_TIMEOUT_S - 1.0)  # still inside the window
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ABORT

@@ -61,6 +61,15 @@ _EKF_ORIGIN_NED: Point = (0.0, 0.0, 0.0)  # SITL local position is already origi
 # (Hermes Medium). Sized well above the slowest /fmu/out cadence (vehicle_status) so normal jitter
 # never trips it; its job is to catch a STOPPED stream (age grows unbounded), not to police latency.
 _TELEMETRY_TIMEOUT_S = 2.0
+# Max age (s) of the cached BatteryStatus before the node treats the low-battery reading as unknown
+# rather than live safety evidence (Hermes Medium, PR #8 R11). This is a STOPPED-stream detector, not
+# a latency policer. Deliberately decoupled from (and much larger than) _TELEMETRY_TIMEOUT_S: the
+# battery stream may publish more slowly than position/status, so reusing the tighter position/status
+# budget here could forward "unknown" on every tick and silently disable the low-battery abort — the
+# opposite of the intent (and unit-tested only, never exercised in SITL, so it would go unnoticed).
+# 10 s leaves wide margin for a slow-but-alive battery stream; revisit if a measured SITL cadence
+# (not yet pinned in the repo) ever approaches it.
+_BATTERY_TIMEOUT_S = 10.0
 
 # The ONE site that binds the pure Px4CommandKind symbols (patrol_mission.commands) to their
 # px4_msgs MAVLink IDs. Referencing the VehicleCommand.* constants directly means the IDs can't
@@ -122,6 +131,10 @@ class PatrolMissionNode(Node):
         # _on_tick uses these to refuse to advance the mission on a frozen fix (Hermes Medium).
         self._pos_rx_s: float | None = None
         self._status_rx_s: float | None = None
+        # Receipt time of the latest BatteryStatus — None until first arrival. _build_telemetry uses
+        # it to forward "unknown" once a battery reading goes stale, so an old high sample is never
+        # treated as live low-battery safety evidence indefinitely (Hermes Medium, PR #8 R11).
+        self._battery_rx_s: float | None = None
         # Battery defaults to "full" and abort to False so their ABSENCE never fabricates an abort: a
         # missing BatteryStatus must not fire low-battery, and no /patrol/abort means no abort. The
         # latest received value replaces these; the abort latch itself lives in the state machine's
@@ -168,6 +181,7 @@ class PatrolMissionNode(Node):
         # disconnected so the state machine's battery_low() guard ignores it instead of reading the
         # sentinel as a near-empty battery and false-aborting a valid flight (Hermes High).
         self._battery_remaining = float(msg.remaining) if msg.connected else -1.0
+        self._battery_rx_s = self._clock_s()
 
     def _on_abort(self, msg: Bool) -> None:
         # Reflect the latest /patrol/abort value; the state machine makes a True "stick" through RTH.
@@ -244,6 +258,21 @@ class PatrolMissionNode(Node):
                 return True
         return False
 
+    def _fresh_battery(self, now_s: float) -> float:
+        """The battery fraction to act on this tick, or -1.0 ("unknown") if the reading is stale.
+
+        Forwards the cached value only while a battery sample has been seen recently. A stale sample
+        (the stream stopped after a real reading) is reported as unknown — the same -1.0 sentinel the
+        disconnected path uses, which ``battery_low()`` ignores — so an old high reading is never
+        treated as live low-battery safety evidence (Hermes Medium, PR #8 R11). The no-sample-yet
+        default stays non-aborting (a missing BatteryStatus must not fabricate an abort).
+        """
+        if self._battery_rx_s is None:
+            return self._battery_remaining  # no sample yet: keep the non-aborting default (1.0)
+        if not telemetry_fresh(now_s - self._battery_rx_s, _BATTERY_TIMEOUT_S):
+            return -1.0  # a real reading went stale: report unknown, not the cached value
+        return self._battery_remaining
+
     def _build_telemetry(
         self, pos: VehicleLocalPosition, status: VehicleStatus, now_s: float
     ) -> Telemetry:
@@ -252,7 +281,7 @@ class PatrolMissionNode(Node):
             position_ned=(float(pos.x), float(pos.y), float(pos.z)),
             armed=status.arming_state == VehicleStatus.ARMING_STATE_ARMED,
             offboard_active=status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD,
-            battery_remaining=self._battery_remaining,
+            battery_remaining=self._fresh_battery(now_s),
             abort_requested=self._abort_requested,
             # manual_takeover / timed_out are scaffold guards — never wired in SITL (Phase 2 RC),
             # so they keep their False defaults here. The state machine still unit-tests both paths.

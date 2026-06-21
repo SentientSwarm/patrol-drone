@@ -200,3 +200,36 @@ def test_configured_max_gap_s_widens_the_tolerated_silence():
     t = DwellTracker(dwell_required_s=(DWELL_S,), max_gap_s=5.0)
     _feed_at(t, [("WAYPOINT", 0.0), ("DWELL", 1.0), ("DWELL", 4.0), ("DWELL", 7.0)])  # gaps 3 <= 5
     assert t.dwelled == {0}  # never broken; span 6.0 >= 3.0
+
+
+# Hermes Review 11 (Medium) — the FALLING-EDGE gap, the mirror of the mid-episode gap above. The fix
+# for the in-DWELL gap (Review 10) guarded only DWELL->DWELL; a long silence from the last DWELL sample
+# to the exit (non-DWELL) state still credited the episode on the exit timestamp. The exact Hermes
+# probe: a lone DWELL@1 then RTH@11 spans 10 s of wall clock that was never observed as a held dwell.
+def test_falling_edge_gap_is_not_credited_as_dwell():
+    t = _one_waypoint()  # max_gap_s defaults to 1.0
+    _feed_at(t, [("WAYPOINT", 0.0), ("DWELL", 1.0), ("RTH", 11.0)])  # exit gap 10 > 1
+    assert t.episodes == 1  # the waypoint WAS reached (a DWELL episode opened)...
+    assert t.dwelled == set()  # ...but the exit arrived after a blackout, so it is NOT credited
+
+
+# The credit-at-exit path with the falling-edge guard, parametrized so the exit sample is genuinely the
+# deciding one (the in-DWELL run DWELL@1..3 spans only 2.0 < 3.0, so it is NOT credited incrementally —
+# the exit timestamp is the first chance to reach the threshold). entry=1.0, last DWELL=3.0:
+#   - exit@3.5: gap 0.5 <= 1.0, span 2.5 < 3.0  -> NOT credited (duration short, no regression)
+#   - exit@4.0: gap 1.0 == 1.0, span 3.0 >= 3.0 -> credited (tight exit finalizes a real hold)
+#   - exit@4.5: gap 1.5  > 1.0, span 3.5 >= 3.0 -> NOT credited (the gap guard blocks it despite the
+#               span — this is exactly the falling-edge defect Review 11 raised)
+#   - exit@14.0: gap 11  > 1.0                  -> NOT credited (the lone-sample blackout case)
+@pytest.mark.parametrize(
+    ("exit_t", "expected"),
+    [(3.5, set()), (4.0, {0}), (4.5, set()), (14.0, set())],
+)
+def test_credit_at_exit_obeys_the_falling_edge_gap_guard(exit_t, expected):
+    t = _one_waypoint()  # max_gap_s 1.0
+    _feed_at(
+        t,
+        [("WAYPOINT", 0.0), ("DWELL", 1.0), ("DWELL", 2.0), ("DWELL", 3.0), ("RTH", exit_t)],
+    )
+    assert t.episodes == 1  # the waypoint is reached in every case; only the dwell credit differs
+    assert t.dwelled == expected

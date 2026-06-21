@@ -190,6 +190,33 @@ def test_malformed_position_fail_loud(tmp_path, body, match):
         load_mission_config(_write(tmp_path, body))
 
 
+# Hermes Medium (PR #8 R11): two fail-loud config gaps that previously slipped through.
+#  - A misspelled TOP-LEVEL section (`completino:`) was silently ignored — `_section` only fails loud
+#    on an unknown key *inside* a present section, so an absent (typo'd) section defaulted silently and
+#    a config error would fly. It must now fail loud as an unknown top-level key.
+#  - A missing nested `home.position` / `home.frame` was indexed with raw `[]` and leaked a bare
+#    `KeyError` outside the loader's documented ValueError boundary; both are now routed through
+#    `_require` so they raise the contracted, field-named `ValueError`.
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (
+            _HEAD + _HOME_ENU + _NO_WAYPOINTS + "completino: {tolerance_m: 0.5}\n",
+            r"unknown top-level key.*completino",
+        ),
+        (_HEAD + "home: {frame: enu}\n" + _NO_WAYPOINTS, r"required field 'position'"),
+        (
+            _HEAD + "home: {position: {x: 0, y: 0, z: 2}}\n" + _NO_WAYPOINTS,
+            r"required field 'frame'",
+        ),
+    ],
+    ids=["typoed_top_level_section", "missing_home_position", "missing_home_frame"],
+)
+def test_schema_fail_loud_top_level_and_nested_home(tmp_path, body, match):
+    with pytest.raises(ValueError, match=match):
+        load_mission_config(_write(tmp_path, body))
+
+
 # TS-C1: a checkpoint_id waypoint resolves against checkpoints.yaml to its ENU position + id.
 def test_checkpoint_id_resolves(tmp_path):
     cps = _write_checkpoints(tmp_path)
