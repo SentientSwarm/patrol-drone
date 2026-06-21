@@ -73,41 +73,45 @@ class DwellTracker:
 
         A rising edge into ``DWELL`` opens a new episode for the next waypoint index; while in (and on
         leaving) the episode, credit the waypoint once its span has reached the configured dwell. An
-        observation gap wider than ``max_gap_s`` between two ``DWELL`` samples breaks the continuous
-        hold and restarts the episode clock, so a starved/blackout span cannot be credited as dwell
-        time — keeping the oracle at least as conservative as the node, which pauses progression and
-        ``reset_timing()``s the same window on stale telemetry (Hermes Medium).
+        observation gap wider than ``max_gap_s`` adjacent to a ``DWELL`` sample breaks the continuous
+        hold, so a starved/blackout span cannot be credited as dwell time — keeping the oracle at least
+        as conservative as the node, which pauses progression and ``reset_timing()``s the same window
+        on stale telemetry (Hermes Medium). The two edges are handled symmetrically below.
         """
-        if state != _DWELL:
-            if self._in_dwell:  # falling edge: finalize the episode
-                # An exit sample arriving more than max_gap_s after the last DWELL sample proves no
-                # continuous hold through the gap (a starved executor / telemetry blackout, then the
-                # node has already moved on), so the exit timestamp must NOT be credited. Only an exit
-                # tight against the last DWELL sample (within max_gap_s) finalizes the held span —
-                # the mirror of the in-DWELL guard below, so BOTH the DWELL->DWELL and the
-                # DWELL->exit edges are gap-aware (Hermes Medium).
-                if (
-                    self._last_sample_s is not None
-                    and (now_s - self._last_sample_s) <= self.max_gap_s
-                ):
-                    self._credit_if_held(now_s)
-                self._in_dwell = False
-            return
-        gap_broke = (
-            self._in_dwell
-            and self._last_sample_s is not None
-            and (now_s - self._last_sample_s) > self.max_gap_s
-        )
+        if state == _DWELL:
+            self._on_dwell_sample(now_s)
+        else:
+            self._on_exit_sample(now_s)
+
+    def _gap_exceeded(self, now_s: float) -> bool:
+        """Whether the silence since the previous DWELL sample broke the continuous hold."""
+        return self._last_sample_s is not None and (now_s - self._last_sample_s) > self.max_gap_s
+
+    def _on_dwell_sample(self, now_s: float) -> None:
+        """A ``DWELL`` sample: open the episode on the rising edge, restart its clock across a gap."""
+        gap_broke = self._in_dwell and self._gap_exceeded(now_s)
         self._last_sample_s = now_s
         if not self._in_dwell:  # rising edge: a new episode for waypoint _episode_index + 1
             self._episode_index += 1
             self._entered_s = now_s
             self._in_dwell = True
-        elif (
-            gap_broke
-        ):  # mid-episode observation gap: the continuous hold is broken, restart the clock
+        elif gap_broke:  # mid-episode observation gap: the continuous hold is broken, restart
             self._entered_s = now_s
         self._credit_if_held(now_s)
+
+    def _on_exit_sample(self, now_s: float) -> None:
+        """Falling edge: finalize the open episode, crediting only if the exit is gap-tight.
+
+        An exit arriving more than ``max_gap_s`` after the last ``DWELL`` sample proves no continuous
+        hold through the gap (a starved executor / telemetry blackout, then the node moved on), so the
+        exit timestamp must NOT be credited — the mirror of the in-DWELL gap guard, so both the
+        DWELL->DWELL and DWELL->exit edges are gap-aware (Hermes Medium).
+        """
+        if not self._in_dwell:
+            return
+        if not self._gap_exceeded(now_s):
+            self._credit_if_held(now_s)
+        self._in_dwell = False
 
     def _credit_if_held(self, now_s: float) -> None:
         """Credit the current episode's waypoint iff it has now spanned its configured ``dwell_s``."""
