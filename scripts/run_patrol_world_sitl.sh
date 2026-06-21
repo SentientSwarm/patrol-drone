@@ -16,10 +16,14 @@
 #   different enough to warrant its own runner; the shared primitives (agent resolution, the
 #   capability gate) are sourced from env_doctor.sh so they are not duplicated.
 #
-# STATUS: NIGHTLY / MANUAL. This has not been run headless in CI. The env-var mechanism is derived by
-# reading PX4 1.17's ROMFS/.../px4-rc.gzsim (standalone branch + attach branch) and gz_env.sh — but
-# the live bring-up is unverified on this host. The step most likely to need a tweak is the Gazebo
-# model spawn (see spawn_model); everything else is standard PX4 SITL plumbing.
+# STATUS: NIGHTLY / MANUAL. Verified live on an interactive X11 + NVIDIA host (2026-06-21): the
+# standalone+attach bring-up works (gz patrol_world + EntityFactory spawn of gz_x500_patrol + PX4
+# PX4_GZ_STANDALONE/PX4_GZ_MODEL_NAME attach), the camera publishes a steady ~15 Hz, and the full M4
+# patrol arms, dwells at all checkpoints, RTHs and lands (AC-1/AC-3/AC-4 PASS). Two things the live
+# run surfaced and that are now handled: (1) the gz camera renders in lockstep with PX4, so first-frame
+# lags cold start — verify_camera now polls up to CAMERA_WAIT instead of a single tight echo; (2) PX4
+# preflight wants a GCS heartbeat to arm offboard ("No connection to the GCS"), so the patrol path
+# launches QGC (start_qgc), same as run_sitl_mission.sh. Not yet run headless/in-container.
 #
 # No `set -u`: we source ROS's setup.bash (references unbound vars), like run_sitl_mission.sh.
 set -eo pipefail
@@ -34,6 +38,7 @@ source "${SCRIPT_DIR}/env_doctor.sh"
 
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 PX4_DIR="${PX4_DIR:-${HOME}/PX4-Autopilot}"
+QGC_APPIMAGE="${QGC_APPIMAGE:-${HOME}/Apps/QGroundControl-x86_64.AppImage}"
 WS_SETUP="${REPO_ROOT}/ros2_ws/install/setup.bash"
 LOG_DIR="${PATROL_UAT_LOG_DIR:-/tmp/patrol-world-uat}"
 
@@ -53,11 +58,13 @@ RUN_PATROL=1
 KEEP_UP=0
 SKIP_DOCTOR=0
 VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-300}"
+CAMERA_WAIT="${CAMERA_WAIT:-90}"
 
 AGENT_PID=""
 GZ_PID=""
 GZ_GUI_PID=""
 PX4_PID=""
+QGC_PID=""
 BRIDGE_PID=""
 NODE_PID=""
 
@@ -103,6 +110,7 @@ shutdown() {
   log "tearing down (logs kept in ${LOG_DIR})"
   if [[ -n "${NODE_PID}" ]]; then kill -TERM "${NODE_PID}" 2>/dev/null || true; fi
   if [[ -n "${BRIDGE_PID}" ]]; then kill -TERM "${BRIDGE_PID}" 2>/dev/null || true; fi
+  if [[ -n "${QGC_PID}" ]]; then kill -TERM "${QGC_PID}" 2>/dev/null || true; fi
   if [[ -n "${PX4_PID}" ]]; then kill -TERM -- "-${PX4_PID}" 2>/dev/null || true; fi  # PX4 proc group
   if [[ -n "${GZ_GUI_PID}" ]]; then kill -TERM "${GZ_GUI_PID}" 2>/dev/null || true; fi
   if [[ -n "${GZ_PID}" ]]; then kill -TERM "${GZ_PID}" 2>/dev/null || true; fi
@@ -207,10 +215,36 @@ start_camera_bridge() {
   BRIDGE_PID=$!
 }
 
+# Supply the GCS heartbeat PX4 preflight needs to ARM for offboard (otherwise the mission node loops on
+# "Preflight Fail: No connection to the GCS" → arming denied). Only the patrol path arms, so the
+# camera-only smoke skips it; headless runs skip it too (mirrors run_sitl_mission.sh --no-qgc, where
+# PX4 arms without a GCS). Same proven mechanism as the M3/M4 runner.
+start_qgc() {
+  [[ ${RUN_PATROL} -eq 1 && ${WITH_GUI} -eq 1 ]] || return 0
+  if [[ -x "${QGC_APPIMAGE}" ]]; then
+    log "starting QGroundControl (GCS heartbeat for offboard arm) -> ${LOG_DIR}/qgc.log"
+    "${QGC_APPIMAGE}" >"${LOG_DIR}/qgc.log" 2>&1 &
+    QGC_PID=$!
+  else
+    warn "QGC not runnable at ${QGC_APPIMAGE}; patrol arm may fail with 'No connection to the GCS'"
+  fi
+}
+
+# Poll for the first camera frame to reach ROS. The gz camera renders in LOCKSTEP with PX4, so during
+# cold start (EKF init, lockstep settling) the first frame can lag well past a single echo's window —
+# one tight `echo --once` false-negatives a working camera. Retry until CAMERA_WAIT elapses.
+wait_for_camera_frame() {
+  local deadline=$((SECONDS + CAMERA_WAIT))
+  while ((SECONDS < deadline)); do
+    if timeout 10 ros2 topic echo --once "${CAMERA_TOPIC}" >/dev/null 2>&1; then return 0; fi
+  done
+  return 1
+}
+
 verify_camera() {
-  log "verifying the camera publishes on ${CAMERA_TOPIC}..."
-  if ! timeout 25 ros2 topic echo --once "${CAMERA_TOPIC}" >/dev/null 2>&1; then
-    err "no message on ${CAMERA_TOPIC} within 25s — camera not publishing or bridge down (see ${LOG_DIR})"
+  log "verifying the camera publishes on ${CAMERA_TOPIC} (up to ${CAMERA_WAIT}s for cold start)..."
+  if ! wait_for_camera_frame; then
+    err "no message on ${CAMERA_TOPIC} within ${CAMERA_WAIT}s — camera not publishing or bridge down (see ${LOG_DIR})"
     return 1
   fi
   local rate
@@ -236,8 +270,8 @@ fly_and_verify_patrol() {
 report_keep_up() {
   trap - EXIT INT TERM
   log "stack left running (--keep-up):"
-  log "  PIDs: agent=${AGENT_PID} gz=${GZ_PID} gui=${GZ_GUI_PID:-none} px4=${PX4_PID} bridge=${BRIDGE_PID} node=${NODE_PID:-none}"
-  log "  tear down: kill -- -${PX4_PID}; kill ${AGENT_PID} ${GZ_PID} ${GZ_GUI_PID:-} ${BRIDGE_PID} ${NODE_PID:-}"
+  log "  PIDs: agent=${AGENT_PID} gz=${GZ_PID} gui=${GZ_GUI_PID:-none} px4=${PX4_PID} qgc=${QGC_PID:-none} bridge=${BRIDGE_PID} node=${NODE_PID:-none}"
+  log "  tear down: kill -- -${PX4_PID}; kill ${AGENT_PID} ${GZ_PID} ${GZ_GUI_PID:-} ${QGC_PID:-} ${BRIDGE_PID} ${NODE_PID:-}"
 }
 
 main() {
@@ -259,6 +293,7 @@ main() {
   spawn_model
   start_px4
   wait_for_bridge || { err "uXRCE-DDS bridge did not come up (see ${LOG_DIR}/px4.log + agent.log)"; exit 1; }
+  start_qgc  # GCS heartbeat for the patrol's offboard arm; no-op for camera-only / headless runs
   start_camera_bridge
 
   set +e

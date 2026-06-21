@@ -128,12 +128,18 @@ forbids). So `run_patrol_world_sitl.sh` uses PX4's no-fork **"bring your own mod
 3. **Spawn `gz_x500_patrol`** into the running world (gz `EntityFactory` create) at the takeoff origin.
 4. Start PX4 with `PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_NAME=gz_x500_patrol PX4_GZ_WORLD=patrol_world` so
    it **attaches** to our model (`PX4_SIM_MODEL=gz_x500` supplies the x500 airframe params).
-5. Launch `camera_bridge.launch.py`, verify `/drone/camera/image_raw`, then fly
+5. For the patrol path, launch **QGroundControl** to supply the GCS heartbeat PX4 preflight needs to
+   arm offboard (otherwise the mission node loops on `Preflight Fail: No connection to the GCS`); the
+   camera-only smoke and `--no-gui` headless runs skip it.
+6. Launch `camera_bridge.launch.py`, verify `/drone/camera/image_raw` (polling up to `CAMERA_WAIT`
+   seconds, since the camera renders in lockstep with PX4 and first-frame lags cold start), then fly
    `mission_patrol.launch.py` against `sim/config/checkpoints.yaml` and verify the traversal.
 
-> **Status — nightly / manual.** `run_patrol_world_sitl.sh` has not been run headless in CI; its
-> env-var mechanism is derived from PX4 1.17's `px4-rc.gzsim` + `gz_env.sh`. The Layer-A unit suite
-> (`tests/unit/test_compose_world.py`, `test_apriltag_models.py`), the SDF/XML structure, and CI's
-> `world-drift` gate validate everything that doesn't need a running simulator.
+> **Status — nightly / manual.** Verified live on an interactive X11 + NVIDIA host (2026-06-21): the
+> world loads, the camera publishes a steady ~15 Hz with its `/compressed` companion, and the full M4
+> patrol arms, dwells at all checkpoints, returns home and lands (AC-1/AC-3/AC-4 PASS). Not yet run
+> headless/in-container; the env-var mechanism is derived from PX4 1.17's `px4-rc.gzsim` + `gz_env.sh`.
+> The Layer-A unit suite (`tests/unit/test_compose_world.py`, `test_apriltag_models.py`), the SDF/XML
+> structure, and CI's `world-drift` gate validate everything that doesn't need a running simulator.
 
 See the Phase 1 plan, Milestone M5, and `docs/phase1/03-sim-environment/design.md` for the full design.
