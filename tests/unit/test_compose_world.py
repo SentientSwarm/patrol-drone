@@ -23,21 +23,20 @@ TEMPLATE = (
 _FLOW_POS = "{ x: 12.0, y: 8.0, z: 1.5 }"
 
 
-def _entry(
-    checkpoint_id: str | None = '"cp_a"',
-    position: str | None = _FLOW_POS,
-    tag_family: str | None = '"tag36h11"',
-    tag_id: str | None = "0",
-    indent: str = "  ",
-) -> str:
-    """Build one YAML checkpoint entry; pass ``None`` for a field to omit it (missing-field tests)."""
-    fields = [
-        ("checkpoint_id", checkpoint_id),
-        ("position", position),
-        ("tag_family", tag_family),
-        ("tag_id", tag_id),
-    ]
-    present = [(k, v) for k, v in fields if v is not None]
+# Default field values for one checkpoint entry; ordered as they appear in the YAML. Override any
+# via _entry(field=...), or pass field=None to omit it (missing-field tests).
+_DEFAULT_FIELDS: dict[str, str | None] = {
+    "checkpoint_id": '"cp_a"',
+    "position": _FLOW_POS,
+    "tag_family": '"tag36h11"',
+    "tag_id": "0",
+}
+
+
+def _entry(indent: str = "  ", **overrides: str | None) -> str:
+    """Build one YAML checkpoint entry; pass ``field=None`` to omit it (missing-field tests)."""
+    fields = {**_DEFAULT_FIELDS, **overrides}
+    present = [(k, v) for k, v in fields.items() if v is not None]
     return "\n".join(
         f"{indent}{'- ' if i == 0 else '  '}{k}: {v}" for i, (k, v) in enumerate(present)
     )

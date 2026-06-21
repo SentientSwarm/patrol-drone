@@ -264,19 +264,29 @@ def _find_placeholder_line(template_path: str, template: str) -> str:
 # --- drift check ---------------------------------------------------------------------------------
 
 
+def _marker_from_include(
+    inc: ET.Element, world_path: str
+) -> tuple[str, str, tuple[float, float, float]] | None:
+    """Parse one ``<include>`` -> (name, uri, (x, y, z)), or ``None`` if it's not a checkpoint."""
+    name = (inc.findtext("name") or "").strip()
+    if not name.startswith(MARKER_NAME_PREFIX):
+        return None
+    uri = (inc.findtext("uri") or "").strip()
+    nums = [float(t) for t in (inc.findtext("pose") or "").split()[:_XYZ]]
+    if len(nums) != _XYZ:
+        raise ComposeError(f"{world_path}: include {name!r} has a malformed <pose>")
+    return name, uri, (nums[0], nums[1], nums[2])
+
+
 def _world_markers(world_path: str) -> dict[str, tuple[str, tuple[float, float, float]]]:
     """Parse the world SDF for ``checkpoint_*`` includes -> {marker_name: (uri, (x, y, z))}."""
     root = ET.fromstring(Path(world_path).read_text())
     markers: dict[str, tuple[str, tuple[float, float, float]]] = {}
     for inc in root.iter("include"):
-        name = (inc.findtext("name") or "").strip()
-        if not name.startswith(MARKER_NAME_PREFIX):
-            continue
-        uri = (inc.findtext("uri") or "").strip()
-        nums = [float(t) for t in (inc.findtext("pose") or "").split()[:_XYZ]]
-        if len(nums) != _XYZ:
-            raise ComposeError(f"{world_path}: include {name!r} has a malformed <pose>")
-        markers[name] = (uri, (nums[0], nums[1], nums[2]))
+        parsed = _marker_from_include(inc, world_path)
+        if parsed is not None:
+            name, uri, pose = parsed
+            markers[name] = (uri, pose)
     return markers
 
 
