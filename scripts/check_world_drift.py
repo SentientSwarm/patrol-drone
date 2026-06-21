@@ -29,7 +29,7 @@ import gen_apriltag_models  # noqa: E402
 
 def _world_problems() -> list[str]:
     try:
-        return compose_world.check_drift()
+        return compose_world.check_drift() + compose_world.validate_world_design()
     except compose_world.ComposeError as exc:
         return [str(exc)]
 

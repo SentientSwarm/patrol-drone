@@ -42,10 +42,22 @@ MODELS_DIR = REPO_ROOT / "sim" / "models"
 
 PLACEHOLDER = "<!-- CHECKPOINT_MARKERS -->"
 MARKER_NAME_PREFIX = "checkpoint_"
+# checkpoint_id is f-string-interpolated into <name>checkpoint_{id}</name> in the world SDF and into
+# the model:// namespace, so it must be inert: alphanumerics, '_' and '-' only (no XML metacharacters,
+# whitespace, or '#'). Fail loud on anything else (F-01) - the same fail-loud bar as config.py.
+_CHECKPOINT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# A checkpoint entry carries exactly these keys — reject extras fail-loud (e.g. a stray waypoint field
+# like dwell_s, which belongs in 02's mission YAML, not here).
+_ALLOWED_ENTRY_KEYS = frozenset({"checkpoint_id", "position", "tag_family", "tag_id"})
 # The only AprilTag family generated today (gen_apriltag_models) — M5 is single-family.
 SUPPORTED_TAG_FAMILY = "tag36h11"
 _POSE_TOL = 1e-6
 _XYZ = 3  # x, y, z position axes
+# Canonical world-design invariants (checkpoints.yaml header / OQ-6) — enforced on the canonical
+# config only, by validate_world_design (the CI gate + local --check), never the unit fixtures.
+_WORLD_HALF_EXTENT = 20.0  # |x|,|y| <= 20  → the ~40x40 m world
+_MIN_SEPARATION = 8.0  # each checkpoint pair >= 8 m apart
+_MIN_CHECKPOINTS = 3
 
 
 class ComposeError(ValueError):
@@ -161,7 +173,18 @@ def _build_checkpoint(config_path: str, entry: dict[str, str]) -> Checkpoint:
     for field in ("checkpoint_id", "position", "tag_family", "tag_id"):
         if field not in entry:
             raise ComposeError(f"{config_path}: a checkpoint is missing required field {field!r}")
+    extra = set(entry) - _ALLOWED_ENTRY_KEYS
+    if extra:
+        raise ComposeError(
+            f"{config_path}: checkpoint has unexpected field(s) {sorted(extra)}; "
+            f"allowed {sorted(_ALLOWED_ENTRY_KEYS)} (waypoint fields belong in the mission YAML)"
+        )
     cid = entry["checkpoint_id"].strip().strip("\"'")
+    if not _CHECKPOINT_ID_RE.match(cid):
+        raise ComposeError(
+            f"{config_path}: checkpoint_id {cid!r} must match {_CHECKPOINT_ID_RE.pattern} "
+            f"(letters, digits, '_' and '-' only) - it is interpolated into the world SDF"
+        )
     x, y, z = _parse_position(config_path, cid, entry["position"])
     family = entry["tag_family"].strip().strip("\"'")
     if family != SUPPORTED_TAG_FAMILY:
@@ -228,6 +251,63 @@ def _run_guards(checkpoints: list[Checkpoint], config_path: str, models_dir: Pat
     _check_model_dirs(checkpoints, models_dir)
     for cp in checkpoints:
         _check_uri_portable(cp.uri)
+
+
+# --- world-design invariants (canonical config only) ---------------------------------------------
+# The checkpoints.yaml header documents firm layout invariants (OQ-6) that describe the *shipped*
+# world's design, not parser robustness. They are enforced here, by validate_world_design, only
+# against the canonical config (the CI world-drift gate + local --check) - NOT inside _run_guards /
+# check_drift, which the unit fixtures drive with deliberately smaller/edge-case worlds.
+
+
+def _design_count(cps: list[Checkpoint], out: str, problems: list[str]) -> None:
+    if len(cps) < _MIN_CHECKPOINTS:
+        problems.append(
+            f"{out}: only {len(cps)} checkpoint(s); the world requires >= {_MIN_CHECKPOINTS}"
+        )
+
+
+def _design_bounds(cps: list[Checkpoint], out: str, problems: list[str]) -> None:
+    problems.extend(
+        f"{out}: checkpoint {cp.checkpoint_id!r} at ({cp.x}, {cp.y}) is outside the "
+        f"+/-{_WORLD_HALF_EXTENT} m world"
+        for cp in cps
+        if abs(cp.x) > _WORLD_HALF_EXTENT or abs(cp.y) > _WORLD_HALF_EXTENT
+    )
+
+
+def _design_spacing(cps: list[Checkpoint], out: str, problems: list[str]) -> None:
+    for i in range(len(cps)):
+        for b in cps[i + 1 :]:
+            a = cps[i]
+            d = math.dist((a.x, a.y), (b.x, b.y))
+            if d >= _MIN_SEPARATION:
+                continue
+            problems.append(
+                f"{out}: checkpoints {a.checkpoint_id!r} and {b.checkpoint_id!r} are "
+                f"{d:.1f} m apart (< {_MIN_SEPARATION} m)"
+            )
+
+
+def _design_contiguous(cps: list[Checkpoint], out: str, problems: list[str]) -> None:
+    ids = sorted(cp.tag_id for cp in cps)
+    if ids != list(range(len(cps))):
+        problems.append(f"{out}: tag_ids {ids} are not contiguous 0..{len(cps) - 1}")
+
+
+def validate_world_design(config_path: str | Path = CONFIG_PATH) -> list[str]:
+    """Return canonical world-design problems (empty == clean).
+
+    Checks the layout invariants the checkpoints.yaml header documents (>= 3 checkpoints, each pair
+    >= 8 m apart, all within the ~40x40 m world, contiguous tag_id 0..N-1) but the per-render guards
+    do not enforce. Run only against the canonical config (CI gate + local --check), never the unit
+    fixtures, which build smaller worlds on purpose.
+    """
+    cps = load_checkpoints(config_path)
+    problems: list[str] = []
+    for check in (_design_count, _design_bounds, _design_spacing, _design_contiguous):
+        check(cps, str(config_path), problems)
+    return problems
 
 
 # --- emit ----------------------------------------------------------------------------------------
@@ -387,7 +467,7 @@ def check_drift(
 def _run_check() -> int:
     """Run the drift gate; print problems (if any) to stderr. Return the process exit code."""
     try:
-        problems = check_drift()
+        problems = check_drift() + validate_world_design()
     except ComposeError as exc:
         problems = [str(exc)]
     if not problems:

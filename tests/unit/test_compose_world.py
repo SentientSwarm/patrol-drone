@@ -189,6 +189,29 @@ def test_non_int_tag_id_fails_loud(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "bad_id",
+    [
+        "\"a</name><plugin name='x' filename='y'/>\"",  # XML breakout (the F-01 exploit)
+        '"a&b"',  # bare ampersand
+        '"cp north"',  # whitespace
+        '"north#1"',  # '#' (no leading whitespace, so _strip_comment leaves it intact)
+        '"cp/north"',  # path separator into the model:// namespace
+        '""',  # empty after quote-strip
+    ],
+)
+def test_checkpoint_id_must_be_allowlisted(tmp_path, bad_id):
+    text = _keyed(_entry(checkpoint_id=bad_id))
+    with pytest.raises(cw.ComposeError, match="checkpoint_id"):
+        cw.load_checkpoints(_write(tmp_path, text))
+
+
+def test_unexpected_entry_field_fails_loud(tmp_path):
+    text = _keyed(_entry(dwell_s="5.0"))  # a stray waypoint field that belongs in the mission YAML
+    with pytest.raises(cw.ComposeError, match="unexpected"):
+        cw.load_checkpoints(_write(tmp_path, text))
+
+
+@pytest.mark.parametrize(
     "bad_uri",
     [
         "/abs/path/to/model",
@@ -278,3 +301,40 @@ def test_shipped_world_is_well_formed_and_has_three_markers():
         if (inc.findtext("name") or "").startswith("checkpoint_")
     ]
     assert len(markers) >= 3
+
+
+# --- canonical world-design invariants (F-02) ----------------------------------------------------
+
+
+def _pos(x: float, y: float) -> str:
+    return f"{{ x: {x}, y: {y}, z: 1.5 }}"
+
+
+def _design_cfg(*coords_and_ids: tuple[float, float, int]) -> str:
+    """Keyed config of one checkpoint per (x, y, tag_id) triple (ids drive checkpoint_id too)."""
+    return _keyed(
+        *(
+            _entry(checkpoint_id=f'"cp_{tid}"', position=_pos(x, y), tag_id=str(tid))
+            for x, y, tid in coords_and_ids
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("cfg_text", "expected"),
+    [
+        (_design_cfg((0.0, 0.0, 0), (12.0, 0.0, 1)), ">= 3"),  # only 2 checkpoints
+        (_design_cfg((99.0, 0.0, 0), (0.0, 10.0, 1), (10.0, -10.0, 2)), "outside"),  # |x| > 20
+        (_design_cfg((0.0, 0.0, 0), (1.0, 0.0, 1), (0.0, 12.0, 2)), "apart"),  # a-b 1 m < 8 m
+        (_design_cfg((0.0, 0.0, 0), (12.0, 0.0, 1), (0.0, 12.0, 3)), "contiguous"),  # tag_id gap
+    ],
+)
+def test_validate_world_design_flags_invariant_violations(tmp_path, cfg_text, expected):
+    problems = cw.validate_world_design(_write(tmp_path, cfg_text))
+    assert any(expected in p for p in problems), problems
+
+
+def test_shipped_checkpoints_satisfy_world_design():
+    assert cw.validate_world_design() == [], (
+        "edit sim/config/checkpoints.yaml to restore invariants"
+    )
