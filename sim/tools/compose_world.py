@@ -384,21 +384,26 @@ def check_drift(
     return problems
 
 
+def _run_check() -> int:
+    """Run the drift gate; print problems (if any) to stderr. Return the process exit code."""
+    try:
+        problems = check_drift()
+    except ComposeError as exc:
+        problems = [str(exc)]
+    if not problems:
+        print("patrol_world.sdf: in sync with checkpoints.yaml.")
+        return 0
+    print("patrol_world.sdf has drifted from checkpoints.yaml:", file=sys.stderr)
+    for p in problems:
+        print(f"  - {p}", file=sys.stderr)
+    print("re-run: python3 sim/tools/compose_world.py", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--check" in argv:
-        try:
-            problems = check_drift()
-        except ComposeError as exc:
-            problems = [str(exc)]
-        if problems:
-            print("patrol_world.sdf has drifted from checkpoints.yaml:", file=sys.stderr)
-            for p in problems:
-                print(f"  - {p}", file=sys.stderr)
-            print("re-run: python3 sim/tools/compose_world.py", file=sys.stderr)
-            return 1
-        print("patrol_world.sdf: in sync with checkpoints.yaml.")
-        return 0
+        return _run_check()
     compose_world()
     print(f"wrote {WORLD_PATH.relative_to(REPO_ROOT)}")
     return 0
