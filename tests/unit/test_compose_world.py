@@ -59,6 +59,15 @@ def _compose(tmp_path: Path, config_text: str, template: str = TEMPLATE) -> str:
     return cw.compose_world(cfg, tpl, str(out))
 
 
+def _composed(tmp_path: Path, config_text: str, template: str = TEMPLATE) -> tuple[str, str, str]:
+    """Write cfg + template, compose the world, return (cfg_path, tpl_path, out_path)."""
+    cfg = _write(tmp_path, config_text)
+    tpl = _write(tmp_path, template, "t.sdf")
+    out = tmp_path / "world.sdf"
+    cw.compose_world(cfg, tpl, str(out))
+    return cfg, tpl, str(out)
+
+
 # --- happy path ----------------------------------------------------------------------------------
 
 _TWO = _keyed(
@@ -146,12 +155,30 @@ def test_tag_id_without_model_dir_fails_loud(tmp_path):
     [
         "{ x: 12.0, y: 8.0 }",  # missing z
         "{ x: foo, y: 8.0, z: 1.5 }",  # non-numeric x
+        "{ x: 12abc, y: 8.0, z: 1.5 }",  # trailing junk (F-04)
+        "{ x: 1.2.3, y: 8.0, z: 1.5 }",  # multi-dot (F-04)
+        "{ x: inf, y: 8.0, z: 1.5 }",  # non-finite (F-04)
         "",  # block-style (empty inline value) — fail loud, not silent misread
     ],
 )
 def test_malformed_position_fails_loud(tmp_path, position):
     text = _keyed(_entry(position=position))
     with pytest.raises(cw.ComposeError, match="position"):
+        cw.load_checkpoints(_write(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    ("position", "expected"),
+    [("{ x: .5, y: 1e3, z: -1.5e-2 }", (0.5, 1000.0, -0.015))],
+)
+def test_position_accepts_valid_float_forms(tmp_path, position, expected):
+    cp = cw.load_checkpoints(_write(tmp_path, _keyed(_entry(position=position))))[0]
+    assert (cp.x, cp.y, cp.z) == expected
+
+
+def test_unsupported_tag_family_fails_loud(tmp_path):
+    text = _keyed(_entry(tag_family='"tag25h9"'))
+    with pytest.raises(cw.ComposeError, match="tag_family"):
         cw.load_checkpoints(_write(tmp_path, text))
 
 
@@ -201,28 +228,39 @@ def test_empty_checkpoints_fails_loud(tmp_path):
 
 
 def test_check_drift_passes_when_world_matches_config(tmp_path):
-    cfg = _write(tmp_path, _TWO)
-    out = tmp_path / "world.sdf"
-    cw.compose_world(cfg, _write(tmp_path, TEMPLATE, "t.sdf"), str(out))
-    assert cw.check_drift(cfg, str(out)) == []
+    cfg, tpl, out = _composed(tmp_path, _TWO)
+    assert cw.check_drift(cfg, out, template_path=tpl) == []
 
 
 def test_check_drift_detects_position_mismatch(tmp_path):
-    cfg = _write(tmp_path, _TWO)
-    out = tmp_path / "world.sdf"
-    cw.compose_world(cfg, _write(tmp_path, TEMPLATE, "t.sdf"), str(out))
+    _cfg, tpl, out = _composed(tmp_path, _TWO)
     moved = _write(tmp_path, _TWO.replace("x: 12.0", "x: 99.0"), "moved.yaml")
-    problems = cw.check_drift(moved, str(out))
+    problems = cw.check_drift(moved, out, template_path=tpl)
     assert any("position" in p for p in problems)
 
 
 def test_check_drift_detects_missing_marker(tmp_path):
-    cfg = _write(tmp_path, _TWO)
-    out = tmp_path / "world.sdf"
-    cw.compose_world(cfg, _write(tmp_path, TEMPLATE, "t.sdf"), str(out))
+    _cfg, tpl, out = _composed(tmp_path, _TWO)
     one = _write(tmp_path, _keyed(_entry(checkpoint_id='"cp_c"', tag_id="2")), "one.yaml")
-    problems = cw.check_drift(one, str(out))
+    problems = cw.check_drift(one, out, template_path=tpl)
     assert any("no marker in the world" in p for p in problems)
+
+
+def test_check_drift_detects_template_body_change(tmp_path):
+    cfg, _tpl, out = _composed(tmp_path, _TWO)
+    # Edit a non-marker template body line without regenerating the committed world.
+    changed = TEMPLATE.replace(
+        '<world name="t">', '<world name="t">\n    <gravity>0 0 -9.8</gravity>'
+    )
+    tpl_b = _write(tmp_path, changed, "b.sdf")
+    problems = cw.check_drift(cfg, out, template_path=tpl_b)
+    assert any("fresh render" in p for p in problems)
+
+
+def test_check_drift_runs_model_dir_guard(tmp_path):
+    cfg = _write(tmp_path, _keyed(_entry(tag_id="99")))  # no sim/models/apriltag_36h11_99
+    with pytest.raises(cw.ComposeError, match="model dir"):
+        cw.check_drift(cfg, str(tmp_path / "world.sdf"))
 
 
 # --- shipped assets (integration guard, like test_config's shipped-file tests) -------------------

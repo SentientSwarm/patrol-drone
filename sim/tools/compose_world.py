@@ -42,6 +42,8 @@ MODELS_DIR = REPO_ROOT / "sim" / "models"
 
 PLACEHOLDER = "<!-- CHECKPOINT_MARKERS -->"
 MARKER_NAME_PREFIX = "checkpoint_"
+# The only AprilTag family generated today (gen_apriltag_models) — M5 is single-family.
+SUPPORTED_TAG_FAMILY = "tag36h11"
 _POSE_TOL = 1e-6
 _XYZ = 3  # x, y, z position axes
 
@@ -116,17 +118,41 @@ def _group_entries(config_path: str, fields: list[tuple[str, str, str]]) -> list
     return entries
 
 
+def _parse_inline_mapping(value: str) -> dict[str, str]:
+    """Parse ``{ x: 1.0, y: 2.0 }`` into ``{'x': '1.0', 'y': '2.0'}``; ``{}`` if not a flow mapping."""
+    s = value.strip()
+    if not (s.startswith("{") and s.endswith("}")):
+        return {}
+    out: dict[str, str] = {}
+    for part in s[1:-1].split(","):
+        key, sep, token = part.partition(":")
+        if sep and key.strip():
+            out[key.strip()] = token.strip()
+    return out
+
+
+def _numeric_token(token: str) -> float | None:
+    """Strict float: reject trailing junk (``12abc``), multi-dot (``1.2.3``) and inf/nan; else None."""
+    try:
+        num = float(token)
+    except ValueError:
+        return None
+    return num if math.isfinite(num) else None
+
+
 def _parse_position(config_path: str, cid: str, value: str) -> tuple[float, float, float]:
     """Parse ``position: { x: .., y: .., z: .. }`` (inline flow mapping) into numeric (x, y, z)."""
+    mapping = _parse_inline_mapping(value)
     coords = []
     for axis in ("x", "y", "z"):
-        m = re.search(rf"\b{axis}\s*:\s*(-?\d+(?:\.\d+)?)", value)
-        if not m:
+        token = mapping.get(axis)
+        num = _numeric_token(token) if token is not None else None
+        if num is None:
             raise ComposeError(
                 f"{config_path}: checkpoint {cid!r} position must be an inline flow mapping with "
                 f"numeric x/y/z (e.g. '{{x: 1.0, y: 2.0, z: 1.5}}'); missing/invalid {axis!r} in {value!r}"
             )
-        coords.append(float(m.group(1)))
+        coords.append(num)
     return coords[0], coords[1], coords[2]
 
 
@@ -137,13 +163,19 @@ def _build_checkpoint(config_path: str, entry: dict[str, str]) -> Checkpoint:
             raise ComposeError(f"{config_path}: a checkpoint is missing required field {field!r}")
     cid = entry["checkpoint_id"].strip().strip("\"'")
     x, y, z = _parse_position(config_path, cid, entry["position"])
+    family = entry["tag_family"].strip().strip("\"'")
+    if family != SUPPORTED_TAG_FAMILY:
+        raise ComposeError(
+            f"{config_path}: checkpoint {cid!r} tag_family {family!r} is unsupported; only "
+            f"{SUPPORTED_TAG_FAMILY!r} is generated today (M5 single-family)"
+        )
     try:
         tag_id = int(entry["tag_id"])
     except ValueError as exc:
         raise ComposeError(
             f"{config_path}: checkpoint {cid!r} tag_id must be an int, got {entry['tag_id']!r}"
         ) from exc
-    return Checkpoint(cid, x, y, z, entry["tag_family"].strip().strip("\"'"), tag_id)
+    return Checkpoint(cid, x, y, z, family, tag_id)
 
 
 def load_checkpoints(config_path: str | Path = CONFIG_PATH) -> list[Checkpoint]:
@@ -221,6 +253,24 @@ def _render_markers(checkpoints: list[Checkpoint], indent: str) -> str:
     return "\n".join(_include_block(cp, indent) for cp in checkpoints)
 
 
+def render_world(
+    config_path: str | Path = CONFIG_PATH,
+    template_path: str | Path = TEMPLATE_PATH,
+) -> str:
+    """Render the patrol world SDF text from checkpoints + template. Runs every guard; no write.
+
+    The single source of truth for what the committed ``patrol_world.sdf`` must contain — both
+    ``compose_world`` (which writes it) and ``check_drift`` (which verifies it) go through here, so the
+    gate validates the *whole* contract (template body + markers + guards), not just marker positions.
+    """
+    checkpoints = load_checkpoints(config_path)
+    _run_guards(checkpoints, str(config_path), MODELS_DIR)
+    template = Path(template_path).read_text()
+    placeholder = _find_placeholder_line(str(template_path), template)
+    indent = placeholder[: len(placeholder) - len(placeholder.lstrip())]
+    return template.replace(placeholder, _render_markers(checkpoints, indent), 1)
+
+
 def compose_world(
     config_path: str | Path = CONFIG_PATH,
     template_path: str | Path = TEMPLATE_PATH,
@@ -228,17 +278,10 @@ def compose_world(
 ) -> str:
     """Generate the patrol world SDF from the checkpoints config. Returns the written text.
 
-    Reads checkpoints, runs every guard, then replaces the ``<!-- CHECKPOINT_MARKERS -->`` placeholder
-    in the template with one ``<include>`` per checkpoint and writes ``out_path``. Idempotent: it
-    always reads the (placeholder-bearing) template, so re-running reproduces the same output.
+    Idempotent: always renders from the (placeholder-bearing) template, so re-running reproduces the
+    same output.
     """
-    checkpoints = load_checkpoints(config_path)
-    _run_guards(checkpoints, str(config_path), MODELS_DIR)
-
-    template = Path(template_path).read_text()
-    placeholder = _find_placeholder_line(str(template_path), template)
-    indent = placeholder[: len(placeholder) - len(placeholder.lstrip())]
-    world = template.replace(placeholder, _render_markers(checkpoints, indent), 1)
+    world = render_world(config_path, template_path)
     Path(out_path).write_text(world)
     return world
 
@@ -319,18 +362,35 @@ def _poses_match(a: tuple[float, float, float], b: tuple[float, float, float]) -
 
 
 def check_drift(
-    config_path: str | Path = CONFIG_PATH, world_path: str | Path = WORLD_PATH
+    config_path: str | Path = CONFIG_PATH,
+    world_path: str | Path = WORLD_PATH,
+    template_path: str | Path = TEMPLATE_PATH,
 ) -> list[str]:
-    """Return a list of drift problems between the committed world and the YAML (empty == clean)."""
+    """Return drift problems (empty == clean).
+
+    The committed world must byte-match a fresh render of the *current* template + checkpoints, with
+    every generation guard satisfied. ``render_world`` raises :class:`ComposeError` on a guard
+    violation (e.g. a missing model dir — F-02); the CI wrapper catches it as a drift problem. A byte
+    mismatch (e.g. a template-body edit that was never regenerated — F-01) is reported with the
+    per-marker diffs kept as supplemental detail so messages stay specific.
+    """
+    expected = render_world(config_path, template_path)
+    committed = Path(world_path).read_text()
+    if committed == expected:
+        return []
+    problems = [f"{world_path}: differs from a fresh render of the template + checkpoints"]
     checkpoints = load_checkpoints(config_path)
-    markers = _world_markers(str(world_path))
-    return _drift_problems(checkpoints, markers)
+    problems += _drift_problems(checkpoints, _world_markers(str(world_path)))
+    return problems
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--check" in argv:
-        problems = check_drift()
+        try:
+            problems = check_drift()
+        except ComposeError as exc:
+            problems = [str(exc)]
         if problems:
             print("patrol_world.sdf has drifted from checkpoints.yaml:", file=sys.stderr)
             for p in problems:
