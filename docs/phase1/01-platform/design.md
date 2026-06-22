@@ -345,7 +345,7 @@ services:
       args:
         ROS_BASE_IMAGE: ${ROS_BASE_IMAGE}
     volumes:
-      - ./ros2_ws:/workspace/ros2_ws        # source mounted, not baked (C2)
+      - ./ros2_ws/src:/workspace/ros2_ws/src   # source only, not baked; host build/install/log stays out (C2)
     network_mode: host
 
   # Optional GPU passthrough — never required (OQ-5). `docker compose --profile gpu up`
@@ -525,19 +525,18 @@ Every toolchain layer referenced anywhere in the build resolves to one row here.
 **Location:** `README.md` (repo root)
 **Dependencies:** C1, C3, C4, C5, C9
 
-Platform bring-up spine (the budgeted ≤12-command path; exact commands finalized at M2/manifest pin):
+Platform bring-up spine (the budgeted ≤12-command path; mirrors the as-built README spine):
 
 ```bash
 # ── Platform bring-up spine (≤12 commands; siblings append within the ≤20 budget) ──
-git clone --recurse-submodules <repo-url> patrol-drone        # 1
-cd patrol-drone                                               # 2 (compound cd ok in README copy)
-cp stack-manifest.toml .env.example .env                      # 3  (manifest → compose env)
-docker compose build sim dev                                  # 4  (C1+C2 from shared base, PLAT-3)
-docker compose run --rm dev colcon build                      # 5  (single green build, PLAT-4)
-docker compose up -d sim                                      # 6  (PX4 SITL + Gazebo + agent, PLAT-1)
-docker compose exec sim ros2 topic list | grep fmu            # 7  (bridge up, PLAT-2)
-docker compose exec sim ros2 topic hz \
-    /fmu/out/vehicle_local_position_v1                        # 8  (~50 Hz over 60 s, PLAT-2)
+git clone https://github.com/<owner>/patrol-drone.git && cd patrol-drone   # 1–2
+scripts/gen_build_args.py --env > .env.build                  # 3  (manifest → compose ARGs, PLAT-7)
+docker compose --env-file .env.build build sim dev            # 4  (C1+C2 from shared base, PLAT-3)
+docker compose --env-file .env.build up -d sim               # 5  (PX4 SITL + Gazebo + agent, PLAT-1)
+docker compose --env-file .env.build exec sim ros2 topic list | grep fmu   # 6  (bridge up, PLAT-2)
+docker compose --env-file .env.build exec sim ros2 topic hz \
+    /fmu/out/vehicle_local_position_v1                        # 7  (~50 Hz over 60 s, PLAT-2)
+docker compose --env-file .env.build run --rm dev colcon build   # 8  (single green build, PLAT-4)
 # (QGroundControl, desktop, arms/takes off — M1 manual verification, PLAT-1)
 # Siblings (02–05) append `ros2 launch patrol_bringup mission_patrol.launch.py` etc.
 ```

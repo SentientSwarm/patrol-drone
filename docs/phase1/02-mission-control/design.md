@@ -57,7 +57,7 @@ All eight PRD Open Questions are carried forward. Six were Resolved in design; t
 
 - **OQ-1 — Resolved (hand-rolled state machine).** A hand-rolled `enum` + `tick()` dispatch is chosen over `transitions` / `python-statemachine`. With ~10 stable states (IDLE, ARMING, TAKEOFF, HOVER, WAYPOINT, DWELL, RTH, LANDING, ABORT, DONE) the dependency weight of a library buys nothing the project needs, and a hand-rolled machine has zero runtime dependency on the Layer-A pure-Python runner, is import-clean and pickle-safe, reads top-to-bottom in one file (KISS), and gives direct branch coverage of every transition. See §3.4, §4.2.3. *Human-ratified (COMBINED-REVIEW "01 & 02 design-decision ratifications").*
 - **OQ-2 — Resolved (combined review 2026-06-03): checkpoint mapping schema AND file location.** A single shared YAML at `sim/config/checkpoints.yaml`, owned by 03, list of `{checkpoint_id, position{x,y,z} world/ENU meters, tag_family, tag_id}`. This docset (02) reads the `position` entries to build waypoints (converting ENU → NED at the MC-7 boundary) and references `checkpoint_id` from the mission YAML rather than duplicating positions. The **schema (field set)** matches 03 DoD §5 and is confirmed (COMBINED-REVIEW #5). The **physical file location/name** is still flagged open in 03 DoD §7; consuming code is isolated from that decision because the path is a single `MissionConfig` loader parameter / launch argument, so an agreed-different location is a one-line config change, not a code edit. Joint with 03 §7 + 04.
-- **OQ-3 — Resolved (`std_msgs`).** `/patrol/mission_state` = `std_msgs/String`, `/patrol/current_waypoint` = `std_msgs/Int32`, `/patrol/abort` = `std_msgs/Bool` (subscribed). These round-trip through MCAP and render in Foxglove with **no** custom-type plugin (exit item 8). Typed mission states live in the state-machine code, not in a custom message. The capture trigger (OQ-7) is the atomic `/patrol/dwell` topic — also a plain `std_msgs/Int32`, so still **no custom message type** is owned here. QoS: reliable / transient-local depth-1 for `mission_state` and `current_waypoint` (a late subscriber sees the latest value); `abort` latched; `/patrol/dwell` reliable + volatile, keep-last route-covering depth (a discrete live event, delivered once, never coalesced). *Human-ratified (COMBINED-REVIEW #4 + "02 OQ-3").*
+- **OQ-3 — Resolved (`std_msgs`).** `/patrol/mission_state` = `std_msgs/String`, `/patrol/current_waypoint` = `std_msgs/Int32`, `/patrol/abort` = `std_msgs/Bool` (subscribed). These round-trip through MCAP and render in Foxglove with **no** custom-type plugin (exit item 8). Typed mission states live in the state-machine code, not in a custom message. The capture trigger (OQ-7) is the atomic `/patrol/dwell` topic — also a plain `std_msgs/Int32`, so still **no custom message type** is owned here. QoS: reliable / transient-local depth-1 for `mission_state` and `current_waypoint` (a late subscriber sees the latest value); `abort` reliable + volatile (the latch lives in the state machine's `_NON_ABORTABLE` set, not topic durability, so a plain `ros2 topic pub` is QoS-compatible); `/patrol/dwell` reliable + volatile, keep-last route-covering depth (a discrete live event, delivered once, never coalesced). *Human-ratified (COMBINED-REVIEW #4 + "02 OQ-3").*
 - **OQ-4 — Resolved.** `tolerance_m: 0.5`, `hold_time_s: 2.0` — the plan's illustratives adopted as overridable YAML defaults, SITL-tunable without a code change. *Human-ratified ("02 OQ-4").*
 - **OQ-5 — Resolved (provisional budget).** Two canonical SITL scenarios: one basic mission and one reduced 2-waypoint patrol, run in the nightly SITL tier. Provisional budget ≤8 min/scenario including spin-up; quarantine-not-expand on a >1-in-5 flake rate or a >2× budget overrun; never a required per-PR check. The runtime figure is **provisional until measured against 01's landed SITL** — re-measure is seeded into MZ (§6.5). *Bulk-accepted ("02 OQ-5"); measurement remains deferred.*
 - **OQ-6 — Resolved.** Abort drives off `/fmu/out/battery_status_v1.remaining` (a normalized 0.0–1.0 fraction), default threshold `0.20`, configured in YAML. The transition is unit-tested (AC-7); SITL-observable depletion is best-effort because SITL battery modeling may not deplete realistically. *Human-ratified ("02 OQ-6").*
@@ -256,8 +256,9 @@ class Command:
     land: bool = False
     setpoint_ned: tuple[float, float, float] | None = None
     yaw: float = 0.0
-    mission_state: str = ""      # published verbatim to /patrol/mission_state
     current_waypoint: int = -1   # published to /patrol/current_waypoint (-1 = none)
+    # the mission-state STRING is NOT carried here — the node publishes next_state.name
+    # (tick() returns (next_state, command); the enum is the single source of truth)
 
 
 @dataclass
@@ -266,6 +267,7 @@ class _Progress:
     waypoint_index: int = 0
     inside_since_s: float | None = None   # first time inside tolerance (tolerance+hold, MC-5)
     state_entered_s: float = 0.0          # timestamp the current state was entered
+    last_state: MissionState | None = None  # previous tick's state — drives _enter_if_new/reset_timing
     abort_reason: AbortReason = AbortReason.NONE
 ```
 
@@ -307,16 +309,17 @@ class MissionStateMachine:
             return AbortReason.TIMEOUT
         return AbortReason.NONE
 
-    def _within_tolerance_for_hold(self, telem: Telemetry, target_ned: tuple[float, float, float],
-                                   tolerance_m: float, hold_s: float) -> bool:
-        """MC-5: complete iff continuously within tolerance for hold_s. Never tests equality."""
-        if _distance(telem.position_ned, target_ned) <= tolerance_m:
+    def _within_tolerance_for_hold(self, telem: Telemetry, target_ned: tuple[float, float, float]) -> bool:
+        """MC-5: complete iff continuously within tolerance for hold_time_s. Never tests equality."""
+        if _distance(telem.position_ned, target_ned) <= self._cfg.completion.tolerance_m:
             if self._p.inside_since_s is None:
                 self._p.inside_since_s = telem.now_s
-            return (telem.now_s - self._p.inside_since_s) >= hold_s
+            return (telem.now_s - self._p.inside_since_s) >= self._cfg.completion.hold_time_s
         self._p.inside_since_s = None             # left the tolerance ball; reset the hold clock
         return False
 ```
+
+The shipped class adds small pure-Python guard helpers during M3/M4 hardening (not shown): `telemetry_fresh` / `local_position_usable` (stale-telemetry + EKF gating), `battery_low` (unknown-battery `-1`/NaN handling), `_enter_if_new` / `reset_timing` (state-entry detection via `_Progress.last_state`), and a `waypoints_ned`-vs-`config.waypoints` length guard. `FrameConversion` (§4.2.4) likewise adds `takeoff_target_ned` (the AGL-above-home setpoint). All are Layer-A tested.
 
 Per-state behavior (entered / tick / next):
 
@@ -415,11 +418,12 @@ class MissionConfig:
 
 
 def load_mission_config(mission_yaml_path: str,
-                        checkpoints_yaml_path: str = "sim/config/checkpoints.yaml") -> MissionConfig:
+                        checkpoints_yaml_path: str = "") -> MissionConfig:
     """
     Parse + validate the mission YAML (MC-3). Resolve each waypoint that references a
-    checkpoint_id against checkpoints_yaml_path (03-owned; default path is a parameter so
-    the OQ-2 file-location decision is a one-line config change, not a code edit).
+    checkpoint_id against checkpoints_yaml_path (03-owned; NO in-package default — the caller
+    passes an explicit absolute path, so the OQ-2 file-location decision is a one-line config
+    change and a CWD-relative default can never resolve inconsistently).
     Fail loud (raise) on: missing required field, unknown frame, unresolvable checkpoint_id.
     No route/waypoint data is hardcoded in source (MC-3 / AC-3).
     """
@@ -470,26 +474,27 @@ class PatrolMissionNode(Node):
         super().__init__("patrol_mission")
         mission_yaml = self.declare_parameter("mission_yaml", "").value
         checkpoints_yaml = self.declare_parameter(
-            "checkpoints_yaml", "sim/config/checkpoints.yaml").value     # OQ-2: path is a param
+            "checkpoints_yaml", "").value     # OQ-2: no default; launch passes an explicit abs path
         self._cfg = load_mission_config(mission_yaml, checkpoints_yaml)
 
-        # /fmu/* (px4_msgs) — §3.2
+        # /fmu/* (px4_msgs) — §3.2. ALL use px4_qos() (best-effort + transient-local + depth-1) to
+        # match PX4's uXRCE-DDS bridge; a reliable/depth-10 endpoint would not connect (see qos.py).
         self._sub_pos = self.create_subscription(VehicleLocalPosition,
-            "/fmu/out/vehicle_local_position_v1", self._on_pos, qos_sensor)
+            "/fmu/out/vehicle_local_position_v1", self._on_pos, px4_qos())
         self._sub_bat = self.create_subscription(BatteryStatus,
-            "/fmu/out/battery_status_v1", self._on_bat, qos_sensor)
+            "/fmu/out/battery_status_v1", self._on_bat, px4_qos())
         self._sub_status = self.create_subscription(VehicleStatus,
-            "/fmu/out/vehicle_status_v1", self._on_status, qos_sensor)
+            "/fmu/out/vehicle_status_v1", self._on_status, px4_qos())
         self._pub_ctrl = self.create_publisher(OffboardControlMode,
-            "/fmu/in/offboard_control_mode", 10)
-        self._pub_sp = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
-        self._pub_cmd = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
+            "/fmu/in/offboard_control_mode", px4_qos())
+        self._pub_sp = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", px4_qos())
+        self._pub_cmd = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", px4_qos())
 
-        # /patrol/* (std_msgs) — OQ-3 / OQ-7
-        self._pub_state = self.create_publisher(String, "/patrol/mission_state", qos_latched_d1)
-        self._pub_wp = self.create_publisher(Int32, "/patrol/current_waypoint", qos_latched_d1)
-        self._pub_dwell = self.create_publisher(Int32, "/patrol/dwell", qos_event)  # atomic OQ-7 trigger
-        self._sub_abort = self.create_subscription(Bool, "/patrol/abort", self._on_abort, qos_latched)
+        # /patrol/* (std_msgs) — OQ-3 / OQ-7; profiles from qos.py
+        self._pub_state = self.create_publisher(String, "/patrol/mission_state", patrol_state_qos())
+        self._pub_wp = self.create_publisher(Int32, "/patrol/current_waypoint", patrol_state_qos())
+        self._pub_dwell = self.create_publisher(Int32, "/patrol/dwell", patrol_event_qos())  # atomic OQ-7 trigger
+        self._sub_abort = self.create_subscription(Bool, "/patrol/abort", self._on_abort, patrol_abort_qos())
 
         self._ekf_origin_ned = (0.0, 0.0, 0.0)   # captured once at arm
         self._state = MissionState.IDLE
@@ -525,13 +530,13 @@ Topic table:
 | pub | `/patrol/mission_state` | `std_msgs/String` | reliable, transient-local, depth 1 | MC-8 |
 | pub | `/patrol/current_waypoint` | `std_msgs/Int32` | reliable, transient-local, depth 1 | MC-8 |
 | pub | `/patrol/dwell` | `std_msgs/Int32` | reliable, volatile, keep-last route-covering depth | MC-8, OQ-7 |
-| sub | `/patrol/abort` | `std_msgs/Bool` | latched | MC-6, MC-8 |
-| sub | `/fmu/out/vehicle_local_position_v1` | `px4_msgs/VehicleLocalPosition` | sensor-data | MC-1/2/5 |
-| sub | `/fmu/out/battery_status_v1` | `px4_msgs/BatteryStatus` | sensor-data | MC-6 |
-| sub | `/fmu/out/vehicle_status_v1` | `px4_msgs/VehicleStatus` | sensor-data | MC-1 |
-| pub | `/fmu/in/offboard_control_mode` | `px4_msgs/OffboardControlMode` | depth 10 | MC-1 (keepalive) |
-| pub | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | depth 10 | MC-1/2 |
-| pub | `/fmu/in/vehicle_command` | `px4_msgs/VehicleCommand` | depth 10 | MC-1/6 |
+| sub | `/patrol/abort` | `std_msgs/Bool` | `patrol_abort_qos` (reliable, volatile; latch in the state machine) | MC-6, MC-8 |
+| sub | `/fmu/out/vehicle_local_position_v1` | `px4_msgs/VehicleLocalPosition` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1/2/5 |
+| sub | `/fmu/out/battery_status_v1` | `px4_msgs/BatteryStatus` | `px4_qos` (best-effort, transient-local, depth 1) | MC-6 |
+| sub | `/fmu/out/vehicle_status_v1` | `px4_msgs/VehicleStatus` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1 |
+| pub | `/fmu/in/offboard_control_mode` | `px4_msgs/OffboardControlMode` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1 (keepalive) |
+| pub | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1/2 |
+| pub | `/fmu/in/vehicle_command` | `px4_msgs/VehicleCommand` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1/6 |
 
 The arrival/capture trigger (OQ-7) is the atomic `/patrol/dwell` event — one `std_msgs/Int32` (the dwelled waypoint index) published on the rising edge into `DWELL`, so 04 never correlates the two separate, non-atomic `mission_state` + `current_waypoint` topics (which can interleave across DDS topics; see OQ-7). `mission_state` / `current_waypoint` stay the observable surface.
 
@@ -614,7 +619,7 @@ The component inventory (§4.2.1, six components), the dependency diagram (§4.2
 
 #### 4.4.2 Messaging
 
-`std_msgs` was chosen (OQ-3) so MCAP records and Foxglove renders the topics with no custom-type plugin. QoS: `/patrol/mission_state` and `/patrol/current_waypoint` reliable + transient-local depth-1 (a late subscriber, e.g. 04 or 05 starting after the node, sees the latest value); `/patrol/dwell` (the atomic OQ-7 capture event) reliable + volatile, keep-last with a route-covering depth so each checkpoint event is delivered once and never coalesced to "latest"; `/patrol/abort` latched. An absent subscriber is harmless. If `/patrol/abort` is never published, the low-battery abort still works (the two abort paths are independent in `_abort_reason`).
+`std_msgs` was chosen (OQ-3) so MCAP records and Foxglove renders the topics with no custom-type plugin. QoS: `/patrol/mission_state` and `/patrol/current_waypoint` reliable + transient-local depth-1 (a late subscriber, e.g. 04 or 05 starting after the node, sees the latest value); `/patrol/dwell` (the atomic OQ-7 capture event) reliable + volatile, keep-last with a route-covering depth so each checkpoint event is delivered once and never coalesced to "latest"; `/patrol/abort` reliable + volatile (so a plain `ros2 topic pub` is QoS-compatible — the abort sticks via the state machine's `_NON_ABORTABLE` latch, not topic durability). An absent subscriber is harmless. If `/patrol/abort` is never published, the low-battery abort still works (the two abort paths are independent in `_abort_reason`).
 
 **Failure mode:** a subscriber that never connects causes no node error — publishers fire regardless; the mission flies whether or not anyone is listening.
 
