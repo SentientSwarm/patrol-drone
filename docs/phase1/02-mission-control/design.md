@@ -515,7 +515,7 @@ class PatrolMissionNode(Node):
         if self._sm is None and telem.armed:
             self._capture_origin(); self._build_state_machine()
         if self._sm is None:
-            self._issue(Command(arm=True, mission_state="ARMING")); return
+            self._issue(Command(arm=True)); return  # state string is next_state.name, not a Command field
         prev = self._state
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)                                # translate Command -> /fmu/in/*
@@ -561,9 +561,13 @@ def generate_launch_description():
 # mission_patrol.launch.py  (MC-2; includes 05 recorder — exit item 1)
 def generate_launch_description():
     return LaunchDescription([
+        # checkpoints_yaml has NO default (OQ-2; 03's deliverable) — patrol_mission.yaml uses
+        # checkpoint_id waypoints, so an absolute path is required: checkpoints_yaml:=/abs/path
+        DeclareLaunchArgument("checkpoints_yaml"),
         Node(package="patrol_mission", executable="patrol_mission", name="patrol_mission",
              parameters=[{"mission_yaml": PathJoinSubstitution(
-                 [FindPackageShare("patrol_bringup"), "config", "patrol_mission.yaml"])}]),
+                 [FindPackageShare("patrol_bringup"), "config", "patrol_mission.yaml"]),
+                 "checkpoints_yaml": LaunchConfiguration("checkpoints_yaml")}]),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare("patrol_logging"), "launch", "record.launch.py"])),  # 05
             condition=IfCondition(LaunchConfiguration("record", default="true"))),
@@ -583,7 +587,7 @@ def generate_launch_description():
 
 #### 4.2.9 Inventory Triangle Check
 
-The component inventory (§4.2.1, six components), the dependency diagram (§4.2.2), and the consumer surface (`tick()` + `/patrol/*` + `mission_*.launch.py` + the mission YAML schema + the `MissionStateMachine` contract) all enumerate the same six components. No drift.
+The component inventory (§4.2.1) lists six **core** components — `MissionStateMachine`, `FrameConversion`, `MissionConfig`, `PatrolMissionNode`, Launch entry-points, Test suites — plus three supporting single-source-of-truth modules (`commands.py`, `topics.py`, `qos.py`) the node composes but that are not architectural nodes in the §4.2.2 dependency diagram. The six core components, the dependency diagram, and the consumer surface (`tick()` + `/patrol/*` + `mission_*.launch.py` + the mission YAML schema + the `MissionStateMachine` contract) all enumerate the same six. No drift.
 
 ### 4.3 Layer View
 

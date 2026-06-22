@@ -113,7 +113,7 @@ External-system and existing-repo claims this design depends on, verified at res
 
 ### 3.3 Architectural Decision (inherited, not made here)
 
-**Decision:** Ubuntu 24.04 + ROS 2 Jazzy + Python 3.12; PX4 v1.16.x; Gazebo Harmonic; uXRCE-DDS native (not MAVROS); `px4_msgs` vendored+pinned; two-container `sim`/`dev` split; two-layer CI.
+**Decision:** Ubuntu 24.04 + ROS 2 Jazzy + Python 3.12; PX4 v1.17.0 (OQ-3 resolved at M2); Gazebo Harmonic; uXRCE-DDS native (not MAVROS); `px4_msgs` vendored+pinned; two-container `sim`/`dev` split; two-layer CI.
 **Rationale:** Settled in ADR-0001, ADR-0002, and the plan's "Target stack" / "Containerization". This design **does not relitigate** them (PRD §Tenets, DoD §6).
 **Implication:** Every component below is pinned to these choices; the manifest (§4.2.9, C9) is where the exact versions live.
 
@@ -346,7 +346,7 @@ services:
         ROS_BASE_IMAGE: ${ROS_BASE_IMAGE}
     volumes:
       - ./ros2_ws/src:/workspace/ros2_ws/src   # source only, not baked; host build/install/log stays out (C2)
-    network_mode: host
+    # NO network_mode: host — only `sim` needs the host namespace for PX4/uXRCE-DDS; `dev` just builds/edits (C2)
 
   # Optional GPU passthrough — never required (OQ-5). `docker compose --profile gpu up`
   sim-gpu:
@@ -374,17 +374,19 @@ services:
 **Location:** `docker/sim/entrypoint.sh` (process start); contract documented in C10 README + this section.
 **Dependencies:** C1 (host process), C6 (the `px4_msgs` types the topics carry)
 
-Owned topic contract (the surface 02/05 build against). As-built (M2 spike): PX4 v1.17 advertises the
-topics with a message-version suffix `_v1` — M3/02 must subscribe to the `_v1` names (27 `/fmu/out/*`,
-38 addressable `/fmu/in/*` measured live):
+Owned topic contract (the surface 02/05 build against). As-built (M2 spike): PX4 v1.17's bridge
+suffixes a topic with `_v1` **only** when its message declares `MESSAGE_VERSION ≥ 1` — so the
+versioned **output** telemetry is `_v1`, while the offboard-control **input** trio is unversioned
+(v0) and keeps **bare** names (publishing `_v1` inputs reaches no PX4 subscriber and the offboard
+switch is refused). `topics.py` (02) is the single source of truth for this per-surface rule:
 
 | Topic | Type (`px4_msgs/…`) | Direction | Rate | Consumer |
 |-------|---------------------|-----------|------|----------|
 | `/fmu/out/vehicle_local_position_v1` | `VehicleLocalPosition` | PX4→ROS 2 | steady 50.0 Hz (PX4 SITL default) over 60 s | 02 (offboard), 05 (record) |
 | `/fmu/out/vehicle_status_v1` | `VehicleStatus` | PX4→ROS 2 | event/periodic | 02, 05 |
 | `/fmu/out/battery_status_v1` | `BatteryStatus` | PX4→ROS 2 | periodic | 02 (low-battery abort), 05 |
-| `/fmu/out/*_v1` (full set) | various `px4_msgs/*` | PX4→ROS 2 | per topic | 05 (broad record) |
-| `/fmu/in/*_v1` (e.g. `vehicle_command`, `offboard_control_mode`, `trajectory_setpoint`) | various `px4_msgs/*` | ROS 2→PX4 | command-driven | 02 (offboard control) |
+| `/fmu/out/*_v1` (versioned outputs) | various `px4_msgs/*` | PX4→ROS 2 | per topic | 05 (broad record) |
+| `/fmu/in/*` (bare: `offboard_control_mode`, `trajectory_setpoint`, `vehicle_command`) | `px4_msgs/*` (v0/unversioned) | ROS 2→PX4 | command-driven | 02 (offboard control) |
 
 Transport: UDP-localhost (`udp4 -p 8888`); the PX4-side `uxrce_dds_client` auto-starts in SITL (A1). The platform's only acceptance obligation (PLAT-2) is that `ros2 topic list | grep fmu` returns the topics and `/fmu/out/vehicle_local_position_v1` holds a steady 50.0 Hz over a 60 s window, with `/fmu/in/*` present and addressable.
 
@@ -494,14 +496,14 @@ ros_distro    = "jazzy"           # ROS 2 Jazzy Jalisco (ADR-0001)
 python        = "3.12"            # Ubuntu 24.04 default
 
 [flight_stack]
-px4_version   = "v1.16.x-PINNED"  # ← OQ-3 single edit point (filled by M1–M2 spike)
-px4_msgs_ref  = "release/1.16"    # ← OQ-3 matching branch (filled by spike)
+px4_version   = "v1.17.0"         # OQ-3 RESOLVED (M2). Canonical values live in stack-manifest.toml
+px4_msgs_ref  = "release/1.17"    # matches px4_version's release
 
 [simulator]
 gazebo        = "harmonic"        # gz-sim 8 (ADR-0001 / plan)
 
 [bridge]
-uxrce_dds     = "bundled-px4-1.16"  # Micro XRCE-DDS Agent + bundled client
+uxrce_dds_agent = "v3.0.1"        # Micro XRCE-DDS Agent — built from source (ADR-0007), not bundled
 
 [bags]
 mcap_plugin   = "rosbag2-storage-mcap"  # storage plugin (pin; 05 records)
@@ -511,7 +513,7 @@ colcon        = "pinned"          # colcon-common-extensions pin
 docker        = "pinned"          # Docker + Compose pin
 
 [container]
-ros_base_image = "osrf/ros:jazzy-desktop"  # shared C1/C2 base
+ros_base_image = "osrf/ros:jazzy-desktop"  # shared C1/C2 base (pinned by ros_base_digest in the manifest)
 ```
 
 Every toolchain layer referenced anywhere in the build resolves to one row here. The README (C10) and the container definitions (C1/C2/C3) cite this manifest and pull values via `.env`/ARG — no version literal is duplicated. The OQ-3 resolution is a two-line edit (`px4_version`, `px4_msgs_ref`); nothing else moves.
@@ -533,9 +535,13 @@ git clone https://github.com/<owner>/patrol-drone.git && cd patrol-drone   # 1�
 scripts/gen_build_args.py --env > .env.build                  # 3  (manifest → compose ARGs, PLAT-7)
 docker compose --env-file .env.build build sim dev            # 4  (C1+C2 from shared base, PLAT-3)
 docker compose --env-file .env.build up -d sim               # 5  (PX4 SITL + Gazebo + agent, PLAT-1)
-docker compose --env-file .env.build exec sim ros2 topic list | grep fmu   # 6  (bridge up, PLAT-2)
-docker compose --env-file .env.build exec sim ros2 topic hz \
-    /fmu/out/vehicle_local_position_v1                        # 7  (~50 Hz over 60 s, PLAT-2)
+# `exec` starts a fresh shell (no entrypoint) — source ROS + the workspace overlay first:
+docker compose --env-file .env.build exec sim bash -c \
+    'source /opt/ros/jazzy/setup.bash && source /opt/ros2_ws/install/setup.bash \
+     && ros2 topic list | grep fmu'                           # 6  (bridge up, PLAT-2)
+docker compose --env-file .env.build exec sim bash -c \
+    'source /opt/ros/jazzy/setup.bash && source /opt/ros2_ws/install/setup.bash \
+     && ros2 topic hz /fmu/out/vehicle_local_position_v1'     # 7  (~50 Hz over 60 s, PLAT-2)
 docker compose --env-file .env.build run --rm dev colcon build   # 8  (single green build, PLAT-4)
 # (QGroundControl, desktop, arms/takes off — M1 manual verification, PLAT-1)
 # Siblings (02–05) append `ros2 launch patrol_bringup mission_patrol.launch.py` etc.
@@ -1084,7 +1090,7 @@ THEN the path is fully documented and executable in fewer than 20 commands, with
 
 **UAC-PLAT-7: Pinned stack manifest**
 GIVEN the pinned stack manifest
-WHEN any toolchain layer is referenced (OS, ROS 2 Jazzy, PX4 v1.16.x, Gazebo Harmonic, uXRCE-DDS, Python 3.12, MCAP plugin, colcon, Docker)
+WHEN any toolchain layer is referenced (OS, ROS 2 Jazzy, PX4 v1.17.0, Gazebo Harmonic, uXRCE-DDS, Python 3.12, MCAP plugin, colcon, Docker)
 THEN its version is explicitly pinned in the manifest and the manifest is the cited source of truth.
 *(Design coverage: C9, §4.2.9.)*
 
