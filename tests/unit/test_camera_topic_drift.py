@@ -63,18 +63,24 @@ def test_real_surfaces_agree() -> None:
     assert cwd._camera_topic_problems() == []
 
 
+# The canonical topic vs a single diverged surface — naming the odd-one-out keeps each row readable
+# and avoids repeating the long literal across the table. Each case is one (sdf, launch, runner,
+# expected-problem-count) tuple so the test takes a single parameter (see test_detects_divergence).
+_CANON = "/drone/camera/image_raw"
+_DRIFT = "/drone/camera/drifted"
+
+
 @pytest.mark.parametrize(
-    ("sdf", "launch", "runner", "expected"),
+    "case",
     [
-        ("/drone/camera/image_raw", "/drone/camera/image_raw", "/drone/camera/image_raw", 0),
-        ("/drone/camera/drifted", "/drone/camera/image_raw", "/drone/camera/image_raw", 1),
-        ("/drone/camera/image_raw", "/drone/camera/drifted", "/drone/camera/image_raw", 1),
-        ("/drone/camera/image_raw", "/drone/camera/image_raw", "/drone/camera/drifted", 1),
+        (_CANON, _CANON, _CANON, 0),  # all three agree -> no problem
+        (_DRIFT, _CANON, _CANON, 1),  # SDF diverged
+        (_CANON, _DRIFT, _CANON, 1),  # launch diverged
+        (_CANON, _CANON, _DRIFT, 1),  # runner diverged
     ],
 )
-def test_detects_divergence(
-    repo_root: Path, sdf: str, launch: str, runner: str, expected: int
-) -> None:
+def test_detects_divergence(repo_root: Path, case: tuple[str, str, str, int]) -> None:
+    sdf, launch, runner, expected = case
     problems = cwd._camera_topic_problems(_write_surfaces(repo_root, sdf, launch, runner))
     assert len(problems) == expected
     if expected:
