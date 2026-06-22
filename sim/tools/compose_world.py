@@ -336,15 +336,19 @@ def _render_markers(checkpoints: list[Checkpoint], indent: str) -> str:
 def render_world(
     config_path: str | Path = CONFIG_PATH,
     template_path: str | Path = TEMPLATE_PATH,
+    models_dir: Path = MODELS_DIR,
 ) -> str:
     """Render the patrol world SDF text from checkpoints + template. Runs every guard; no write.
 
     The single source of truth for what the committed ``patrol_world.sdf`` must contain — both
     ``compose_world`` (which writes it) and ``check_drift`` (which verifies it) go through here, so the
     gate validates the *whole* contract (template body + markers + guards), not just marker positions.
+
+    ``models_dir`` (default the live ``sim/models``) lets a test point the model-dir guard at a fixture
+    instead of the committed tree, so isolated generated-asset tests need no monkeypatch.
     """
     checkpoints = load_checkpoints(config_path)
-    _run_guards(checkpoints, str(config_path), MODELS_DIR)
+    _run_guards(checkpoints, str(config_path), models_dir)
     template = Path(template_path).read_text()
     placeholder = _find_placeholder_line(str(template_path), template)
     indent = placeholder[: len(placeholder) - len(placeholder.lstrip())]
@@ -355,13 +359,14 @@ def compose_world(
     config_path: str | Path = CONFIG_PATH,
     template_path: str | Path = TEMPLATE_PATH,
     out_path: str | Path = WORLD_PATH,
+    models_dir: Path = MODELS_DIR,
 ) -> str:
     """Generate the patrol world SDF from the checkpoints config. Returns the written text.
 
     Idempotent: always renders from the (placeholder-bearing) template, so re-running reproduces the
     same output.
     """
-    world = render_world(config_path, template_path)
+    world = render_world(config_path, template_path, models_dir)
     Path(out_path).write_text(world)
     return world
 
@@ -445,6 +450,7 @@ def check_drift(
     config_path: str | Path = CONFIG_PATH,
     world_path: str | Path = WORLD_PATH,
     template_path: str | Path = TEMPLATE_PATH,
+    models_dir: Path = MODELS_DIR,
 ) -> list[str]:
     """Return drift problems (empty == clean).
 
@@ -454,7 +460,7 @@ def check_drift(
     mismatch (e.g. a template-body edit that was never regenerated — F-01) is reported with the
     per-marker diffs kept as supplemental detail so messages stay specific.
     """
-    expected = render_world(config_path, template_path)
+    expected = render_world(config_path, template_path, models_dir)
     committed = Path(world_path).read_text()
     if committed == expected:
         return []

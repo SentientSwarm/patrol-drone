@@ -286,6 +286,20 @@ def test_check_drift_runs_model_dir_guard(tmp_path):
         cw.check_drift(cfg, str(tmp_path / "world.sdf"))
 
 
+def test_models_dir_threads_through_compose_and_drift(tmp_path):
+    # tag_id 99 has NO dir under the live sim/models — so render/compose/check_drift pass ONLY if the
+    # SUPPLIED models_dir is honored (the F-03 seam). A regression to the global MODELS_DIR would
+    # raise ComposeError, failing this test. No monkeypatch, no dependence on the committed tree.
+    models = tmp_path / "models"
+    (models / "apriltag_36h11_99").mkdir(parents=True)
+    cfg = _write(tmp_path, _keyed(_entry(tag_id="99")))
+    tpl = _write(tmp_path, TEMPLATE, "world.template.sdf")
+    out = tmp_path / "world.sdf"
+    cw.compose_world(cfg, tpl, str(out), models_dir=models)
+    assert "<uri>model://apriltag_36h11_99</uri>" in out.read_text()
+    assert cw.check_drift(cfg, str(out), template_path=tpl, models_dir=models) == []
+
+
 # --- shipped assets (integration guard, like test_config's shipped-file tests) -------------------
 
 

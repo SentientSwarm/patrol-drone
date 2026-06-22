@@ -7,6 +7,7 @@ the generator (no drift).
 
 from __future__ import annotations
 
+import hashlib
 import struct
 
 import pytest
@@ -14,6 +15,19 @@ import pytest
 import gen_apriltag_models as gm
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+# SHA-256 of each canonical tag's 10x10 bitstring (rows joined top-to-bottom). Frozen from the
+# AprilRobotics apriltag-imgs reference (tag36h11/tag36_11_<id>.png @ commit f3fd9a7) the generator
+# docstring cites — the hardware-parity contract (SIM-7). The byte-drift gate (stale_model_files)
+# only proves the committed PNG matches a *fresh render of the current grid*, so a one-cell
+# transcription typo would regenerate clean and pass it; this golden is the independent anchor that
+# breaks that symmetry. On a mismatch: do NOT blindly re-freeze — re-verify the grid against upstream
+# f3fd9a7, THEN update the digest in the same commit.
+_GOLDEN_GRID_DIGESTS: dict[int, str] = {
+    0: "7b774e24032ec80d1c7ea0227389e147a52b66212d003e397b58bb5cb16365b9",
+    1: "8cfebfdd08e2b395ec430da11080c622a9c0e31466e328f7d469bbf4e957b511",
+    2: "3baa3547d049c0b7bd0b3c4fcd85582dc411307d508b1808d53438c17a156c03",
+}
 
 
 def test_committed_models_match_generator():
@@ -100,3 +114,19 @@ def test_canonical_grids_are_10x10_with_quiet_zone():
         assert all(len(row) == 10 for row in grid)
         assert grid[0] == "1111111111"  # white quiet-zone ring (top)
         assert grid[-1] == "1111111111"  # white quiet-zone ring (bottom)
+
+
+def test_golden_digests_cover_every_canonical_tag():
+    # Golden set tracks the canonical set 1:1 — adding a tag without a golden (or vice versa) must
+    # fail loud rather than silently skip the parity lock for the new id.
+    assert sorted(_GOLDEN_GRID_DIGESTS) == sorted(gm.CANONICAL_TAG36H11)
+
+
+@pytest.mark.parametrize("tag_id", sorted(gm.CANONICAL_TAG36H11))
+def test_canonical_grid_matches_hardware_golden(tag_id):
+    bits = "".join(gm.CANONICAL_TAG36H11[tag_id])
+    digest = hashlib.sha256(bits.encode()).hexdigest()
+    assert digest == _GOLDEN_GRID_DIGESTS[tag_id], (
+        f"canonical tag {tag_id} grid changed; if intentional, re-verify against "
+        "apriltag-imgs @ f3fd9a7 and update _GOLDEN_GRID_DIGESTS"
+    )
