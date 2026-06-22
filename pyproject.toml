@@ -129,8 +129,10 @@ source = ["ros2_ws/src/patrol_mission/patrol_mission"]
 # dispatch, _issue ID mapping, warmup mutation) now has a fast PR-level guard —
 # tests/unit/test_node_glue.py stubs rclpy/px4_msgs so the branch logic runs ROS-free — with full
 # SITL (AC-5) as the end-to-end check. It stays OMITTED from the percentage gate by design: the
-# ≥85% floor scopes to the three rclpy-free modules {state_machine, frames, config}, and node.py's
-# publishers/main() still only execute under SITL, so measuring it as a percentage would mislead.
+# path-based source above scopes the ≥85% floor to the whole patrol_mission package EXCEPT node.py —
+# the rclpy-free core {state_machine, frames, config, commands, topics} plus qos.py (which imports
+# rclpy but is exercised through test_node_glue.py's rclpy stub). node.py's publishers/main() still
+# only execute under SITL, so measuring it as a percentage would mislead.
 omit = ["ros2_ws/src/patrol_mission/patrol_mission/node.py"]
 
 [tool.coverage.report]

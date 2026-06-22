@@ -537,7 +537,7 @@ docker compose run --rm dev colcon build                      # 5  (single green
 docker compose up -d sim                                      # 6  (PX4 SITL + Gazebo + agent, PLAT-1)
 docker compose exec sim ros2 topic list | grep fmu            # 7  (bridge up, PLAT-2)
 docker compose exec sim ros2 topic hz \
-    /fmu/out/vehicle_local_position                           # 8  (~50 Hz over 60 s, PLAT-2)
+    /fmu/out/vehicle_local_position_v1                        # 8  (~50 Hz over 60 s, PLAT-2)
 # (QGroundControl, desktop, arms/takes off — M1 manual verification, PLAT-1)
 # Siblings (02–05) append `ros2 launch patrol_bringup mission_patrol.launch.py` etc.
 ```
@@ -614,7 +614,7 @@ Layer definitions match the repo skeleton (§3.1), not invented.
 | Signal | Confirms | Healthy condition |
 |--------|----------|-------------------|
 | `ros2 topic list \| grep fmu` | agent bridged, PX4 topics exist | PX4 topics returned (PLAT-2) |
-| `ros2 topic hz /fmu/out/vehicle_local_position` | telemetry flowing | steady ~50 Hz over 60 s (PLAT-2) |
+| `ros2 topic hz /fmu/out/vehicle_local_position_v1` | telemetry flowing | steady ~50 Hz over 60 s (PLAT-2) |
 | `docker compose build` exit code | containers build from shared base | 0 / success (PLAT-3) |
 | `colcon build` exit code (in-container) | workspace green | 0 / success (PLAT-4) |
 | CI Layer B job status | platform build green in CI architecture | passing each PR (ADR-0002) |
@@ -668,7 +668,7 @@ Developer            docker compose         sim container              ROS 2 / a
    │                      │                      │   (uxrce_dds_client auto)──►│ bridge up
    ├─ ros2 topic list | grep fmu ───────────────────────────────────────────►│
    │   ◄── /fmu/out/*, /fmu/in/* returned (PLAT-2) ──────────────────────────┤
-   ├─ ros2 topic hz /fmu/out/vehicle_local_position ────────────────────────►│
+   ├─ ros2 topic hz /fmu/out/vehicle_local_position_v1 ────────────────────────►│
    │   ◄── steady ~50 Hz over 60 s (PLAT-2) ─────────────────────────────────┤
    ├─ (QGroundControl, desktop) arm + takeoff ──► sim: holds altitude 60 s (PLAT-1)
 ```
@@ -732,7 +732,7 @@ Ten components across five layers (§4.2). The `sim` container (C1) flies `gz_x5
 
 ### Q2: Core API contracts and data models
 
-The owned contract is the `/fmu/*` ROS 2 topic surface (C4, §4.2.4): `/fmu/out/vehicle_local_position` (`px4_msgs/VehicleLocalPosition`) steady ~50 Hz over 60 s, the `/fmu/out/*` set, and an addressable `/fmu/in/*` command surface. There is no REST/SDK/DB. The `CheckpointCapture` message is **not** defined here (OQ-8, owned by 04); only its landing slot C8 must accept the shape `std_msgs/Header header`, `string checkpoint_id`, `geometry_msgs/PoseStamped pose`, `string image_path`, `diagnostic_msgs/KeyValue[] metadata`.
+The owned contract is the `/fmu/*` ROS 2 topic surface (C4, §4.2.4): `/fmu/out/vehicle_local_position_v1` (`px4_msgs/VehicleLocalPosition`) steady ~50 Hz over 60 s, the `/fmu/out/*` set, and an addressable `/fmu/in/*` command surface. There is no REST/SDK/DB. The `CheckpointCapture` message is **not** defined here (OQ-8, owned by 04); only its landing slot C8 must accept the shape `std_msgs/Header header`, `string checkpoint_id`, `geometry_msgs/PoseStamped pose`, `string image_path`, `diagnostic_msgs/KeyValue[] metadata`.
 
 ### Q3: Deployment and infrastructure dependencies
 
@@ -782,7 +782,7 @@ Three milestones — **M1, M2** (mirroring the DoD's M1/M2, walking-skeleton) pl
 | # | Milestone | Type | Shippable Demo | Scope | Dependencies | Exit Criteria | Linear |
 |---|-----------|------|----------------|-------|-------------|---------------|--------|
 | M1 | Toolchain installed, vanilla SITL flying | skeleton | Stakeholder runs `make px4_sitl gz_x500`, arms/takes off from QGroundControl, watches a 60 s hover | Pinned toolchain that flies `gz_x500` + hovers 60 s (PLAT-1); manifest drafted (C9); `sim` build stage scaffolded (C1); first README fragment (C10). No ROS/containers-runtime yet (deliberate — validate the install before layering architecture) | None | `make px4_sitl gz_x500` cleanly launches; drone arms/takes off via QGC; holds altitude 60 s (PLAT-1). Manifest draft present; `sim` build stage compiles | Bootstrapped |
-| M2 | ROS 2 Jazzy + uXRCE-DDS bridge + containerized green build | layer 1: ROS 2 bridge, reproducible build & onboarding | Stakeholder sees live `/fmu/*` at ~50 Hz over 60 s in the container, then reproduces the README path on a clean host in <20 commands | Vendored `px4_msgs`/`px4_ros_com` (C6); agent bridging + `/fmu/*` (C4); `sim`+`dev` from compose incl. headless + optional gpu (C1/C2/C3, PLAT-9); single green `colcon build` in-container + on CI Layer B (C5, PLAT-4); `patrol_*` shells (C7/C8); README spine (C10); finalized manifest (C9) | M1 | `ros2 topic list \| grep fmu` returns topics + `ros2 topic hz /fmu/out/vehicle_local_position` ~50 Hz over 60 s (PLAT-2); `docker compose` builds `sim`+`dev` (PLAT-3); single `colcon build` green in-container + on CI Layer B (PLAT-4); shells build (PLAT-8); README path <20 commands on clean host (PLAT-6) | Bootstrapped |
+| M2 | ROS 2 Jazzy + uXRCE-DDS bridge + containerized green build | layer 1: ROS 2 bridge, reproducible build & onboarding | Stakeholder sees live `/fmu/*` at ~50 Hz over 60 s in the container, then reproduces the README path on a clean host in <20 commands | Vendored `px4_msgs`/`px4_ros_com` (C6); agent bridging + `/fmu/*` (C4); `sim`+`dev` from compose incl. headless + optional gpu (C1/C2/C3, PLAT-9); single green `colcon build` in-container + on CI Layer B (C5, PLAT-4); `patrol_*` shells (C7/C8); README spine (C10); finalized manifest (C9) | M1 | `ros2 topic list \| grep fmu` returns topics + `ros2 topic hz /fmu/out/vehicle_local_position_v1` ~50 Hz over 60 s (PLAT-2); `docker compose` builds `sim`+`dev` (PLAT-3); single `colcon build` green in-container + on CI Layer B (PLAT-4); shells build (PLAT-8); README path <20 commands on clean host (PLAT-6) | Bootstrapped |
 | MZ | Consolidation & deferred backlog | terminal | No new platform capability — MZ reviewed and cleared, or items explicitly punted to Phase 2 | Absorbs non-blocking work surfaced during M1–M2: OQ-3 pin, OQ-6 budget finalization, e2e/integration test expansion, final documentation + test consolidation | M2 | MZ reviewed and cleared, or items explicitly punted to Phase 2 | Bootstrapped |
 
 ### 6.2 Milestone Details
@@ -833,7 +833,7 @@ Three milestones — **M1, M2** (mirroring the DoD's M1/M2, walking-skeleton) pl
 **Goal:** thicken the skeleton across every remaining layer — vendored messages (C6), agent bridging + `/fmu/*` (C4), `sim`+`dev` from compose incl. headless (C1/C2/C3, PLAT-9), single green `colcon build` in-container + on CI Layer B (C5, PLAT-4), `patrol_*` shells (C7/C8), README spine (C10), finalized manifest (C9).
 **Shippable demo:** stakeholder sees live `/fmu/*` at ~50 Hz over 60 s in the container, then reproduces the README path on a clean host in <20 commands.
 **Dependencies:** M1.
-**Exit criteria:** `ros2 topic list | grep fmu` returns topics; `ros2 topic hz /fmu/out/vehicle_local_position` ~50 Hz over 60 s (PLAT-2); `docker compose` builds `sim`+`dev` (PLAT-3); single `colcon build` green in-container + on CI Layer B (PLAT-4); `patrol_*` shells build (PLAT-8); README path <20 commands on a clean host (PLAT-6); manifest finalized (PLAT-7).
+**Exit criteria:** `ros2 topic list | grep fmu` returns topics; `ros2 topic hz /fmu/out/vehicle_local_position_v1` ~50 Hz over 60 s (PLAT-2); `docker compose` builds `sim`+`dev` (PLAT-3); single `colcon build` green in-container + on CI Layer B (PLAT-4); `patrol_*` shells build (PLAT-8); README path <20 commands on a clean host (PLAT-6); manifest finalized (PLAT-7).
 
 ##### Out of Scope
 
@@ -864,7 +864,7 @@ Three milestones — **M1, M2** (mirroring the DoD's M1/M2, walking-skeleton) pl
 | Test Type | Scope | Key Scenarios |
 |-----------|-------|---------------|
 | Build | `docker compose` build + single `colcon build` (PLAT-3, PLAT-4) | `sim`+`dev` build from shared base; `colcon build` exit 0 incl. shells (C5/C7/C8) |
-| Integration | Agent bridging (PLAT-2) | `ros2 topic list \| grep fmu` returns topics; `/fmu/out/vehicle_local_position` ~50 Hz over 60 s; `/fmu/in/*` addressable |
+| Integration | Agent bridging (PLAT-2) | `ros2 topic list \| grep fmu` returns topics; `/fmu/out/vehicle_local_position_v1` ~50 Hz over 60 s; `/fmu/in/*` addressable |
 | CI | Layer B green (PLAT-4 AC2, ADR-0002) | `ros-ci.yml` self-activates on landed shells + vendored msgs; `colcon build`/`colcon test` green |
 | E2E (demo gate) | Clean-host README reproduction (PLAT-6) | Fresh host reaches running sim in <20 commands, 0 manual deviations |
 | Determinism (INF-P2) | Pinned-manifest stability (H3) | Re-run `colcon build` after unrelated upstream PX4 change → still green |
@@ -1055,8 +1055,8 @@ THEN a drone launches in Gazebo Harmonic, takes off, and holds altitude within h
 
 **UAC-PLAT-2: Live PX4 telemetry over uXRCE-DDS**
 GIVEN SITL is running with the Micro XRCE-DDS Agent bridged to PX4 over UDP localhost
-WHEN a node author runs `ros2 topic list | grep fmu` and `ros2 topic hz /fmu/out/vehicle_local_position`
-THEN PX4 topics are returned and `/fmu/out/vehicle_local_position` reports a steady ~50 Hz publish rate sustained over a 60 s window, and the `/fmu/in/*` command surface is addressable.
+WHEN a node author runs `ros2 topic list | grep fmu` and `ros2 topic hz /fmu/out/vehicle_local_position_v1`
+THEN PX4 topics are returned and `/fmu/out/vehicle_local_position_v1` reports a steady ~50 Hz publish rate sustained over a 60 s window, and the `/fmu/in/*` command surface is addressable.
 *(Design coverage: C4, §4.2.4; Sequences 1+2, §4.5.)*
 
 **UAC-PLAT-3: Reproducible containerized build**
