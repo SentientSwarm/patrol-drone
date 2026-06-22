@@ -22,7 +22,7 @@ nearest-neighbour to ``CELL_PX`` px and emitted as 8-bit grayscale.
 
 Usage:
     python3 sim/tools/gen_apriltag_models.py          # (re)write every model dir
-    python3 sim/tools/gen_apriltag_models.py --check   # verify committed models are up to date (CI)
+    python3 sim/tools/gen_apriltag_models.py --check   # fail on stale OR orphan model dirs (== CI gate)
 """
 
 from __future__ import annotations
@@ -251,17 +251,26 @@ def orphan_model_dirs() -> list[str]:
     return sorted(str(p.relative_to(REPO_ROOT)) for p in orphans)
 
 
+def _run_check() -> int:
+    """The same union the CI wrapper (scripts/check_world_drift.py) enforces: stale forward-rendered
+    files AND orphan dirs left after a tag removal. Keeps the standalone --check honest vs the gate."""
+    stale = stale_model_files()
+    orphans = orphan_model_dirs()
+    if not stale and not orphans:
+        print("apriltag models: up to date.")
+        return 0
+    print("apriltag models drifted from sim/tools/gen_apriltag_models.py:")
+    for rel in stale:
+        print(f"  - stale (re-run the generator): {rel}")
+    for rel in orphans:
+        print(f"  - orphan dir (remove it; no canonical tag): {rel}")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--check" in argv:
-        drift = stale_model_files()
-        if drift:
-            print("apriltag models are stale; re-run sim/tools/gen_apriltag_models.py:")
-            for rel in drift:
-                print(f"  - {rel}")
-            return 1
-        print("apriltag models: up to date.")
-        return 0
+        return _run_check()
     for path in _write_all():
         print(f"wrote {path.relative_to(REPO_ROOT)}")
     return 0

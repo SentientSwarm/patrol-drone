@@ -145,7 +145,7 @@ check_workspace() {
 
 # ----------------------------------------------------------------------------- display / QGC
 check_display() {
-  if [[ "${DOCTOR_HEADLESS:-0}" -eq 1 ]]; then
+  if [[ "${DOCTOR_HEADLESS:-0}" == 1 ]]; then
     ok "display server check skipped (headless: no Gazebo GUI to render)"
     return 0
   fi
@@ -160,7 +160,7 @@ check_display() {
 }
 
 check_qgc() {
-  if [[ "${DOCTOR_HEADLESS:-0}" -eq 1 ]]; then
+  if [[ "${DOCTOR_HEADLESS:-0}" == 1 ]]; then
     ok "QGroundControl check skipped (headless: PX4 runs without a GCS in this path)"
     return 0
   fi
@@ -276,7 +276,7 @@ run_patrol_world_checks() {
 run_checks() {
   local smoke="${1:-0}" fails=0 label=""
   [[ "${smoke}" -eq 1 ]] && label=" (smoke)"
-  [[ "${DOCTOR_PATROL_WORLD:-0}" -eq 1 ]] && label="${label} (patrol-world)"
+  [[ "${DOCTOR_PATROL_WORLD:-0}" == 1 ]] && label="${label} (patrol-world)"
   hdr "patrol-drone host capability check${label}"
   check_xrce_agent || fails=$((fails + 1))
   check_ros || fails=$((fails + 1))
@@ -287,7 +287,7 @@ run_checks() {
   else
     check_workspace || fails=$((fails + 1))
   fi
-  if [[ "${DOCTOR_PATROL_WORLD:-0}" -eq 1 ]]; then
+  if [[ "${DOCTOR_PATROL_WORLD:-0}" == 1 ]]; then
     run_patrol_world_checks
     fails=$((fails + $?))
   fi

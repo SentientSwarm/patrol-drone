@@ -72,6 +72,12 @@ log()  { printf '\033[1;34m[patrol-world]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m        %s\n' "$*" >&2; }
 err()  { printf '\033[1;31m[err]\033[0m         %s\n' "$*" >&2; }
 
+# Fail loud on a non-integer operator-supplied numeric env (CAMERA_WAIT / VERIFY_TIMEOUT) before it
+# reaches arithmetic, so a typo gives a clear message instead of a confusing $(( )) failure (F-04).
+require_uint() {  # require_uint NAME VALUE
+  [[ "${2}" =~ ^[0-9]+$ ]] || { err "${1} must be a non-negative integer (got '${2}')"; exit 2; }
+}
+
 usage() {
   cat <<'EOF'
 Usage: scripts/run_patrol_world_sitl.sh [options]
@@ -143,6 +149,16 @@ source_ros() {
 # gz_env.sh, so a value set here survives.
 export_gz_env() {
   export GZ_SIM_RESOURCE_PATH="${REPO_ROOT}/sim/models:${REPO_ROOT}/sim/worlds:${REPO_ROOT}/sim/px4_sitl_overrides:${PX4_DIR}/Tools/simulation/gz/models${GZ_SIM_RESOURCE_PATH:+:${GZ_SIM_RESOURCE_PATH}}"
+  # gz_x500_patrol merges model://x500, which MUST resolve to PX4's pinned tree. The repo paths come
+  # first on the resource path (they must, for the AprilTag/world assets), so a repo-local x500/ would
+  # silently shadow the PX4 base. None exists today; fail closed rather than spawn the wrong base (F-02).
+  local repo_dir
+  for repo_dir in "${REPO_ROOT}/sim/models" "${REPO_ROOT}/sim/worlds" "${REPO_ROOT}/sim/px4_sitl_overrides"; do
+    if [[ -d "${repo_dir}/x500" ]]; then
+      err "repo model '${repo_dir}/x500' would shadow PX4's pinned model://x500 on GZ_SIM_RESOURCE_PATH; remove or rename it"
+      exit 1
+    fi
+  done
   [[ -f "${GZ_SERVER_CONFIG}" ]] && export GZ_SIM_SERVER_CONFIG_PATH="${GZ_SERVER_CONFIG}"
 }
 
@@ -234,7 +250,7 @@ start_qgc() {
 # cold start (EKF init, lockstep settling) the first frame can lag well past a single echo's window —
 # one tight `echo --once` false-negatives a working camera. Retry until CAMERA_WAIT elapses.
 wait_for_camera_frame() {
-  local deadline=$((SECONDS + CAMERA_WAIT))
+  local deadline=$((SECONDS + 10#${CAMERA_WAIT}))  # base-10: a validated value like 090 isn't octal
   while ((SECONDS < deadline)); do
     if timeout 10 ros2 topic echo --once "${CAMERA_TOPIC}" >/dev/null 2>&1; then return 0; fi
   done
@@ -276,6 +292,8 @@ report_keep_up() {
 
 main() {
   parse_args "$@"
+  require_uint CAMERA_WAIT "${CAMERA_WAIT}"        # validate operator env before any arithmetic (F-04)
+  require_uint VERIFY_TIMEOUT "${VERIFY_TIMEOUT}"  # (also covers a --timeout override, parsed above)
   if [[ -n "${LOG_DIR}" ]]; then
     mkdir -p "${LOG_DIR}"
   else

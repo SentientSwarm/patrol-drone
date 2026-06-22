@@ -1,7 +1,7 @@
 # Definition of Done — Mission Control
 
 **Phase 1 docset:** 2 of 5 · **Milestones:** M3–M4
-**Lifecycle status:** DoD ✅ · PRD ⏳ (/drive) · Design ⏳ (/drive)
+**Lifecycle status:** DoD ✅ · PRD ✅ · Design ✅
 **Source:** docs/phase1_simulation_plan.md — [M3 "Python mission node, takeoff and land"](../../phase1_simulation_plan.md#m3--python-mission-node-takeoff-and-land), [M4 "Multi-waypoint patrol mission"](../../phase1_simulation_plan.md#m4--multi-waypoint-patrol-mission); cross-cutting "Test strategy", "What's explicitly NOT in Phase 1", "Phase 1 exit checklist"
 **Stakeholders:** Project owner (solo dev) — operator who runs patrols and maintainer of the mission stack; reviewers — small-PR trunk-based reviewers per "Working agreement"; downstream — Phase 2 (outdoor first flights) reuses the same launch files and state machine; docsets 03/04/05 consume the mission topics and launch entry-point this docset defines.
 **Depends on:** 01-platform (ROS 2 Jazzy + uXRCE-DDS bridge, container build, `px4_msgs`, `/fmu/*` telemetry)
@@ -43,15 +43,15 @@ Deliver the mission orchestration layer: a Python ROS 2 node driving PX4 offboar
 
 ## 4. Acceptance criteria / Definition of Done (falsifiable — seeds the PRD's UACs)
 
-- [ ] **AC-1** — GIVEN a running SITL drone, WHEN `ros2 launch patrol_bringup mission_basic.launch.py` is invoked, THEN the drone arms, takes off to 5 m AGL, hovers 10 s, and lands. *(M3 Exit)*
-- [ ] **AC-2** — GIVEN a patrol mission YAML with 4+ waypoints, WHEN `ros2 launch patrol_bringup mission_patrol.launch.py` is invoked against SITL, THEN the drone visits each waypoint in order, dwells the configured time at each, returns home, and lands. *(M4 Exit; exit-checklist item 1 — mission-flight portion, integrative)*
-- [ ] **AC-3** — GIVEN the patrol route definition, WHEN a run starts, THEN the mission config is read from a YAML file checked into the repo (no route data hardcoded in source). *(exit-checklist item 2)*
-- [ ] **AC-4** — GIVEN the `MissionStateMachine` class, WHEN the unit suite runs, THEN it passes with ≥85% coverage on the mission state machine and completes in <5 s without ROS/Gazebo/PX4. *(M3 Exit; exit-checklist item 3; ADR-0002 enforces ≥85% as the CI floor)*
-- [ ] **AC-5** — GIVEN CI, WHEN the integration suite runs, THEN ≥1 integration test spins up SITL, runs a canonical mission via the launch file, and passes. *(M3/M4 Exit; exit-checklist item 4)*
-- [ ] **AC-6** — GIVEN a patrol in flight, WHEN an abort is requested via an external-signal ROS topic, THEN the state machine transitions to abort and the drone returns home; the transition is observable in the SITL run. *(M4 Exit; exit-checklist item 12 — external-signal half)*
-- [ ] **AC-7** — GIVEN a low-battery condition crossing the configured threshold, WHEN the mission is running, THEN the state machine transitions to abort; this transition is covered by a unit test. *(exit-checklist item 12 — low-battery half)*
-- [ ] **AC-8** — GIVEN the abort logic, WHEN the unit suite runs, THEN abort transitions (low-battery, external-signal, and scaffolded triggers) are covered by unit tests. *(M4 Exit; exit-checklist item 12)*
-- [ ] **AC-9** — GIVEN a waypoint target, WHEN the drone is within the configured tolerance for the configured hold time, THEN the state machine marks the waypoint complete and advances — never on exact position equality. *(M4 — waypoint completion criterion)*
+- [x] **AC-1** — GIVEN a running SITL drone, WHEN `ros2 launch patrol_bringup mission_basic.launch.py` is invoked, THEN the drone arms, takes off to 5 m AGL, hovers 10 s, and lands. *(M3 Exit)*
+- [x] **AC-2** — GIVEN a patrol mission YAML with 4+ waypoints, WHEN `ros2 launch patrol_bringup mission_patrol.launch.py` is invoked against SITL, THEN the drone visits each waypoint in order, dwells the configured time at each, returns home, and lands. *(M4 Exit; exit-checklist item 1 — mission-flight portion, integrative)*
+- [x] **AC-3** — GIVEN the patrol route definition, WHEN a run starts, THEN the mission config is read from a YAML file checked into the repo (no route data hardcoded in source). *(exit-checklist item 2)*
+- [x] **AC-4** — GIVEN the `MissionStateMachine` class, WHEN the unit suite runs, THEN it passes with ≥85% coverage on the mission state machine and completes in <5 s without ROS/Gazebo/PX4. *(M3 Exit; exit-checklist item 3; ADR-0002 enforces ≥85% as the CI floor)*
+- [x] **AC-5** — GIVEN CI, WHEN the integration suite runs, THEN ≥1 integration test spins up SITL, runs a canonical mission via the launch file, and passes. *(M3/M4 Exit; exit-checklist item 4)*
+- [x] **AC-6** — GIVEN a patrol in flight, WHEN an abort is requested via an external-signal ROS topic, THEN the state machine transitions to abort and the drone returns home; the transition is observable in the SITL run. *(M4 Exit; exit-checklist item 12 — external-signal half)*
+- [x] **AC-7** — GIVEN a low-battery condition crossing the configured threshold, WHEN the mission is running, THEN the state machine transitions to abort; this transition is covered by a unit test. *(exit-checklist item 12 — low-battery half)*
+- [x] **AC-8** — GIVEN the abort logic, WHEN the unit suite runs, THEN abort transitions (low-battery, external-signal, and scaffolded triggers) are covered by unit tests. *(M4 Exit; exit-checklist item 12)*
+- [x] **AC-9** — GIVEN a waypoint target, WHEN the drone is within the configured tolerance for the configured hold time, THEN the state machine marks the waypoint complete and advances — never on exact position equality. *(M4 — waypoint completion criterion)*
 
 ## 5. Interfaces
 
@@ -73,7 +73,7 @@ Deliver the mission orchestration layer: a Python ROS 2 node driving PX4 offboar
 - **uXRCE-DDS native, not MAVROS or MAVSDK.** Offboard control goes through PX4's uXRCE-DDS topics directly; MAVSDK/MAVLink translation layers are excluded. (plan "Target stack"; M3 design call; ADR-0001 "Neutral".)
 - **State machine as a separate class, not embedded in the node.** ROS plumbing in the node; transition logic in plain Python — the precondition for London-style TDD. (plan M3; "Test strategy".)
 - **PX4 offboard uses NED relative to the EKF origin.** Waypoints declare their frame; conversion happens at one explicit boundary. (plan M4 "Coordinate frames".)
-- **ROS 2 Jazzy on Ubuntu 24.04, Python 3.12, PX4 v1.16.x.** (plan "Target stack"; ADR-0001.)
+- **ROS 2 Jazzy on Ubuntu 24.04, Python 3.12, PX4 v1.17.0.** (plan "Target stack"; ADR-0001.)
 - **Don't mock the simulator.** Mock the PX4 interface in unit tests; use real SITL for anything needing flight dynamics. (plan "Test strategy".)
 - **CI tiering:** mission-core unit tests + ≥85% coverage gate run per-PR on a pure-Python runner; SITL integration is the slow/flaky tier kept small and strict (nightly SITL scaffold is not a required per-PR check). (ADR-0002.)
 - **Abort transitions exist from day one even if not all triggerable in SITL.** (plan M4 "Mission abort paths".)

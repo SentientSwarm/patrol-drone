@@ -1,7 +1,7 @@
 # Definition of Done — Simulation Environment & Assets
 
 **Phase 1 docset:** 3 of 5 · **Milestones:** M5
-**Lifecycle status:** DoD ✅ · PRD ⏳ (/drive) · Design ⏳ (/drive)
+**Lifecycle status:** DoD ✅ · PRD ✅ · Design ✅
 **Source:** docs/phase1_simulation_plan.md — M5 ("Custom world with checkpoints and AprilTags"); cross-cutting: "Repo structure", "Containerization", "What's explicitly NOT in Phase 1", "Phase 1 exit checklist"
 **Stakeholders:** Project owner (solo dev) — operator/maintainer authoring and patrolling the world; downstream — Phase 1 consumers 02-mission-control (patrol target positions) and 04-perception (AprilTag detection + camera frames), plus Phase 4 indoor-VIO which reuses the same AprilTag assets and detection on hardware; reviewers — PR reviewers gating merge to a working-in-sim `main`.
 **Depends on:** 01-platform (Gazebo Harmonic / PX4 SITL / ROS 2 base, `colcon build`, container env) — foundation for loading a world and attaching a sensor; 02-mission-control (patrol mission able to fly a waypoint sequence — used to exercise the world's checkpoints).

@@ -20,13 +20,19 @@ def test_committed_models_match_generator():
     assert gm.stale_model_files() == [], "run: python3 sim/tools/gen_apriltag_models.py"
 
 
-def test_orphan_model_dirs_reports_injected_dir(tmp_path, monkeypatch):
+@pytest.fixture
+def patched_models(tmp_path, monkeypatch):
+    """An empty MODELS_DIR under a tmp REPO_ROOT — shared scaffolding for the orphan-dir tests."""
     models = tmp_path / "sim" / "models"
     models.mkdir(parents=True)
     monkeypatch.setattr(gm, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(gm, "MODELS_DIR", models)
-    (models / "apriltag_36h11_0").mkdir()  # canonical id -> not an orphan
-    (models / "apriltag_36h11_99").mkdir()  # orphan -> reported
+    return models
+
+
+def test_orphan_model_dirs_reports_injected_dir(patched_models):
+    (patched_models / "apriltag_36h11_0").mkdir()  # canonical id -> not an orphan
+    (patched_models / "apriltag_36h11_99").mkdir()  # orphan -> reported
     assert gm.orphan_model_dirs() == ["sim/models/apriltag_36h11_99"]
 
 
@@ -34,6 +40,19 @@ def test_no_orphan_model_dirs_in_committed_tree():
     # Real MODELS_DIR / REPO_ROOT — locks the current tree clean (mirrors
     # test_committed_models_match_generator). No monkeypatch, so relative_to(REPO_ROOT) resolves.
     assert gm.orphan_model_dirs() == []
+
+
+def test_check_flags_orphan_dir(patched_models, capsys):
+    # --check must run the SAME union the CI wrapper does (stale + orphan). An orphan alone must fail
+    # it; assert the orphan LINE is printed so the test fails if the new orphan branch ever regresses.
+    (patched_models / "apriltag_36h11_99").mkdir()
+    assert gm.main(["--check"]) == 1
+    assert "orphan dir" in capsys.readouterr().out
+
+
+def test_check_clean_when_in_sync():
+    # Real REPO_ROOT / MODELS_DIR (no monkeypatch): the committed tree has neither stale nor orphan.
+    assert gm.main(["--check"]) == 0
 
 
 @pytest.mark.parametrize("tag_id", sorted(gm.CANONICAL_TAG36H11))
