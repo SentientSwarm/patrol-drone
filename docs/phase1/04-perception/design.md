@@ -500,7 +500,9 @@ Top risks, each tracked as an OQ in §2: **(1) apriltag_ros on Jazzy may not ins
 ## 6. Implementation Plan
 
 ### 6.0 Linear Project
-**Project:** TBD (no upstream Linear project bound at design time) · **Team:** TBD · **Initiative:** Patrol-Drone Phase 1 · **Created from:** Section 6 of this document.
+**Project:** [Patrol Drone 04 Perception](https://linear.app/wemodulate/project/patrol-drone-04-perception-7c02721abd79) (Swarm; id `33dadf5d-1c02-44e7-8878-b108e53948af`)
+**Team:** Swarm · **Initiative:** Patrol Drone · **Created from:** Section 6 of this document (bootstrapped 2026-06-21).
+**Milestones:** M6.A (Message contract first), M6.B (Capture + detect + publish), M6.C (Persist + metadata) · **Issues:** SWM-54…SWM-66 (13 tasks).
 
 ### 6.1 Milestone Overview
 
