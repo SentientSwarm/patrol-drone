@@ -162,6 +162,7 @@ class MissionStateMachine:
         config: MissionConfig,
         waypoints_ned: list[Point],
         home_ned: Point,
+        waypoint_yaws_ned: list[float] | None = None,
     ) -> None:
         self._cfg = config
         # waypoints_ned is config.waypoints resolved to NED at the single frame boundary (MC-7), so
@@ -173,6 +174,16 @@ class MissionStateMachine:
                 f"config.waypoints ({len(config.waypoints)})"
             )
         self._wps = waypoints_ned
+        # Per-waypoint NED yaw, parallel to _wps. None => hold North (0.0) at every waypoint, the
+        # pre-SIM-4 behavior, so non-checkpoint callers (and the unit builders) are unaffected.
+        self._yaws = (
+            waypoint_yaws_ned if waypoint_yaws_ned is not None else [0.0] * len(waypoints_ned)
+        )
+        if len(self._yaws) != len(waypoints_ned):
+            raise ValueError(
+                f"waypoint_yaws_ned ({len(self._yaws)}) must align with "
+                f"waypoints_ned ({len(waypoints_ned)})"
+            )
         self._home = home_ned
         self._p = _Progress()
         # Takeoff target: home x/y, takeoff_alt_m AGL above home. Shared with the acceptance harness
@@ -283,15 +294,21 @@ class MissionStateMachine:
         """After hover: head to the first waypoint, or RTH if the mission has none (design §4.2.3)."""
         if self._wps:
             self._p.waypoint_index = 0
-            return MissionState.WAYPOINT, Command(setpoint_ned=self._wps[0], current_waypoint=0)
+            return MissionState.WAYPOINT, Command(
+                setpoint_ned=self._wps[0], yaw=self._yaws[0], current_waypoint=0
+            )
         return MissionState.RTH, Command(setpoint_ned=self._home)
 
     def _waypoint(self, telem: Telemetry) -> tuple[MissionState, Command]:
         i = self._p.waypoint_index
         target = self._wps[i]
         if self._within_tolerance_for_hold(telem, target):
-            return MissionState.DWELL, Command(setpoint_ned=target, current_waypoint=i)
-        return MissionState.WAYPOINT, Command(setpoint_ned=target, current_waypoint=i)
+            return MissionState.DWELL, Command(
+                setpoint_ned=target, yaw=self._yaws[i], current_waypoint=i
+            )
+        return MissionState.WAYPOINT, Command(
+            setpoint_ned=target, yaw=self._yaws[i], current_waypoint=i
+        )
 
     def _dwell(self, telem: Telemetry) -> tuple[MissionState, Command]:
         i = self._p.waypoint_index
@@ -300,14 +317,16 @@ class MissionStateMachine:
         # Hold the waypoint while dwelling. The node emits one atomic /patrol/dwell event (this index)
         # on the rising edge into DWELL — that single message is 04's once-per-checkpoint capture
         # trigger (OQ-7), not a correlation of the separate /patrol/{mission_state,current_waypoint}.
-        return MissionState.DWELL, Command(setpoint_ned=self._wps[i], current_waypoint=i)
+        return MissionState.DWELL, Command(
+            setpoint_ned=self._wps[i], yaw=self._yaws[i], current_waypoint=i
+        )
 
     def _advance_from_dwell(self, i: int) -> tuple[MissionState, Command]:
         """After dwelling at waypoint i: fly the next waypoint, or RTH once the last is done."""
         if i + 1 < len(self._wps):
             self._p.waypoint_index = i + 1
             return MissionState.WAYPOINT, Command(
-                setpoint_ned=self._wps[i + 1], current_waypoint=i + 1
+                setpoint_ned=self._wps[i + 1], yaw=self._yaws[i + 1], current_waypoint=i + 1
             )
         return MissionState.RTH, Command(setpoint_ned=self._home)
 

@@ -16,6 +16,11 @@ completion:
   hold_time_s: 2.0      # OQ-4 default (overridable)
 abort:
   low_battery_threshold: 0.20   # OQ-6 (battery_status.remaining fraction)
+# Approach geometry (SIM-4): each checkpoint waypoint hovers `standoff_m` back from the tag and yaws to
+# face it, so the forward camera resolves the marker rather than sitting on top of it. The world's
+# AprilTags are emitted at zero yaw (face normal along +Y), so the stand-off is taken along +Y.
+approach:
+  standoff_m: 3.0   # meters; tunable — see tests/unit/test_checkpoint_visibility.py
 # Home at 2 m ENU altitude: RTH flies the explicit home-waypoint setpoint to here, settles, then
 # LANDING descends the rest of the way (OQ-8 — no PX4 RTL handoff).
 home:

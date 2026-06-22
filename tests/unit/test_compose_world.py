@@ -352,3 +352,19 @@ def test_shipped_checkpoints_satisfy_world_design():
     assert cw.validate_world_design() == [], (
         "edit sim/config/checkpoints.yaml to restore invariants"
     )
+
+
+# F-05.2: _fmt keeps every bounded/valid coordinate byte-identical (so the committed world never
+# drifts) but refuses a scientific-notation magnitude, which gz could misparse in a <pose>.
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(12.0, "12"), (8.0, "8"), (1.5, "1.5"), (-6.0, "-6"), (-12.0, "-12"), (0.0, "0")],
+)
+def test_fmt_preserves_bounded_coordinates(value, expected):
+    assert cw._fmt(value) == expected
+
+
+@pytest.mark.parametrize("value", [1e-7, 1e20, -1e-8])
+def test_fmt_rejects_scientific_notation(value):
+    with pytest.raises(cw.ComposeError, match="scientific notation"):
+        cw._fmt(value)

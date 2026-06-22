@@ -48,6 +48,12 @@ MODEL_NAME="gz_x500_patrol"
 MODEL_SDF="${REPO_ROOT}/sim/px4_sitl_overrides/gz_x500_patrol/model.sdf"
 CHECKPOINTS_YAML="${REPO_ROOT}/sim/config/checkpoints.yaml"
 CAMERA_TOPIC="/drone/camera/image_raw"
+# AC-4 executable rate floor (F-04): the camera contract is 15 Hz, but the measured SITL stream is
+# cold-start-sensitive and bursty (15.2 and 22.7 Hz observed across runs), so the band is deliberately
+# GENEROUS — its job is to catch a gross regression (e.g. a drop to ~2 Hz), not to police a precise
+# steady-state rate. Override via env if a measured SITL cadence ever warrants tightening.
+CAMERA_RATE_MIN_HZ="${CAMERA_RATE_MIN_HZ:-8.0}"
+CAMERA_RATE_MAX_HZ="${CAMERA_RATE_MAX_HZ:-30.0}"
 # PX4's SITL server config wires the gz systems (Physics, SceneBroadcaster, Sensors, ...). We start
 # Gazebo ourselves (standalone), so we must point it at the same config or the camera sensor renders
 # nothing (no Sensors system).
@@ -257,21 +263,43 @@ wait_for_camera_frame() {
   return 1
 }
 
+# Assert a sampled camera rate is within the AC-4 band (F-04). A frame already arrived, so an
+# UNAVAILABLE sample (`ros2 topic hz` can fail to settle in a short window) warns rather than hard-fails
+# — only a numeric reading is decisive. The band is generous on purpose: it catches a gross regression
+# (e.g. a drop to ~2 Hz), it does not police the precise steady-state rate.
+check_camera_rate() {
+  local rate_hz="$1"
+  if [[ -z "${rate_hz}" ]]; then
+    warn "camera rate sample unavailable (a frame arrived, so the camera publishes); skipping band check"
+    return 0
+  fi
+  if awk -v r="${rate_hz}" -v lo="${CAMERA_RATE_MIN_HZ}" -v hi="${CAMERA_RATE_MAX_HZ}" \
+      'BEGIN { exit !(r >= lo && r <= hi) }'; then
+    log "camera rate ${rate_hz} Hz within band [${CAMERA_RATE_MIN_HZ}, ${CAMERA_RATE_MAX_HZ}] (AC-4)"
+    return 0
+  fi
+  err "camera rate ${rate_hz} Hz outside band [${CAMERA_RATE_MIN_HZ}, ${CAMERA_RATE_MAX_HZ}] Hz (AC-4 regression)"
+  return 1
+}
+
 verify_camera() {
   log "verifying the camera publishes on ${CAMERA_TOPIC} (up to ${CAMERA_WAIT}s for cold start)..."
   if ! wait_for_camera_frame; then
     err "no message on ${CAMERA_TOPIC} within ${CAMERA_WAIT}s — camera not publishing or bridge down (see ${LOG_DIR})"
     return 1
   fi
-  local rate
-  rate="$(timeout 8 ros2 topic hz "${CAMERA_TOPIC}" 2>&1 | grep -m1 -oE 'average rate: [0-9.]+' || true)"
-  log "camera ${CAMERA_TOPIC} steady: ${rate:-(rate sample unavailable, but a frame arrived)}"
+  local rate_hz
+  rate_hz="$(timeout 8 ros2 topic hz "${CAMERA_TOPIC}" 2>&1 | awk '/average rate:/ { print $3; exit }' || true)"
+  log "camera ${CAMERA_TOPIC} steady: ${rate_hz:-(rate sample unavailable)} Hz"
+  check_camera_rate "${rate_hz}" || return 1
+  # The /compressed companion (05-logging records it) rides image_transport, so this is a structural
+  # presence check, not a literal-drift check (F-05.1). Absent => the bag pipeline loses imagery.
   if ros2 topic list 2>/dev/null | grep -qx "${CAMERA_TOPIC}/compressed"; then
-    log "compressed companion present: ${CAMERA_TOPIC}/compressed"
-  else
-    warn "${CAMERA_TOPIC}/compressed not found — install ros-${ROS_DISTRO}-image-transport-plugins for the bag topic"
+    log "compressed companion present: ${CAMERA_TOPIC}/compressed (F-05.1)"
+    return 0
   fi
-  return 0
+  err "${CAMERA_TOPIC}/compressed absent — 05-logging needs it; install ros-${ROS_DISTRO}-image-transport-plugins"
+  return 1
 }
 
 fly_and_verify_patrol() {

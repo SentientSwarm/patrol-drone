@@ -30,7 +30,7 @@ _VALID_FRAMES = ("enu", "ned")
 # {} — so defaults would apply and a config error would fly, Hermes Medium PR #8 R11). Validated up
 # front so a misspelled section fails loud at the same boundary as a missing required field.
 _KNOWN_TOP_LEVEL_KEYS = frozenset(
-    {"takeoff_alt_m", "hover_time_s", "completion", "abort", "home", "waypoints"}
+    {"takeoff_alt_m", "hover_time_s", "completion", "abort", "approach", "home", "waypoints"}
 )
 
 
@@ -51,11 +51,23 @@ class AbortConfig:
 
 
 @dataclass(frozen=True)
+class Approach:
+    """Checkpoint approach geometry (SIM-4). How far back the drone hovers from a tag to resolve it.
+
+    Tags are emitted at zero yaw (face normal along world +Y), so the stand-off is taken along +Y and
+    the waypoint yaw is computed to face the tag. Optional section — the default holds a sane stand-off.
+    """
+
+    standoff_m: float = 3.0
+
+
+@dataclass(frozen=True)
 class Waypoint:
-    position: Point  # source position (from inline `position` or, M4, a checkpoint_id)
+    position: Point  # source position (inline `position`, or a checkpoint's resolved hover pose)
     frame: str  # "enu" | "ned" — the frame `position` is expressed in (NOT necessarily ENU)
     dwell_s: float
     checkpoint_id: str | None = None  # set when resolved from checkpoints.yaml (M4)
+    yaw_enu: float | None = None  # ENU heading to hold (checkpoint waypoints); None = no constraint
 
 
 @dataclass(frozen=True)
@@ -67,6 +79,7 @@ class MissionConfig:
     home_position: Point
     home_frame: str
     waypoints: tuple[Waypoint, ...]
+    approach: Approach = Approach()  # SIM-4; default holds the sane stand-off
 
 
 def _require(raw: dict[str, Any], key: str, what: str = "mission config") -> Any:
@@ -221,6 +234,7 @@ def _validate_semantics(cfg: MissionConfig) -> None:
     _positive(cfg.completion.tolerance_m, "completion.tolerance_m")
     _non_negative(cfg.completion.hold_time_s, "completion.hold_time_s")
     _unit_interval(cfg.abort.low_battery_threshold, "abort.low_battery_threshold")
+    _positive(cfg.approach.standoff_m, "approach.standoff_m")
     for i, wp in enumerate(cfg.waypoints):
         _non_negative(wp.dwell_s, f"waypoints[{i}].dwell_s")
 
@@ -405,16 +419,33 @@ def _check_waypoint_keys(w: dict, index: int, allowed: frozenset[str]) -> None:
         )
 
 
-def _checkpoint_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> Waypoint:
-    """Resolve a checkpoint-based waypoint against the loaded checkpoints (ENU). Fail loud (INF-M3)."""
+def _approach_pose(tag: Point, standoff_m: float) -> tuple[Point, float]:
+    """Hover pose that looks at a zero-yaw AprilTag from a stand-off (SIM-4).
+
+    The World Composer emits every marker at zero yaw, so a tag's readable face normal lies along
+    world +Y. The drone hovers ``standoff_m`` north (+Y) of the tag at the tag's altitude and yaws to
+    face the tag center, so the forward, slightly-down camera resolves the marker instead of hovering
+    on top of it. Returns the ENU hover point and the ENU yaw (CCW from East) toward the tag.
+    """
+    tx, ty, tz = tag
+    hover: Point = (tx, ty + standoff_m, tz)
+    return hover, math.atan2(ty - hover[1], tx - hover[0])
+
+
+def _checkpoint_waypoint(
+    w: dict, index: int, checkpoints: dict[str, Point], approach: Approach
+) -> Waypoint:
+    """Resolve a checkpoint waypoint to a stand-off hover pose facing the tag (SIM-4). Fail loud."""
     cid = _checkpoint_id(w["checkpoint_id"], f"waypoint[{index}]")
     if cid not in checkpoints:
         raise ValueError(f"waypoint[{index}] references unknown checkpoint_id {cid!r}")
+    hover, yaw_enu = _approach_pose(checkpoints[cid], approach.standoff_m)
     return Waypoint(
-        position=checkpoints[cid],
+        position=hover,
         frame="enu",
         dwell_s=_number(w["dwell_s"], f"waypoints[{index}].dwell_s"),
         checkpoint_id=cid,
+        yaw_enu=yaw_enu,
     )
 
 
@@ -428,7 +459,9 @@ def _inline_waypoint(w: dict, index: int) -> Waypoint:
     )
 
 
-def _parse_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> Waypoint:
+def _parse_waypoint(
+    w: dict, index: int, checkpoints: dict[str, Point], approach: Approach
+) -> Waypoint:
     """Build a Waypoint from exactly one shape: a checkpoint reference or an inline position.
 
     Each waypoint must be unambiguously one shape and carry exactly that shape's keys; a mixed,
@@ -437,7 +470,7 @@ def _parse_waypoint(w: dict, index: int, checkpoints: dict[str, Point]) -> Waypo
     """
     if _waypoint_shape(w, index) == "checkpoint":
         _check_waypoint_keys(w, index, _CHECKPOINT_WAYPOINT_KEYS)
-        return _checkpoint_waypoint(w, index, checkpoints)
+        return _checkpoint_waypoint(w, index, checkpoints, approach)
     _check_waypoint_keys(w, index, _INLINE_WAYPOINT_KEYS)
     return _inline_waypoint(w, index)
 
@@ -482,10 +515,13 @@ def load_mission_config(
         raw = _require_mapping(yaml.safe_load(fh), "mission config")
 
     _reject_unknown_top_level_keys(raw)
+    approach = _section(raw, "approach", Approach)
     home = _require_mapping(_require(raw, "home"), "mission config 'home'")
     raw_waypoints = _waypoint_entries(raw)
     checkpoints = _resolve_checkpoints(raw_waypoints, checkpoints_yaml_path)
-    waypoints = tuple(_parse_waypoint(w, i, checkpoints) for i, w in enumerate(raw_waypoints))
+    waypoints = tuple(
+        _parse_waypoint(w, i, checkpoints, approach) for i, w in enumerate(raw_waypoints)
+    )
 
     cfg = MissionConfig(
         takeoff_alt_m=_number(_require(raw, "takeoff_alt_m"), "takeoff_alt_m"),
@@ -495,6 +531,7 @@ def load_mission_config(
         home_position=_point(_require(home, "position", "mission config 'home'"), "home"),
         home_frame=_validate_frame(_require(home, "frame", "mission config 'home'"), "home"),
         waypoints=waypoints,
+        approach=approach,
     )
     _validate_semantics(cfg)
     return cfg

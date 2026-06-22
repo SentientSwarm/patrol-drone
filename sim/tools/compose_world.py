@@ -314,8 +314,19 @@ def validate_world_design(config_path: str | Path = CONFIG_PATH) -> list[str]:
 
 
 def _fmt(value: float) -> str:
-    """Format a coordinate compactly and stably (drops a trailing .0-only? no — keep one decimal)."""
-    return f"{value:g}"
+    """Format a coordinate compactly and stably; refuse scientific notation (a gz <pose> parse hazard).
+
+    ``f"{value:g}"`` switches to scientific notation for very large/small magnitudes, which gz could
+    misparse in a ``<pose>``. Bounded canonical coords (``|x|,|y| <= 20``, ``z = 1.5``, enforced by
+    ``validate_world_design``) never reach that range, so this raises only on out-of-range input and
+    leaves the formatted string byte-identical for every valid coordinate (no world regeneration).
+    """
+    text = f"{value:g}"
+    if "e" in text or "E" in text:
+        raise ComposeError(
+            f"coordinate {value!r} formats to scientific notation {text!r}; out of range"
+        )
+    return text
 
 
 def _include_block(cp: Checkpoint, indent: str) -> str:

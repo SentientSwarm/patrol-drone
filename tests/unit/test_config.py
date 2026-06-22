@@ -9,6 +9,7 @@ referenced id resolves to its ENU position, and an unresolvable id (or a missing
 one is referenced) fails loud.
 """
 
+import math
 from pathlib import Path
 
 import pytest
@@ -224,16 +225,30 @@ def test_schema_fail_loud_top_level_and_nested_home(tmp_path, body, match):
         load_mission_config(_write(tmp_path, body))
 
 
-# TS-C1: a checkpoint_id waypoint resolves against checkpoints.yaml to its ENU position + id.
+# TS-C1: a checkpoint_id waypoint resolves against checkpoints.yaml to a stand-off hover pose facing
+# the tag (SIM-4) — the tag's ENU position + a +Y stand-off + a yaw-to-tag, plus the resolved id.
 def test_checkpoint_id_resolves(tmp_path):
     cps = _write_checkpoints(tmp_path)
     cfg = load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), cps)
     assert len(cfg.waypoints) == 1
     wp = cfg.waypoints[0]
     assert wp.checkpoint_id == "cp_north"
-    assert wp.position == (10.0, 0.0, 2.0)
+    assert wp.position == (
+        10.0,
+        3.0,
+        2.0,
+    )  # 3 m +Y stand-off from the tag (Approach default, SIM-4)
+    assert wp.yaw_enu == pytest.approx(-math.pi / 2)  # faces the tag (south, toward -Y)
     assert wp.frame == "enu"
     assert wp.dwell_s == 3.0
+
+
+# TS-C1b (SIM-4): a non-positive approach.standoff_m fails loud — a zero/negative stand-off would put
+# the drone back on top of the tag, defeating the approach geometry the section exists to provide.
+def test_non_positive_standoff_raises(tmp_path):
+    mission = _HEAD + "approach: {standoff_m: 0}\n" + _HOME_ENU + _NO_WAYPOINTS
+    with pytest.raises(ValueError, match=r"approach\.standoff_m must be > 0"):
+        load_mission_config(_write(tmp_path, mission))
 
 
 # TS-C2: an unresolvable checkpoint_id fails loud (names the id).
@@ -273,7 +288,7 @@ def test_non_list_checkpoints_file_raises(tmp_path):
 def test_keyed_checkpoints_file_accepted(tmp_path):
     cps = _write_checkpoints(tmp_path, "checkpoints:\n" + _indent(_CHECKPOINTS))
     cfg = load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_east")), cps)
-    assert cfg.waypoints[0].position == (0.0, 10.0, 2.0)
+    assert cfg.waypoints[0].position == (0.0, 13.0, 2.0)  # cp_east + 3 m +Y stand-off (SIM-4)
     assert cfg.waypoints[0].checkpoint_id == "cp_east"
 
 
@@ -344,7 +359,7 @@ def test_mixed_checkpoint_and_inline(tmp_path):
     )
     cfg = load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + wps), cps)
     assert [w.checkpoint_id for w in cfg.waypoints] == ["cp_east", None]
-    assert cfg.waypoints[0].position == (0.0, 10.0, 2.0)
+    assert cfg.waypoints[0].position == (0.0, 13.0, 2.0)  # cp_east + 3 m +Y stand-off (SIM-4)
     assert cfg.waypoints[1].position == (-10.0, 0.0, 2.0)
 
 
@@ -355,7 +370,7 @@ def test_checkpoints_path_override(tmp_path):
     cfg = load_mission_config(
         _write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), str(p)
     )
-    assert cfg.waypoints[0].position == (10.0, 0.0, 2.0)
+    assert cfg.waypoints[0].position == (10.0, 3.0, 2.0)  # cp_north + 3 m +Y stand-off (SIM-4)
 
 
 # TS-C5: a checkpoint_id reference with no checkpoints file fails loud (not silently empty).
@@ -401,9 +416,9 @@ def test_shipped_patrol_mission_loads():
     assert cfg.waypoints[0].frame == "enu"
     assert cfg.waypoints[0].position == (
         12.0,
-        8.0,
+        11.0,
         1.5,
-    )  # cp_north from the canonical checkpoints.yaml
+    )  # cp_north (12,8,1.5) from the canonical checkpoints.yaml + 3 m +Y stand-off (SIM-4)
 
 
 # TS-C7 (Hermes Medium): each waypoint must be exactly one shape — checkpoint-based

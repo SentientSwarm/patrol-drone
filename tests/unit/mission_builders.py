@@ -51,10 +51,18 @@ def make_sm(
     return MissionStateMachine(config or make_config(), waypoints_ned or [], home_ned)
 
 
-def make_patrol_sm(waypoints_ned: list[Point], dwell_s: float = DWELL) -> MissionStateMachine:
-    """A patrol machine whose config.waypoints align 1:1 with ``waypoints_ned`` (uniform dwell)."""
+def make_patrol_sm(
+    waypoints_ned: list[Point],
+    dwell_s: float = DWELL,
+    waypoint_yaws_ned: list[float] | None = None,
+) -> MissionStateMachine:
+    """A patrol machine whose config.waypoints align 1:1 with ``waypoints_ned`` (uniform dwell).
+
+    ``waypoint_yaws_ned`` defaults to None (the SM then holds North at every waypoint), so existing
+    callers are unchanged; pass it to exercise the per-waypoint yaw-to-tag path (SIM-4).
+    """
     wps = tuple(Waypoint(position=p, frame="ned", dwell_s=dwell_s) for p in waypoints_ned)
-    return MissionStateMachine(make_config(wps), waypoints_ned, HOME_NED)
+    return MissionStateMachine(make_config(wps), waypoints_ned, HOME_NED, waypoint_yaws_ned)
 
 
 def make_telem(**overrides: Any) -> Telemetry:
