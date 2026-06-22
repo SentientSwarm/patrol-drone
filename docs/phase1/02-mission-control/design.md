@@ -57,10 +57,10 @@ All eight PRD Open Questions are carried forward. Six were Resolved in design; t
 
 - **OQ-1 — Resolved (hand-rolled state machine).** A hand-rolled `enum` + `tick()` dispatch is chosen over `transitions` / `python-statemachine`. With ~10 stable states (IDLE, ARMING, TAKEOFF, HOVER, WAYPOINT, DWELL, RTH, LANDING, ABORT, DONE) the dependency weight of a library buys nothing the project needs, and a hand-rolled machine has zero runtime dependency on the Layer-A pure-Python runner, is import-clean and pickle-safe, reads top-to-bottom in one file (KISS), and gives direct branch coverage of every transition. See §3.4, §4.2.3. *Human-ratified (COMBINED-REVIEW "01 & 02 design-decision ratifications").*
 - **OQ-2 — Resolved (combined review 2026-06-03): checkpoint mapping schema AND file location.** A single shared YAML at `sim/config/checkpoints.yaml`, owned by 03, list of `{checkpoint_id, position{x,y,z} world/ENU meters, tag_family, tag_id}`. This docset (02) reads the `position` entries to build waypoints (converting ENU → NED at the MC-7 boundary) and references `checkpoint_id` from the mission YAML rather than duplicating positions. The **schema (field set)** matches 03 DoD §5 and is confirmed (COMBINED-REVIEW #5). The **physical file location/name** is still flagged open in 03 DoD §7; consuming code is isolated from that decision because the path is a single `MissionConfig` loader parameter / launch argument, so an agreed-different location is a one-line config change, not a code edit. Joint with 03 §7 + 04.
-- **OQ-3 — Resolved (`std_msgs`).** `/patrol/mission_state` = `std_msgs/String`, `/patrol/current_waypoint` = `std_msgs/Int32`, `/patrol/abort` = `std_msgs/Bool` (subscribed). These round-trip through MCAP and render in Foxglove with **no** custom-type plugin (exit item 8). Typed mission states live in the state-machine code, not in a custom message. The capture trigger (OQ-7) is the atomic `/patrol/dwell` topic — also a plain `std_msgs/Int32`, so still **no custom message type** is owned here. QoS: reliable / transient-local depth-1 for `mission_state` and `current_waypoint` (a late subscriber sees the latest value); `abort` latched; `/patrol/dwell` reliable + volatile, keep-last route-covering depth (a discrete live event, delivered once, never coalesced). *Human-ratified (COMBINED-REVIEW #4 + "02 OQ-3").*
+- **OQ-3 — Resolved (`std_msgs`).** `/patrol/mission_state` = `std_msgs/String`, `/patrol/current_waypoint` = `std_msgs/Int32`, `/patrol/abort` = `std_msgs/Bool` (subscribed). These round-trip through MCAP and render in Foxglove with **no** custom-type plugin (exit item 8). Typed mission states live in the state-machine code, not in a custom message. The capture trigger (OQ-7) is the atomic `/patrol/dwell` topic — also a plain `std_msgs/Int32`, so still **no custom message type** is owned here. QoS: reliable / transient-local depth-1 for `mission_state` and `current_waypoint` (a late subscriber sees the latest value); `abort` reliable + volatile (the latch lives in the state machine's `_NON_ABORTABLE` set, not topic durability, so a plain `ros2 topic pub` is QoS-compatible); `/patrol/dwell` reliable + volatile, keep-last route-covering depth (a discrete live event, delivered once, never coalesced). *Human-ratified (COMBINED-REVIEW #4 + "02 OQ-3").*
 - **OQ-4 — Resolved.** `tolerance_m: 0.5`, `hold_time_s: 2.0` — the plan's illustratives adopted as overridable YAML defaults, SITL-tunable without a code change. *Human-ratified ("02 OQ-4").*
 - **OQ-5 — Resolved (provisional budget).** Two canonical SITL scenarios: one basic mission and one reduced 2-waypoint patrol, run in the nightly SITL tier. Provisional budget ≤8 min/scenario including spin-up; quarantine-not-expand on a >1-in-5 flake rate or a >2× budget overrun; never a required per-PR check. The runtime figure is **provisional until measured against 01's landed SITL** — re-measure is seeded into MZ (§6.5). *Bulk-accepted ("02 OQ-5"); measurement remains deferred.*
-- **OQ-6 — Resolved.** Abort drives off `/fmu/out/battery_status.remaining` (a normalized 0.0–1.0 fraction), default threshold `0.20`, configured in YAML. The transition is unit-tested (AC-7); SITL-observable depletion is best-effort because SITL battery modeling may not deplete realistically. *Human-ratified ("02 OQ-6").*
+- **OQ-6 — Resolved.** Abort drives off `/fmu/out/battery_status_v1.remaining` (a normalized 0.0–1.0 fraction), default threshold `0.20`, configured in YAML. The transition is unit-tested (AC-7); SITL-observable depletion is best-effort because SITL battery modeling may not deplete realistically. *Human-ratified ("02 OQ-6").*
 - **OQ-7 — Resolved (combined review 2026-06-03); superseded 2026-06-21: capture-trigger contract with 04.** 02 emits an **atomic** `/patrol/dwell` capture event — `std_msgs/Int32` carrying the dwelled waypoint index, owned by 02, one event published on the rising edge into `DWELL` (QoS: reliable + volatile, keep-last with a route-covering depth so every checkpoint event is delivered once and never coalesced to "latest"). The index maps 1:1 to a `checkpoint_id` via the mission YAML. 04 subscribes to this single topic and captures exactly once per event (satisfying 04 AC-6, one capture per checkpoint visit); it does **not** correlate the two separate, non-atomic `mission_state` + `current_waypoint` topics. `mission_state` / `current_waypoint` remain the observable/Foxglove surface (OQ-3), not the capture trigger. Joint with 04. **Supersedes** the originally-ratified "no new topic; `DWELL` + `current_waypoint` is the trigger" default: that default carried a cross-topic delivery race (DDS guarantees per-topic ordering, not an atomic cross-topic snapshot, so a `current_waypoint=i+1` sample could arrive before a still-pending `DWELL(i)` and mis-attribute a capture one leg early) surfaced across Hermes PR #8 reviews R6–R11; the atomic event removes the race by construction. *Confirmed (COMBINED-REVIEW #2); revised 2026-06-21 per PR #8 review (this repo is the owner-of-record).*
 - **OQ-8 — Resolved.** Return-to-home is an **explicit home-waypoint offboard sequence** behind the single `RTH` state — not a handoff to PX4 RTL mode. This keeps control authority inside the state machine (no offboard → RTL mode handoff to reason about) and keeps RTH unit-testable. See §4.2.6, §4.5 Sequence 3. *Human-ratified (COMBINED-REVIEW "02 OQ-8").*
 - **A-1 (assumption).** 01's `patrol_bringup`/`patrol_interfaces` package shells exist and `colcon build` is green before M1 begins. Verified in §3.5 row 1 (README docset matrix); recorded as a pre-M1 gate because the repo is a single-commit skeleton and 01 has not yet landed.
@@ -114,16 +114,16 @@ This is a greenfield docset landing inside 01-platform's ROS 2 / PX4 SITL substr
 
 | Direction | Topic | px4_msgs type | Fields this docset uses |
 |-----------|-------|---------------|--------------------------|
-| sub | `/fmu/out/vehicle_local_position` | `VehicleLocalPosition` | `x, y, z` (NED, m), `heading` — current position for tolerance+hold |
-| sub | `/fmu/out/battery_status` | `BatteryStatus` | `remaining` (0.0–1.0) — low-battery abort (OQ-6) |
-| sub | `/fmu/out/vehicle_status` | `VehicleStatus` | `arming_state`, `nav_state` — arm/offboard confirmation |
+| sub | `/fmu/out/vehicle_local_position_v1` | `VehicleLocalPosition` | `x, y, z` (NED, m), `heading` — current position for tolerance+hold |
+| sub | `/fmu/out/battery_status_v1` | `BatteryStatus` | `remaining` (0.0–1.0) — low-battery abort (OQ-6) |
+| sub | `/fmu/out/vehicle_status_v1` | `VehicleStatus` | `arming_state`, `nav_state` — arm/offboard confirmation |
 | pub | `/fmu/in/offboard_control_mode` | `OffboardControlMode` | `position=True` — keepalive heartbeat (A-2) |
 | pub | `/fmu/in/trajectory_setpoint` | `TrajectorySetpoint` | `position[3]` (NED), `yaw` — the active setpoint |
 | pub | `/fmu/in/vehicle_command` | `VehicleCommand` | arm / set-offboard-mode / land commands |
 
 ### 3.3 Existing CI (ADR-0002)
 
-- **Layer A (pure-Python, per-PR):** this docset adds the `MissionStateMachine` + `FrameConversion` + `MissionConfig` unit suite. Hard gates: ≥85% coverage (the enforced ADR-0002 floor, governing over the DoD's earlier `>80%` prose — COMBINED-REVIEW #8), plus `xenon` (complexity), `ruff` (lint), `mypy` (types). No ROS toolchain required (the three modules are rclpy-free).
+- **Layer A (pure-Python, per-PR):** this docset adds the `MissionStateMachine` + `FrameConversion` + `MissionConfig` unit suite. Hard gates: ≥85% coverage (the enforced ADR-0002 floor, governing over the DoD's earlier `>80%` prose — COMBINED-REVIEW #8), plus `xenon` (complexity), `ruff` (lint), `mypy` (types). No ROS toolchain required (the mission core is rclpy-free; `qos.py` imports rclpy but runs under the unit suite's rclpy stub).
 - **Layer B (Jazzy container):** `colcon build` + `colcon test` of the `patrol_mission` / `patrol_bringup` packages.
 - **SITL nightly:** the canonical mission integration tests (MC-10, OQ-5). Never a required per-PR check.
 
@@ -172,6 +172,9 @@ Every PRD FR (MC-1…MC-11) and every UAC (UAC-MC-1…10) is covered. PRD Append
 | MissionStateMachine | module (pure Python) | Owns every mission *decision*; no rclpy, no I/O | `tick()` dispatch over the state enum; abort guards; tolerance+hold completion | `FrameConversion` (NED waypoints), `MissionConfig` (params) — both passed in as plain data |
 | FrameConversion | module (pure Python) | Owns the single ENU↔NED conversion site | `to_ned_from_origin(point, frame, ekf_origin_ned)` | none |
 | MissionConfig | module (pure Python) | Owns YAML parse + schema + validation + `checkpoint_id` resolution | Load mission YAML, resolve checkpoint refs, fail loud on bad config | `FrameConversion` (validates frames), checkpoints YAML (consumed read-only) |
+| CommandBuilder (`commands.py`) | module (pure Python) | Owns the PX4 `VehicleCommand` sequence; no rclpy | `build_vehicle_commands(...)` → ordered arm / set-offboard / land commands with A-2 warmup gating | none |
+| TopicNames (`topics.py`) | module (pure Python) | Single source of truth for `/fmu/*` + `/patrol/*` topic names (incl. the PX4 v1.17 `_v1` output-suffix rule) | name constants + `named_topic()` lookup | none |
+| QoSProfiles (`qos.py`) | module (rclpy) | Single source of truth for the per-surface QoS profiles | `px4_qos()`, `patrol_state_qos()`, `patrol_event_qos()`, `patrol_abort_qos()` | `rclpy.qos` (Layer-B; measured via the unit rclpy stub) |
 | PatrolMissionNode | module (rclpy node) | Owns every *mechanism*: pub/sub, keepalive, timer, frame boundary call | Build Telemetry, drive `tick()`, translate Command → `/fmu/in/*`, publish `/patrol/*` | `MissionStateMachine`, `FrameConversion`, `MissionConfig`, `px4_msgs`, `std_msgs`, rclpy |
 | Launch entry-points | config | Owns wiring only; no logic | Start the node with the right YAML; `mission_patrol` includes 05's recorder | `PatrolMissionNode`, 05 recorder include |
 | Test suites | tests | Owns unit (ROS-free) + integration (SITL) coverage | Drive all transitions/aborts/frames/config in <5 s; drive `mission_*.launch.py` against real SITL | all components; SITL (integration only) |
@@ -253,8 +256,9 @@ class Command:
     land: bool = False
     setpoint_ned: tuple[float, float, float] | None = None
     yaw: float = 0.0
-    mission_state: str = ""      # published verbatim to /patrol/mission_state
     current_waypoint: int = -1   # published to /patrol/current_waypoint (-1 = none)
+    # the mission-state STRING is NOT carried here — the node publishes next_state.name
+    # (tick() returns (next_state, command); the enum is the single source of truth)
 
 
 @dataclass
@@ -263,6 +267,7 @@ class _Progress:
     waypoint_index: int = 0
     inside_since_s: float | None = None   # first time inside tolerance (tolerance+hold, MC-5)
     state_entered_s: float = 0.0          # timestamp the current state was entered
+    last_state: MissionState | None = None  # previous tick's state — drives _enter_if_new/reset_timing
     abort_reason: AbortReason = AbortReason.NONE
 ```
 
@@ -304,16 +309,17 @@ class MissionStateMachine:
             return AbortReason.TIMEOUT
         return AbortReason.NONE
 
-    def _within_tolerance_for_hold(self, telem: Telemetry, target_ned: tuple[float, float, float],
-                                   tolerance_m: float, hold_s: float) -> bool:
-        """MC-5: complete iff continuously within tolerance for hold_s. Never tests equality."""
-        if _distance(telem.position_ned, target_ned) <= tolerance_m:
+    def _within_tolerance_for_hold(self, telem: Telemetry, target_ned: tuple[float, float, float]) -> bool:
+        """MC-5: complete iff continuously within tolerance for hold_time_s. Never tests equality."""
+        if _distance(telem.position_ned, target_ned) <= self._cfg.completion.tolerance_m:
             if self._p.inside_since_s is None:
                 self._p.inside_since_s = telem.now_s
-            return (telem.now_s - self._p.inside_since_s) >= hold_s
+            return (telem.now_s - self._p.inside_since_s) >= self._cfg.completion.hold_time_s
         self._p.inside_since_s = None             # left the tolerance ball; reset the hold clock
         return False
 ```
+
+The shipped class adds small pure-Python guard helpers during M3/M4 hardening (not shown): `telemetry_fresh` / `local_position_usable` (stale-telemetry + EKF gating), `battery_low` (unknown-battery `-1`/NaN handling), `_enter_if_new` / `reset_timing` (state-entry detection via `_Progress.last_state`), and a `waypoints_ned`-vs-`config.waypoints` length guard. `FrameConversion` (§4.2.4) likewise adds `takeoff_target_ned` (the AGL-above-home setpoint). All are Layer-A tested.
 
 Per-state behavior (entered / tick / next):
 
@@ -412,11 +418,12 @@ class MissionConfig:
 
 
 def load_mission_config(mission_yaml_path: str,
-                        checkpoints_yaml_path: str = "sim/config/checkpoints.yaml") -> MissionConfig:
+                        checkpoints_yaml_path: str = "") -> MissionConfig:
     """
     Parse + validate the mission YAML (MC-3). Resolve each waypoint that references a
-    checkpoint_id against checkpoints_yaml_path (03-owned; default path is a parameter so
-    the OQ-2 file-location decision is a one-line config change, not a code edit).
+    checkpoint_id against checkpoints_yaml_path (03-owned; NO in-package default — the caller
+    passes an explicit absolute path, so the OQ-2 file-location decision is a one-line config
+    change and a CWD-relative default can never resolve inconsistently).
     Fail loud (raise) on: missing required field, unknown frame, unresolvable checkpoint_id.
     No route/waypoint data is hardcoded in source (MC-3 / AC-3).
     """
@@ -467,26 +474,27 @@ class PatrolMissionNode(Node):
         super().__init__("patrol_mission")
         mission_yaml = self.declare_parameter("mission_yaml", "").value
         checkpoints_yaml = self.declare_parameter(
-            "checkpoints_yaml", "sim/config/checkpoints.yaml").value     # OQ-2: path is a param
+            "checkpoints_yaml", "").value     # OQ-2: no default; launch passes an explicit abs path
         self._cfg = load_mission_config(mission_yaml, checkpoints_yaml)
 
-        # /fmu/* (px4_msgs) — §3.2
+        # /fmu/* (px4_msgs) — §3.2. ALL use px4_qos() (best-effort + transient-local + depth-1) to
+        # match PX4's uXRCE-DDS bridge; a reliable/depth-10 endpoint would not connect (see qos.py).
         self._sub_pos = self.create_subscription(VehicleLocalPosition,
-            "/fmu/out/vehicle_local_position", self._on_pos, qos_sensor)
+            "/fmu/out/vehicle_local_position_v1", self._on_pos, px4_qos())
         self._sub_bat = self.create_subscription(BatteryStatus,
-            "/fmu/out/battery_status", self._on_bat, qos_sensor)
+            "/fmu/out/battery_status_v1", self._on_bat, px4_qos())
         self._sub_status = self.create_subscription(VehicleStatus,
-            "/fmu/out/vehicle_status", self._on_status, qos_sensor)
+            "/fmu/out/vehicle_status_v1", self._on_status, px4_qos())
         self._pub_ctrl = self.create_publisher(OffboardControlMode,
-            "/fmu/in/offboard_control_mode", 10)
-        self._pub_sp = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
-        self._pub_cmd = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
+            "/fmu/in/offboard_control_mode", px4_qos())
+        self._pub_sp = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", px4_qos())
+        self._pub_cmd = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", px4_qos())
 
-        # /patrol/* (std_msgs) — OQ-3 / OQ-7
-        self._pub_state = self.create_publisher(String, "/patrol/mission_state", qos_latched_d1)
-        self._pub_wp = self.create_publisher(Int32, "/patrol/current_waypoint", qos_latched_d1)
-        self._pub_dwell = self.create_publisher(Int32, "/patrol/dwell", qos_event)  # atomic OQ-7 trigger
-        self._sub_abort = self.create_subscription(Bool, "/patrol/abort", self._on_abort, qos_latched)
+        # /patrol/* (std_msgs) — OQ-3 / OQ-7; profiles from qos.py
+        self._pub_state = self.create_publisher(String, "/patrol/mission_state", patrol_state_qos())
+        self._pub_wp = self.create_publisher(Int32, "/patrol/current_waypoint", patrol_state_qos())
+        self._pub_dwell = self.create_publisher(Int32, "/patrol/dwell", patrol_event_qos())  # atomic OQ-7 trigger
+        self._sub_abort = self.create_subscription(Bool, "/patrol/abort", self._on_abort, patrol_abort_qos())
 
         self._ekf_origin_ned = (0.0, 0.0, 0.0)   # captured once at arm
         self._state = MissionState.IDLE
@@ -507,7 +515,7 @@ class PatrolMissionNode(Node):
         if self._sm is None and telem.armed:
             self._capture_origin(); self._build_state_machine()
         if self._sm is None:
-            self._issue(Command(arm=True, mission_state="ARMING")); return
+            self._issue(Command(arm=True)); return  # state string is next_state.name, not a Command field
         prev = self._state
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)                                # translate Command -> /fmu/in/*
@@ -522,13 +530,13 @@ Topic table:
 | pub | `/patrol/mission_state` | `std_msgs/String` | reliable, transient-local, depth 1 | MC-8 |
 | pub | `/patrol/current_waypoint` | `std_msgs/Int32` | reliable, transient-local, depth 1 | MC-8 |
 | pub | `/patrol/dwell` | `std_msgs/Int32` | reliable, volatile, keep-last route-covering depth | MC-8, OQ-7 |
-| sub | `/patrol/abort` | `std_msgs/Bool` | latched | MC-6, MC-8 |
-| sub | `/fmu/out/vehicle_local_position` | `px4_msgs/VehicleLocalPosition` | sensor-data | MC-1/2/5 |
-| sub | `/fmu/out/battery_status` | `px4_msgs/BatteryStatus` | sensor-data | MC-6 |
-| sub | `/fmu/out/vehicle_status` | `px4_msgs/VehicleStatus` | sensor-data | MC-1 |
-| pub | `/fmu/in/offboard_control_mode` | `px4_msgs/OffboardControlMode` | depth 10 | MC-1 (keepalive) |
-| pub | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | depth 10 | MC-1/2 |
-| pub | `/fmu/in/vehicle_command` | `px4_msgs/VehicleCommand` | depth 10 | MC-1/6 |
+| sub | `/patrol/abort` | `std_msgs/Bool` | `patrol_abort_qos` (reliable, volatile; latch in the state machine) | MC-6, MC-8 |
+| sub | `/fmu/out/vehicle_local_position_v1` | `px4_msgs/VehicleLocalPosition` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1/2/5 |
+| sub | `/fmu/out/battery_status_v1` | `px4_msgs/BatteryStatus` | `px4_qos` (best-effort, transient-local, depth 1) | MC-6 |
+| sub | `/fmu/out/vehicle_status_v1` | `px4_msgs/VehicleStatus` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1 |
+| pub | `/fmu/in/offboard_control_mode` | `px4_msgs/OffboardControlMode` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1 (keepalive) |
+| pub | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1/2 |
+| pub | `/fmu/in/vehicle_command` | `px4_msgs/VehicleCommand` | `px4_qos` (best-effort, transient-local, depth 1) | MC-1/6 |
 
 The arrival/capture trigger (OQ-7) is the atomic `/patrol/dwell` event — one `std_msgs/Int32` (the dwelled waypoint index) published on the rising edge into `DWELL`, so 04 never correlates the two separate, non-atomic `mission_state` + `current_waypoint` topics (which can interleave across DDS topics; see OQ-7). `mission_state` / `current_waypoint` stay the observable surface.
 
@@ -553,9 +561,13 @@ def generate_launch_description():
 # mission_patrol.launch.py  (MC-2; includes 05 recorder — exit item 1)
 def generate_launch_description():
     return LaunchDescription([
+        # checkpoints_yaml has NO default (OQ-2; 03's deliverable) — patrol_mission.yaml uses
+        # checkpoint_id waypoints, so an absolute path is required: checkpoints_yaml:=/abs/path
+        DeclareLaunchArgument("checkpoints_yaml"),
         Node(package="patrol_mission", executable="patrol_mission", name="patrol_mission",
              parameters=[{"mission_yaml": PathJoinSubstitution(
-                 [FindPackageShare("patrol_bringup"), "config", "patrol_mission.yaml"])}]),
+                 [FindPackageShare("patrol_bringup"), "config", "patrol_mission.yaml"]),
+                 "checkpoints_yaml": LaunchConfiguration("checkpoints_yaml")}]),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare("patrol_logging"), "launch", "record.launch.py"])),  # 05
             condition=IfCondition(LaunchConfiguration("record", default="true"))),
@@ -568,14 +580,14 @@ def generate_launch_description():
 
 **Type:** tests
 **Location:** `tests/unit/` (ROS-free), `tests/integration/` (SITL)
-**Boundary:** Layer-A unit imports only the three rclpy-free modules with the PX4 interface mocked (<5 s, ≥85% — the simulator is **not** mocked because no flight dynamics are involved in unit logic); integration drives `mission_*.launch.py` against real SITL nightly (don't mock the simulator).
+**Boundary:** Layer-A unit imports the rclpy-free mission core directly (`qos.py` via the rclpy stub) with the PX4 interface mocked (<5 s, ≥85% — the simulator is **not** mocked because no flight dynamics are involved in unit logic); integration drives `mission_*.launch.py` against real SITL nightly (don't mock the simulator).
 **Dependencies:** all components; SITL (integration only).
 
 *Traces to: MC-4, MC-9, MC-10 · UAC-MC-4/9/10 · INF-M1.*
 
 #### 4.2.9 Inventory Triangle Check
 
-The component inventory (§4.2.1, six components), the dependency diagram (§4.2.2), and the consumer surface (`tick()` + `/patrol/*` + `mission_*.launch.py` + the mission YAML schema + the `MissionStateMachine` contract) all enumerate the same six components. No drift.
+The component inventory (§4.2.1) lists six **core** components — `MissionStateMachine`, `FrameConversion`, `MissionConfig`, `PatrolMissionNode`, Launch entry-points, Test suites — plus three supporting single-source-of-truth modules (`commands.py`, `topics.py`, `qos.py`) the node composes but that are not architectural nodes in the §4.2.2 dependency diagram. The six core components, the dependency diagram, and the consumer surface (`tick()` + `/patrol/*` + `mission_*.launch.py` + the mission YAML schema + the `MissionStateMachine` contract) all enumerate the same six. No drift.
 
 ### 4.3 Layer View
 
@@ -611,7 +623,7 @@ The component inventory (§4.2.1, six components), the dependency diagram (§4.2
 
 #### 4.4.2 Messaging
 
-`std_msgs` was chosen (OQ-3) so MCAP records and Foxglove renders the topics with no custom-type plugin. QoS: `/patrol/mission_state` and `/patrol/current_waypoint` reliable + transient-local depth-1 (a late subscriber, e.g. 04 or 05 starting after the node, sees the latest value); `/patrol/dwell` (the atomic OQ-7 capture event) reliable + volatile, keep-last with a route-covering depth so each checkpoint event is delivered once and never coalesced to "latest"; `/patrol/abort` latched. An absent subscriber is harmless. If `/patrol/abort` is never published, the low-battery abort still works (the two abort paths are independent in `_abort_reason`).
+`std_msgs` was chosen (OQ-3) so MCAP records and Foxglove renders the topics with no custom-type plugin. QoS: `/patrol/mission_state` and `/patrol/current_waypoint` reliable + transient-local depth-1 (a late subscriber, e.g. 04 or 05 starting after the node, sees the latest value); `/patrol/dwell` (the atomic OQ-7 capture event) reliable + volatile, keep-last with a route-covering depth so each checkpoint event is delivered once and never coalesced to "latest"; `/patrol/abort` reliable + volatile (so a plain `ros2 topic pub` is QoS-compatible — the abort sticks via the state machine's `_NON_ABORTABLE` latch, not topic durability). An absent subscriber is harmless. If `/patrol/abort` is never published, the low-battery abort still works (the two abort paths are independent in `_abort_reason`).
 
 **Failure mode:** a subscriber that never connects causes no node error — publishers fire regardless; the mission flies whether or not anyone is listening.
 
@@ -623,7 +635,7 @@ The component inventory (§4.2.1, six components), the dependency diagram (§4.2
 
 #### 4.4.4 CI / Test infra
 
-Layer-A coverage `source = patrol_mission/{state_machine,frames,config}.py`; the unit tests import the three rclpy-free modules directly, so Layer A needs no ROS toolchain (this resolves the ADR-0002 M3 coverage-source spike, T1.7). SITL flake never blocks a PR; quarantine-not-expand on flake (Tenet 5).
+Layer-A coverage `source` is the whole `patrol_mission` package (path-based), with **only** `node.py` omitted; the aggregate ≥85% floor therefore measures every other module — the rclpy-free core `{state_machine, frames, config, commands, topics}` plus `qos.py` (which imports rclpy but is exercised through `tests/unit/test_node_glue.py`'s rclpy stub). The rclpy-free modules import directly so Layer A needs no ROS toolchain (this resolves the ADR-0002 M3 coverage-source spike, T1.7). SITL flake never blocks a PR; quarantine-not-expand on flake (Tenet 5).
 
 **Failure mode:** if the SITL tier flakes above budget, the scenario is quarantined (not expanded) and the per-PR gate is unaffected.
 
@@ -763,7 +775,7 @@ The single public class contract is `tick(current_state, telemetry) -> (next_sta
 
 ### Q3: Deployment and infrastructure dependencies
 
-Runs inside 01's containers and `ros2_ws`. New `patrol_mission` colcon package + `patrol_bringup` launch/config. Coverage `source` = the three rclpy-free modules (§4.4.4). SITL scenarios added to the nightly job, never per-PR. No new runtime dependency (hand-rolled state machine, OQ-1). PyYAML is expected transitively via the ROS 2 Jazzy base (`python3-yaml`), verified pre-M1 in §3.5 row 6, with a `package.xml` `<exec_depend>` fallback.
+Runs inside 01's containers and `ros2_ws`. New `patrol_mission` colcon package + `patrol_bringup` launch/config. Coverage `source` = the whole `patrol_mission` package minus `node.py` (§4.4.4). SITL scenarios added to the nightly job, never per-PR. No new runtime dependency (hand-rolled state machine, OQ-1). PyYAML is expected transitively via the ROS 2 Jazzy base (`python3-yaml`), verified pre-M1 in §3.5 row 6, with a `package.xml` `<exec_depend>` fallback.
 
 ### Q4: External components and interfaces
 
@@ -848,7 +860,7 @@ Each milestone's Definition of Done includes a lightweight documentation true-up
 
 | Test Type | Scope | Key Scenarios |
 |-----------|-------|---------------|
-| Unit | `state_machine`, `frames`, `config` | arm→takeoff→hover→land transitions; tolerance+hold advances on hold and never on equality (MC-5); ENU→NED known input→output; minimal config parse + fail-loud |
+| Unit | `state_machine`, `frames`, `config`, `commands` | arm→takeoff→hover→land transitions; tolerance+hold advances on hold and never on equality (MC-5); ENU→NED known input→output; minimal config parse + fail-loud; `VehicleCommand` ordering + warmup gating |
 | Integration | Launch → Node → SITL | `mission_basic.launch.py` drives arm→takeoff 5 m→hover 10 s→land; assert state progression to DONE |
 
 ##### Documentation
