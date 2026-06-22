@@ -649,10 +649,9 @@ Top risks: **(R1)** wrong recorded-topic set / image representation baked into t
 ## 6. Implementation Plan
 
 ### 6.0 Linear Project
-**Project:** TBD — Linear bootstrap is a separate post-design step (`/drive` stops at the PRD+Design pair for combined human review).
-**Team:** TBD (confirm team/project with the user before creating issues).
-**Initiative:** Patrol Drone Phase 1.
-**Created from:** Section 6 of this document.
+**Project:** [Patrol Drone 05 Logging Replay](https://linear.app/wemodulate/project/patrol-drone-05-logging-replay-61060c4cae92) (Swarm; id `325158fa-56a0-4804-a97a-ca2923f20a0f`)
+**Team:** Swarm · **Initiative:** Patrol Drone · **Created from:** Section 6 of this document (bootstrapped 2026-06-21).
+**Milestones:** M7 (Automatic MCAP recording), M8 (Replay pipeline) · **Issues:** SWM-67…SWM-82 (16 tasks).
 
 ### 6.1 Milestone Overview
 

@@ -469,8 +469,9 @@ All Q7 statuses match §2 (OQ-2/OQ-4 Provisional, OQ-1/3/5/6/7 Resolved, OQ-8 De
 ## 6. Implementation Plan
 
 ### 6.0 Linear Project
-**Project:** TBD (no upstream Linear project bound at design time; retrofitted post-approval).
-**Team:** TBD · **Initiative:** Phase 1 (pre-hardware simulation) · **Created from:** Section 6 of this document.
+**Project:** [Patrol Drone 03 Sim Environment](https://linear.app/wemodulate/project/patrol-drone-03-sim-environment-1427c2979e6c) (Swarm; id `8159f30b-e689-4307-8915-3daf0ef6c494`)
+**Team:** Swarm · **Initiative:** Patrol Drone · **Created from:** Section 6 of this document (bootstrapped 2026-06-21).
+**Milestones:** M1 (Camera + world skeleton), M2 (Checkpoints + config + capture geometry), M3 (Integration + portability) · **Issues:** SWM-42…SWM-53 (12 tasks).
 
 ### 6.1 Milestone Overview
 
