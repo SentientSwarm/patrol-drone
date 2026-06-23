@@ -19,8 +19,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            # PerceptionNode entrypoint lands in M6.B:
-            # "patrol_perception = patrol_perception.perception_node:main",
+            "perception_node = patrol_perception.perception_node:main",
         ],
     },
 )

@@ -44,6 +44,29 @@ def to_ned_from_origin(point: Point, frame: str, ekf_origin_ned: Point) -> Point
     raise ValueError(f"unknown frame {frame!r}: expected 'ned' or 'enu'")
 
 
+def to_enu_from_ned(point_ned: Point, ekf_origin_ned: Point) -> Point:
+    """Convert an EKF-origin-relative PX4 NED position back to world/ENU (MC-7 inverse).
+
+    The exact inverse of :func:`to_ned_from_origin` for the ``"enu"`` case, kept at this single
+    boundary so the perception pose path (PoseSampler, ADR-B) expresses the capture pose in
+    world/ENU without sprinkling a second conversion site across the call graph (Tenet 4). PX4
+    ``/fmu/out/vehicle_local_position`` reports x,y,z in NED relative to the EKF origin; subtract
+    that origin offset, then apply the inverse axis map ``(n, e, d) -> (e, n, -d)``.
+
+    Args:
+        point_ned: a position in PX4 NED relative to the EKF origin (meters).
+        ekf_origin_ned: the EKF origin as a NED offset (the same value passed to
+            :func:`to_ned_from_origin`); subtracted to recover an origin-relative point.
+
+    Returns:
+        The point in world/ENU coordinates, as a plain ``float`` tuple.
+    """
+    ox, oy, oz = (float(c) for c in ekf_origin_ned)
+    n, e, d = (float(c) for c in point_ned)
+    rel_n, rel_e, rel_d = (n - ox, e - oy, d - oz)
+    return (rel_e, rel_n, -rel_d)
+
+
 def takeoff_target_ned(home_ned: Point, takeoff_alt_m: float) -> Point:
     """The takeoff/hover setpoint: ``takeoff_alt_m`` above home, in EKF-origin NED.
 

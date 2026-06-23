@@ -24,7 +24,16 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
-  <!-- M6.B adds: rclpy, sensor_msgs, cv_bridge, apriltag_ros, apriltag_msgs, image_transport. -->
+
+  <!-- M6.B: the live node — rclpy plumbing, camera/pose sampling, off-the-shelf detection. -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>image_transport</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+  <exec_depend>apriltag_msgs</exec_depend>
+  <!-- PoseSampler reuses the single MC-7 ENU<->NED conversion site (frames.to_enu_from_ned). -->
+  <exec_depend>patrol_mission</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -29,6 +29,34 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 _RECORDER_PKG = "patrol_logging"  # 05-logging; owns launch/record.launch.py
+_PERCEPTION_PKG = "patrol_perception"  # 04-perception; the capture node + apriltag deps (VP-1)
+
+
+def _maybe_perception(context: LaunchContext) -> list[IncludeLaunchDescription]:
+    """Include 04's perception chain (patrol_perception.launch.py) iff ``perception:=true`` AND
+    ``patrol_perception`` is installed. Resolved at launch time so an environment without the
+    apriltag/perception deps skips with a warning rather than grounding the patrol (design §4.4.5).
+    """
+    if LaunchConfiguration("perception").perform(context) != "true":
+        return []
+    try:
+        get_package_share_directory(_PERCEPTION_PKG)
+    except PackageNotFoundError:
+        get_logger("mission_patrol").warning(
+            f"{_PERCEPTION_PKG} (04 perception) not found — flying the patrol without capture."
+        )
+        return []
+    perception_launch = PathJoinSubstitution(
+        [FindPackageShare("patrol_bringup"), "launch", "patrol_perception.launch.py"]
+    )
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(perception_launch),
+            launch_arguments={
+                "checkpoint_config_path": LaunchConfiguration("checkpoints_yaml")
+            }.items(),
+        )
+    ]
 
 
 def _maybe_record(context: LaunchContext) -> list[IncludeLaunchDescription]:
@@ -71,6 +99,12 @@ def generate_launch_description() -> LaunchDescription:
                 description="absolute path to 03's checkpoint-positions YAML (OQ-2); required when "
                 "the mission uses checkpoint_id waypoints (no CWD-relative default)",
             ),
+            DeclareLaunchArgument(
+                "perception",
+                default_value="true",
+                description="include 04's perception capture chain (patrol_perception.launch.py) "
+                "if installed; skipped with a warning when the package/apriltag deps are absent",
+            ),
             Node(
                 package="patrol_mission",
                 executable="patrol_mission",
@@ -83,6 +117,7 @@ def generate_launch_description() -> LaunchDescription:
                     }
                 ],
             ),
+            OpaqueFunction(function=_maybe_perception),
             OpaqueFunction(function=_maybe_record),
         ]
     )

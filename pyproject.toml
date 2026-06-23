@@ -130,10 +130,9 @@ branch = true
 # source_pkgs = ["patrol_mission"] once an editable install lands (M3 spike).
 source = [
     "ros2_ws/src/patrol_mission/patrol_mission",
-    # M6 (04-perception): the ROS-free capture core. M6.A ships config/resolver/builder
-    # (all unit-tested). The M6.B node layer (perception_node.py, samplers.py,
-    # coordinator.py — rclpy plumbing) will be added to `omit` below when it lands,
-    # mirroring patrol_mission/node.py.
+    # M6 (04-perception): the ROS-free capture core + node logic. M6.A ships config/resolver/builder;
+    # M6.B adds samplers.py + coordinator.py (rclpy-free logic, 100% unit-tested) and the rclpy
+    # entrypoint perception_node.py (omitted below, mirroring patrol_mission/node.py).
     "ros2_ws/src/patrol_perception/patrol_perception",
 ]
 # T1.7 coverage-source resolution (design §4.4.4): node.py is the rclpy plumbing layer
@@ -145,7 +144,13 @@ source = [
 # the rclpy-free core {state_machine, frames, config, commands, topics} plus qos.py (which imports
 # rclpy but is exercised through test_node_glue.py's rclpy stub). node.py's publishers/main() still
 # only execute under SITL, so measuring it as a percentage would mislead.
-omit = ["ros2_ws/src/patrol_mission/patrol_mission/node.py"]
+# perception_node.py (M6.B) is the same rclpy-plumbing layer: it imports rclpy/cv2/apriltag_msgs and
+# only executes under SITL, so it is verified by `colcon build` + node-import + the downstream SITL
+# test, not measured as a percentage. samplers.py/coordinator.py stay measured (ROS-free, 100%).
+omit = [
+    "ros2_ws/src/patrol_mission/patrol_mission/node.py",
+    "ros2_ws/src/patrol_perception/patrol_perception/perception_node.py",
+]
 
 [tool.coverage.report]
 show_missing = true

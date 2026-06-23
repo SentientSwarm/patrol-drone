@@ -6,7 +6,12 @@ Layer-A: ROS-free, deterministic. No simulator, no rclpy.
 import math
 
 import pytest
-from patrol_mission.frames import enu_yaw_to_ned, takeoff_target_ned, to_ned_from_origin
+from patrol_mission.frames import (
+    enu_yaw_to_ned,
+    takeoff_target_ned,
+    to_enu_from_ned,
+    to_ned_from_origin,
+)
 
 
 # TS-8: ENU -> NED axis map for a known input, with a zero origin.
@@ -49,6 +54,43 @@ def test_returns_plain_float_tuple():
     result = to_ned_from_origin((1, 2, 3), "enu", (0, 0, 0))
     assert all(isinstance(c, float) for c in result)
     assert not any(math.isnan(c) for c in result)
+
+
+# --- to_enu_from_ned: the inverse axis map at the single MC-7 site (T B.2, PoseSampler/ADR-B) ---
+
+
+# NED (north, east, down) -> ENU (east, north, up); zero origin.
+def test_ned_to_enu_axis_map_zero_origin():
+    # NED (north=2, east=1, down=-3) -> ENU (east=1, north=2, up=3)
+    assert to_enu_from_ned((2.0, 1.0, -3.0), (0.0, 0.0, 0.0)) == (1.0, 2.0, 3.0)
+
+
+# The EKF-origin NED offset is subtracted before the axis swap (origin-relative -> world ENU).
+def test_ned_to_enu_subtracts_origin_offset():
+    # origin NED (10, 20, 30): NED (12, 21, 27) -> rel NED (2, 1, -3) -> ENU (1, 2, 3)
+    assert to_enu_from_ned((12.0, 21.0, 27.0), (10.0, 20.0, 30.0)) == (1.0, 2.0, 3.0)
+
+
+# NED "down" becomes positive ENU "up".
+def test_ned_down_becomes_positive_up():
+    _, _, up = to_enu_from_ned((0.0, 0.0, -5.0), (0.0, 0.0, 0.0))
+    assert up == 5.0
+
+
+# Round-trips exactly with to_ned_from_origin (the two halves of the one MC-7 boundary).
+@pytest.mark.parametrize(
+    "enu",
+    [(0.0, 0.0, 0.0), (1.0, 2.0, 3.0), (-4.5, 6.0, -2.0), (10.0, -10.0, 5.0)],
+)
+@pytest.mark.parametrize("origin_ned", [(0.0, 0.0, 0.0), (10.0, 20.0, 30.0)])
+def test_enu_ned_round_trip(enu, origin_ned):
+    ned = to_ned_from_origin(enu, "enu", origin_ned)
+    assert to_enu_from_ned(ned, origin_ned) == pytest.approx(enu)
+
+
+def test_to_enu_returns_plain_float_tuple():
+    result = to_enu_from_ned((1, 2, 3), (0, 0, 0))
+    assert all(isinstance(c, float) for c in result)
 
 
 # takeoff_target_ned keeps home x/y and climbs takeoff_alt_m above home (NED down decreases).
