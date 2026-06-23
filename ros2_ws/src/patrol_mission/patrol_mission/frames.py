@@ -9,6 +9,8 @@ ROS-free and pure: no rclpy, no I/O. Exercised entirely by Layer-A unit tests.
 
 from __future__ import annotations
 
+import math
+
 Point = tuple[float, float, float]
 
 
@@ -53,3 +55,20 @@ def takeoff_target_ned(home_ned: Point, takeoff_alt_m: float) -> Point:
     """
     hx, hy, hz = (float(c) for c in home_ned)
     return (hx, hy, hz - float(takeoff_alt_m))
+
+
+def _wrap_to_pi(angle: float) -> float:
+    """Normalize a radian angle to (-pi, pi]."""
+    wrapped = math.remainder(angle, 2.0 * math.pi)  # IEEE remainder -> [-pi, pi]
+    return math.pi if wrapped == -math.pi else wrapped  # fold the open end up to +pi
+
+
+def enu_yaw_to_ned(yaw_enu: float) -> float:
+    """Convert an ENU yaw (CCW from East about +Up) to PX4 NED yaw (CW from North about +Down).
+
+    The rotational analogue of :func:`to_ned_from_origin`'s axis map, kept at this single MC-7
+    boundary so heading conversions never sprinkle across the call graph (Tenet 4). ENU yaw 0 faces
+    East; NED yaw 0 faces North; the two run in opposite senses, so ``yaw_ned = pi/2 - yaw_enu``,
+    normalized to (-pi, pi].
+    """
+    return _wrap_to_pi(math.pi / 2.0 - yaw_enu)

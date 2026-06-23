@@ -147,6 +147,29 @@ def test_dwell_holds_then_advances_to_next_waypoint():
     assert cmd.setpoint_ned == WP1
 
 
+# TS-SIM4: WAYPOINT/DWELL emit the per-waypoint NED yaw the node supplies (yaw-to-tag), and default to
+# 0.0 (hold North) when no yaw list is given — the pre-SIM-4 behavior, so non-checkpoint routes are
+# unaffected. A yaw list that does not align 1:1 with the waypoints is a node wiring bug — fail loud.
+_YAWS_NED = [0.5, -1.25]
+
+
+@pytest.mark.parametrize("state", [MissionState.WAYPOINT, MissionState.DWELL])
+@pytest.mark.parametrize(
+    ("yaws", "expected_yaw"),
+    [(_YAWS_NED, _YAWS_NED[0]), (None, 0.0)],  # supplied list -> faces the tag; None -> hold North
+    ids=["per_waypoint_yaw", "default_north"],
+)
+def test_waypoint_and_dwell_emit_yaw(state, yaws, expected_yaw):
+    sm = make_patrol_sm([WP0, WP1], waypoint_yaws_ned=yaws)
+    _, cmd = sm.tick(state, make_telem(now_s=0.0, position_ned=WP0))
+    assert cmd.yaw == expected_yaw
+
+
+def test_misaligned_yaw_list_raises():
+    with pytest.raises(ValueError, match="waypoint_yaws_ned"):
+        make_patrol_sm([WP0, WP1], waypoint_yaws_ned=[0.0])
+
+
 def test_dwell_holds_target_before_elapsed():
     sm = make_patrol_sm([WP0, WP1], dwell_s=3.0)
     sm.tick(MissionState.DWELL, make_telem(now_s=0.0, position_ned=WP0))

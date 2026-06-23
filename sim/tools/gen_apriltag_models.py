@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""Generate the tag36h11 AprilTag checkpoint-marker Gazebo models (M5, SIM-2 / SIM-7).
+
+One model directory per tag id under ``sim/models/apriltag_36h11_<id>/``:
+
+    apriltag_36h11_<id>/
+      model.config                         # Gazebo model metadata
+      model.sdf                            # thin static box visual carrying the tag texture
+      materials/textures/tag36_11_<id>.png # the crisp tag texture
+
+Everything is emitted from the single ``CANONICAL_TAG36H11`` table below, so adding a checkpoint is
+one dict entry — there is no hand-maintained per-model XML to drift. Pure stdlib (``zlib`` only): no
+``apriltag`` / ``PIL`` / ``numpy`` / network dependency, so it runs on the bare Layer-A toolchain and
+in CI, and the output is deterministic (re-running reproduces the committed bytes).
+
+The canonical 10x10 bit grids are decoded from the AprilRobotics ``apriltag-imgs`` reference set
+(``tag36h11/tag36_11_<id>.png``, commit ``f3fd9a7``) — the exact images Phase-4 hardware prints, so
+the sim tags are bit-for-bit the hardware tags (Tenet 3 / SIM-7). ``1`` = white, ``0`` = black; the
+all-white outer ring is the print quiet-zone the detector needs. Canonical PNGs are 10x10 px (one
+pixel per cell), which Gazebo renders blurry on a 0.5 m plane, so each cell is upscaled
+nearest-neighbour to ``CELL_PX`` px and emitted as 8-bit grayscale.
+
+Usage:
+    python3 sim/tools/gen_apriltag_models.py          # (re)write every model dir
+    python3 sim/tools/gen_apriltag_models.py --check   # fail on stale OR orphan model dirs (== CI gate)
+"""
+
+from __future__ import annotations
+
+import struct
+import sys
+import zlib
+from pathlib import Path
+
+# One canonical 10x10 tag36h11 grid per tag id (1 = white cell, 0 = black cell). Ids are contiguous
+# 0..N-1 and match the checkpoints.yaml tag_id values (SIM-7). Add a checkpoint -> add a grid here.
+CANONICAL_TAG36H11: dict[int, tuple[str, ...]] = {
+    0: (
+        "1111111111",
+        "1000000001",
+        "1011010101",
+        "1001110101",
+        "1001100001",
+        "1010100001",
+        "1001011001",
+        "1000010001",
+        "1000000001",
+        "1111111111",
+    ),
+    1: (
+        "1111111111",
+        "1000000001",
+        "1011011001",
+        "1001011101",
+        "1011110001",
+        "1001100001",
+        "1010110101",
+        "1000100101",
+        "1000000001",
+        "1111111111",
+    ),
+    2: (
+        "1111111111",
+        "1000000001",
+        "1011011101",
+        "1001001001",
+        "1010000001",
+        "1000100101",
+        "1000010001",
+        "1000111001",
+        "1000000001",
+        "1111111111",
+    ),
+}
+
+CELL_PX = 40  # px per tag cell -> a 10x10 grid renders to a crisp 400x400 texture
+TAG_SIZE_M = 0.5  # physical edge length of the marker (SIM-4 hover-resolvable; hardware-print size)
+TAG_THICKNESS_M = 0.02  # thin plate
+TAG_FAMILY = "tag36h11"
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MODELS_DIR = REPO_ROOT / "sim" / "models"
+
+
+def _model_name(tag_id: int) -> str:
+    # Model dir / model:// name is `apriltag_36h11_<id>` (the `36h11` short form, no `tag` prefix) —
+    # the contract the World Composer emits and 04-perception targets. NOT `apriltag_tag36h11_<id>`.
+    return f"apriltag_36h11_{tag_id}"
+
+
+def _texture_name(tag_id: int) -> str:
+    return f"tag36_11_{tag_id:05d}.png"
+
+
+def model_dir(tag_id: int) -> Path:
+    return MODELS_DIR / _model_name(tag_id)
+
+
+# --- texture (PNG) -------------------------------------------------------------------------------
+
+
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    """One length-prefixed, CRC32-suffixed PNG chunk."""
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+
+
+def _grayscale_rows(grid: tuple[str, ...], cell_px: int) -> bytes:
+    """Nearest-neighbour-upscaled 8-bit grayscale scanlines (filter byte 0 per row)."""
+    rows = bytearray()
+    for line in grid:
+        pixels = bytes(255 if cell == "1" else 0 for cell in line for _ in range(cell_px))
+        for _ in range(cell_px):
+            rows += b"\x00" + pixels
+    return bytes(rows)
+
+
+def _validate_grid(grid: tuple[str, ...]) -> None:
+    """Fail loud on a grid that would render a deterministic-but-wrong texture.
+
+    Every char except '1' maps to a black pixel and `side` assumes a square grid, so a typo ('O'/'2'/
+    a stray space) or a ragged/non-square row silently corrupts the marker. Require: square (each row
+    as long as the grid is tall) and binary ('0'/'1' only)."""
+    height = len(grid)
+    for i, row in enumerate(grid):
+        if len(row) != height:
+            raise ValueError(
+                f"tag grid row {i} has length {len(row)}, expected {height} (grid must be square)"
+            )
+        non_binary = sorted(set(row) - {"0", "1"})
+        if non_binary:
+            raise ValueError(f"tag grid row {i} has non-binary cells {non_binary!r}: {row!r}")
+
+
+def render_png(grid: tuple[str, ...], cell_px: int = CELL_PX) -> bytes:
+    """Encode a tag grid as an 8-bit grayscale PNG (colour type 0). Deterministic."""
+    _validate_grid(grid)
+    side = len(grid) * cell_px
+    ihdr = struct.pack(">IIBBBBB", side, side, 8, 0, 0, 0, 0)
+    idat = zlib.compress(_grayscale_rows(grid, cell_px), 9)
+    body = _png_chunk(b"IHDR", ihdr) + _png_chunk(b"IDAT", idat) + _png_chunk(b"IEND", b"")
+    return b"\x89PNG\r\n\x1a\n" + body
+
+
+# --- model metadata (XML) ------------------------------------------------------------------------
+
+
+def render_model_config(tag_id: int) -> str:
+    """Gazebo model.config metadata for one tag model."""
+    name = _model_name(tag_id)
+    return f"""<?xml version="1.0"?>
+<!-- GENERATED by sim/tools/gen_apriltag_models.py — do not edit by hand. -->
+<model>
+  <name>{name}</name>
+  <version>1.0</version>
+  <sdf version="1.9">model.sdf</sdf>
+  <author>
+    <name>patrol-drone</name>
+    <email>noreply@patrol-drone.local</email>
+  </author>
+  <description>
+    {TAG_FAMILY} id {tag_id} checkpoint marker (~{TAG_SIZE_M} m). Placed by the World Composer from
+    sim/config/checkpoints.yaml. The family/id/size are the hardware-parity contract (SIM-7) — the
+    same tag prints unmodified for Phase 4 indoor relocalization.
+  </description>
+</model>
+"""
+
+
+def render_model_sdf(tag_id: int) -> str:
+    """Gazebo model.sdf: a thin, static, vertical box visual carrying the tag texture.
+
+    Visual-only (no collision) so the drone never collides with a fiducial; static so it never
+    drifts. The texture is applied via a PBR albedo map; the big faces lie in the XZ plane (thin in
+    Y) so a forward-looking camera resolves the tag at a checkpoint hover (SIM-4 mount tuning).
+    """
+    name = _model_name(tag_id)
+    texture = f"materials/textures/{_texture_name(tag_id)}"
+    return f"""<?xml version="1.0"?>
+<!-- GENERATED by sim/tools/gen_apriltag_models.py — do not edit by hand. -->
+<sdf version="1.9">
+  <model name="{name}">
+    <static>true</static>
+    <link name="link">
+      <visual name="tag">
+        <geometry>
+          <box>
+            <size>{TAG_SIZE_M} {TAG_THICKNESS_M} {TAG_SIZE_M}</size>
+          </box>
+        </geometry>
+        <material>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>{texture}</albedo_map>
+              <metalness>0.0</metalness>
+              <roughness>1.0</roughness>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
+"""
+
+
+# --- emit / check --------------------------------------------------------------------------------
+
+
+def _model_files(tag_id: int, grid: tuple[str, ...]) -> dict[Path, bytes]:
+    """The three committed files for one model dir, as {path: bytes}."""
+    base = model_dir(tag_id)
+    return {
+        base / "model.config": render_model_config(tag_id).encode(),
+        base / "model.sdf": render_model_sdf(tag_id).encode(),
+        base / "materials" / "textures" / _texture_name(tag_id): render_png(grid),
+    }
+
+
+def _write_all() -> list[Path]:
+    written = []
+    for tag_id, grid in sorted(CANONICAL_TAG36H11.items()):
+        for path, data in _model_files(tag_id, grid).items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            written.append(path)
+    return written
+
+
+def stale_model_files() -> list[str]:
+    """Committed model files that differ from a fresh render (drift), as repo-relative paths."""
+    drift = []
+    for tag_id, grid in sorted(CANONICAL_TAG36H11.items()):
+        for path, data in _model_files(tag_id, grid).items():
+            if not path.exists() or path.read_bytes() != data:
+                drift.append(str(path.relative_to(REPO_ROOT)))
+    return drift
+
+
+def orphan_model_dirs() -> list[str]:
+    """Committed apriltag_36h11_* dirs with no entry in CANONICAL_TAG36H11, as repo-relative paths.
+
+    A checkpoint/tag removal that deletes the YAML entry + grid but leaves the generated model dir on
+    disk would otherwise pass the drift gate silently — this is the inverse of stale_model_files()
+    (which only walks the canonical set forward)."""
+    canonical = {_model_name(tag_id) for tag_id in CANONICAL_TAG36H11}
+    orphans = [
+        p for p in MODELS_DIR.glob("apriltag_36h11_*") if p.is_dir() and p.name not in canonical
+    ]
+    return sorted(str(p.relative_to(REPO_ROOT)) for p in orphans)
+
+
+def _run_check() -> int:
+    """The same union the CI wrapper (scripts/check_world_drift.py) enforces: stale forward-rendered
+    files AND orphan dirs left after a tag removal. Keeps the standalone --check honest vs the gate."""
+    stale = stale_model_files()
+    orphans = orphan_model_dirs()
+    if not stale and not orphans:
+        print("apriltag models: up to date.")
+        return 0
+    print("apriltag models drifted from sim/tools/gen_apriltag_models.py:")
+    for rel in stale:
+        print(f"  - stale (re-run the generator): {rel}")
+    for rel in orphans:
+        print(f"  - orphan dir (remove it; no canonical tag): {rel}")
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if "--check" in argv:
+        return _run_check()
+    for path in _write_all():
+        print(f"wrote {path.relative_to(REPO_ROOT)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

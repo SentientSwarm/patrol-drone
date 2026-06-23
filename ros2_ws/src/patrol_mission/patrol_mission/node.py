@@ -35,8 +35,8 @@ from std_msgs.msg import Bool, Int32, String
 
 from patrol_mission import topics
 from patrol_mission.commands import Px4CommandKind, build_vehicle_commands
-from patrol_mission.config import load_mission_config
-from patrol_mission.frames import Point, to_ned_from_origin
+from patrol_mission.config import Waypoint, load_mission_config
+from patrol_mission.frames import Point, enu_yaw_to_ned, to_ned_from_origin
 from patrol_mission.qos import (
     patrol_abort_qos,
     patrol_event_qos,
@@ -70,6 +70,18 @@ _TELEMETRY_TIMEOUT_S = 2.0
 # 10 s leaves wide margin for a slow-but-alive battery stream; revisit if a measured SITL cadence
 # (not yet pinned in the repo) ever approaches it.
 _BATTERY_TIMEOUT_S = 10.0
+
+
+def _waypoint_yaw_ned(wp: Waypoint) -> float:
+    """NED yaw to hold at a waypoint: face the tag for a checkpoint waypoint, else hold North (0.0).
+
+    An inline waypoint carries no facing constraint (``yaw_enu is None``) and keeps the prior NED-0
+    heading; a checkpoint waypoint's ENU facing yaw converts at the single MC-7 boundary (SIM-4).
+    """
+    if wp.yaw_enu is None:
+        return 0.0
+    return enu_yaw_to_ned(wp.yaw_enu)
+
 
 # The ONE site that binds the pure Px4CommandKind symbols (patrol_mission.commands) to their
 # px4_msgs MAVLink IDs. Referencing the VehicleCommand.* constants directly means the IDs can't
@@ -159,7 +171,8 @@ class PatrolMissionNode(Node):
         waypoints_ned = [
             to_ned_from_origin(w.position, w.frame, _EKF_ORIGIN_NED) for w in self._cfg.waypoints
         ]
-        self._sm = MissionStateMachine(self._cfg, waypoints_ned, home_ned)
+        waypoint_yaws_ned = [_waypoint_yaw_ned(w) for w in self._cfg.waypoints]
+        self._sm = MissionStateMachine(self._cfg, waypoints_ned, home_ned, waypoint_yaws_ned)
 
         self.create_timer(_TIMER_PERIOD_S, self._on_tick)
         self.get_logger().info(f"patrol_mission up; mission={mission_yaml}")

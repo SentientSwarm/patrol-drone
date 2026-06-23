@@ -6,8 +6,9 @@
 #
 # Every waypoint carries a frame (directly via `frame`, or implicitly ENU via a `checkpoint_id`
 # reference resolved against sim/config/checkpoints.yaml) so the single MC-7 conversion boundary
-# always knows the source frame. The first two waypoints reference 03's checkpoints (interim
-# stand-in today); the last two are inline ENU.
+# always knows the source frame. The first three waypoints reference 03's canonical checkpoints
+# (cp_north/cp_east/cp_south, so the patrol visits each AprilTag in turn — M5 SIM-5/AC-3); the last
+# is an inline ENU overlook, kept to exercise the inline-waypoint path alongside checkpoint refs.
 takeoff_alt_m: 5.0
 hover_time_s: 10.0
 completion:
@@ -15,6 +16,11 @@ completion:
   hold_time_s: 2.0      # OQ-4 default (overridable)
 abort:
   low_battery_threshold: 0.20   # OQ-6 (battery_status.remaining fraction)
+# Approach geometry (SIM-4): each checkpoint waypoint hovers `standoff_m` back from the tag and yaws to
+# face it, so the forward camera resolves the marker rather than sitting on top of it. The world's
+# AprilTags are emitted at zero yaw (face normal along +Y), so the stand-off is taken along +Y.
+approach:
+  standoff_m: 3.0   # meters; tunable — see tests/unit/test_checkpoint_visibility.py
 # Home at 2 m ENU altitude: RTH flies the explicit home-waypoint setpoint to here, settles, then
 # LANDING descends the rest of the way (OQ-8 — no PX4 RTL handoff).
 home:
@@ -25,9 +31,8 @@ waypoints:
     dwell_s: 3.0
   - checkpoint_id: "cp_east"
     dwell_s: 3.0
-  - position: { x: -10.0, y: 0.0, z: 2.0 }   # inline waypoint (ENU)
-    frame: "enu"
+  - checkpoint_id: "cp_south"
     dwell_s: 3.0
-  - position: { x: 0.0, y: -10.0, z: 2.0 }
+  - position: { x: 5.0, y: 5.0, z: 2.5 }   # inline ENU overlook (clear of obstacles); exercises the inline path
     frame: "enu"
     dwell_s: 3.0

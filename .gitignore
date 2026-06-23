@@ -77,3 +77,6 @@ local_config.yaml
 
 # lifecycle /drive session logs (process artifacts)
 lifecycle-sessions/
+
+# PR fix pipeline artifacts (phase handoff files)
+.pr-fix/

@@ -1,7 +1,7 @@
 # Definition of Done — Platform & Simulation Foundation
 
 **Phase 1 docset:** 1 of 5 · **Milestones:** M1–M2
-**Lifecycle status:** DoD ✅ · PRD ⏳ (/drive) · Design ⏳ (/drive)
+**Lifecycle status:** DoD ✅ · PRD ✅ · Design ✅
 **Source:** docs/phase1_simulation_plan.md — M1 ("Toolchain installed, vanilla SITL flying"), M2 ("ROS 2 Jazzy + uXRCE-DDS bridge"), plus "Target stack (pinned)", "Repo structure", "Containerization", "Dev hardware requirements", "What's explicitly NOT in Phase 1", and the "Phase 1 exit checklist".
 **Stakeholders:** Project owner (solo dev) — operator/maintainer who runs the stack daily and onboards collaborators; collaborators on modest dev workstations who must reproduce the environment from scratch; downstream — every sibling docset (02–05) and every later phase (2–8) that builds on this base workspace, container layout, and PX4 telemetry surface; reviewers — the person merging PRs against a `main` that must always work-in-sim.
 **Depends on:** none (foundation — this is the first docset; everything else stands on it).
@@ -50,7 +50,7 @@ Stand up the full pre-hardware platform — pinned toolchain, PX4 SITL in Gazebo
 5. **(P1) Setup-to-running-mission README (≤20 commands).** The README documents the end-to-end path from clean machine to a running mission in under 20 commands.
    - *Customer scenario:* a new collaborator goes from `git clone` to a running simulation by following the README only.
    - *Pain removed:* tribal-knowledge onboarding and undocumented setup steps.
-6. **(P1) Pinned stack manifest.** A single source of truth pins every layer (OS, ROS 2 Jazzy, PX4 v1.16.x, Gazebo Harmonic, uXRCE-DDS, Python 3.12, MCAP plugin, colcon, Docker).
+6. **(P1) Pinned stack manifest.** A single source of truth pins every layer (OS, ROS 2 Jazzy, PX4 v1.17.0, Gazebo Harmonic, uXRCE-DDS, Python 3.12, MCAP plugin, colcon, Docker).
    - *Customer scenario:* the team avoids days lost to sliding off "latest" mid-project.
    - *Pain removed:* version drift across collaborators and CI.
 7. **(P2) Headless-capable `sim` container for CI.** The `sim` container runs headless so the integration tier (owned by 02/05) can spin it up in CI without a display. *(P2: the platform must not block CI, but the CI integration tests themselves are owned by sibling docsets.)*
@@ -59,15 +59,15 @@ Stand up the full pre-hardware platform — pinned toolchain, PX4 SITL in Gazebo
 
 Sourced from M1 Exit, M2 Exit, the Containerization section, and exit-checklist items 9 and 10.
 
-- [ ] **AC-1** *(M1 Exit)* GIVEN a clean Ubuntu 24.04 host with the toolchain installed, WHEN `make px4_sitl gz_x500` is run, THEN a drone launches in Gazebo Harmonic, arms and takes off via QGroundControl, and hovers stably for 60 seconds.
-- [ ] **AC-2** *(M2 Exit)* GIVEN SITL is running, WHEN `ros2 topic list | grep fmu` is run, THEN PX4 topics are returned.
-- [ ] **AC-3** *(M2 Exit)* GIVEN SITL is running with the uXRCE-DDS agent bridged, WHEN `ros2 topic hz /fmu/out/vehicle_local_position` is run, THEN it reports a steady rate (typically ~50 Hz).
-- [ ] **AC-4** *(exit-checklist item 9)* GIVEN a checkout of the repo, WHEN `docker compose` builds the `dev` and `sim` containers, THEN both build successfully from the shared Ubuntu 24.04 + ROS 2 Jazzy base.
-- [ ] **AC-5** *(exit-checklist item 9)* GIVEN a built container, WHEN a single `colcon build` is run inside it against `ros2_ws`, THEN the build succeeds with no errors.
-- [ ] **AC-6** GIVEN the workspace, WHEN it is built, THEN `px4_msgs` is present under `ros2_ws/src/external/`, vendored and pinned to the chosen PX4 branch (not pulled at build time).
+- [x] **AC-1** *(M1 Exit)* GIVEN a clean Ubuntu 24.04 host with the toolchain installed, WHEN `make px4_sitl gz_x500` is run, THEN a drone launches in Gazebo Harmonic, arms and takes off via QGroundControl, and hovers stably for 60 seconds.
+- [x] **AC-2** *(M2 Exit)* GIVEN SITL is running, WHEN `ros2 topic list | grep fmu` is run, THEN PX4 topics are returned.
+- [x] **AC-3** *(M2 Exit)* GIVEN SITL is running with the uXRCE-DDS agent bridged, WHEN `ros2 topic hz /fmu/out/vehicle_local_position` is run, THEN it reports a steady rate (typically ~50 Hz).
+- [x] **AC-4** *(exit-checklist item 9)* GIVEN a checkout of the repo, WHEN `docker compose` builds the `dev` and `sim` containers, THEN both build successfully from the shared Ubuntu 24.04 + ROS 2 Jazzy base.
+- [x] **AC-5** *(exit-checklist item 9)* GIVEN a built container, WHEN a single `colcon build` is run inside it against `ros2_ws`, THEN the build succeeds with no errors.
+- [x] **AC-6** GIVEN the workspace, WHEN it is built, THEN `px4_msgs` is present under `ros2_ws/src/external/`, vendored and pinned to the chosen PX4 branch (not pulled at build time).
 - [ ] **AC-7** *(exit-checklist item 10)* GIVEN a collaborator on a clean machine, WHEN they follow the README from setup to a running mission, THEN the path is fully documented and executable in fewer than 20 commands.
-- [ ] **AC-8** GIVEN the pinned stack manifest, WHEN any toolchain layer is referenced, THEN its version is explicitly pinned (OS, ROS 2 Jazzy, PX4 v1.16.x, Gazebo Harmonic, uXRCE-DDS, Python 3.12, colcon, Docker).
-- [ ] **AC-9** GIVEN the integration test tier owned by siblings (exit-checklist item 4), WHEN it needs to spin up SITL in CI, THEN the `sim` container runs headless and provides a working simulation environment. *(Platform provides the environment; the test that exercises it is owned by 02/05.)*
+- [x] **AC-8** GIVEN the pinned stack manifest, WHEN any toolchain layer is referenced, THEN its version is explicitly pinned (OS, ROS 2 Jazzy, PX4 v1.17.0, Gazebo Harmonic, uXRCE-DDS, Python 3.12, colcon, Docker).
+- [x] **AC-9** GIVEN the integration test tier owned by siblings (exit-checklist item 4), WHEN it needs to spin up SITL in CI, THEN the `sim` container runs headless and provides a working simulation environment. *(Platform provides the environment; the test that exercises it is owned by 02/05.)*
 
 ## 5. Interfaces
 
@@ -90,7 +90,7 @@ Sourced from M1 Exit, M2 Exit, the Containerization section, and exit-checklist 
 ## 6. Settled constraints (do NOT relitigate — cite the source)
 
 - **Ubuntu 24.04 + ROS 2 Jazzy + Python 3.12.** Decided in ADR-0001 and the plan's "Target stack (pinned)"; Humble/22.04 was deliberately reversed. Accept ~1 week of M1–M2 integration friction as the cost.
-- **PX4 v1.16.x or latest stable**, with message versioning. (Plan "Target stack".)
+- **PX4 v1.17.0 or latest stable**, with message versioning. (Plan "Target stack".)
 - **uXRCE-DDS native, not MAVROS.** Native ROS 2 topics, no translation layer. (Plan "Target stack" / "How to engage"; ADR-0001 neutral consequences.)
 - **Gazebo Harmonic (gz-sim 8), not Gazebo Classic.** Classic is deprecated. (Plan "Target stack".)
 - **`px4_msgs` vendored and version-pinned**, not pulled at build time. (Plan "Repo structure".)
@@ -104,7 +104,7 @@ Sourced from M1 Exit, M2 Exit, the Containerization section, and exit-checklist 
 
 - **Container layout depth** · is the bare two-container (`sim`/`dev`) split sufficient, or does the uXRCE-DDS agent warrant its own service in compose? · the plan calls two-container "a defensible default, not the only answer" and explicitly welcomes pushback.
 - **PX4 source vs prebuilt in the `sim` image** · build PX4-Autopilot from source inside the image, or layer a prebuilt SITL artifact for faster CI? · trades image build time / reproducibility against CI runtime budget (flagged as a low-confidence area in the plan's "Test strategy").
-- **Exact PX4 / `px4_msgs` pin** · which specific v1.16.x tag and matching `px4_msgs` branch to vendor · needs the early-adopter integration spike (the plan's ~1-week M1–M2 friction) to settle on a known-good combination.
+- **Exact PX4 / `px4_msgs` pin** · which specific v1.17.0 tag and matching `px4_msgs` branch to vendor · needs the early-adopter integration spike (the plan's ~1-week M1–M2 friction) to settle on a known-good combination.
 - **Headless rendering backend for CI** · software/llvmpipe vs hosted-runner GPU for Gazebo Harmonic's Vulkan rendering in the `sim` container · the plan notes SITL CI orchestration is its least-confident area; rendering on hosted runners is the practical risk.
 - **GPU passthrough story for the `sim`/`dev` containers on dev hosts** · how (and whether) to expose the host GPU to Gazebo in the container for interactive dev · varies by collaborator hardware (4–8 GB discrete GPUs per the dev-hardware table); must not become a hard requirement.
 - **README command-budget allocation** · how the ≤20-command budget is split between platform bring-up and the per-docset run steps siblings append · integrative item 10 spans all docsets; platform owns the spine but the total must stay under budget.

@@ -6,7 +6,7 @@ Layer-A: ROS-free, deterministic. No simulator, no rclpy.
 import math
 
 import pytest
-from patrol_mission.frames import takeoff_target_ned, to_ned_from_origin
+from patrol_mission.frames import enu_yaw_to_ned, takeoff_target_ned, to_ned_from_origin
 
 
 # TS-8: ENU -> NED axis map for a known input, with a zero origin.
@@ -69,3 +69,25 @@ def test_takeoff_target_is_alt_above_home(home_ned, alt, expected):
 def test_takeoff_target_returns_plain_float_tuple():
     result = takeoff_target_ned((1, 2, 3), 4)
     assert all(isinstance(c, float) for c in result)
+
+
+# TS-SIM4: ENU yaw (CCW from East) -> NED yaw (CW from North): yaw_ned = pi/2 - yaw_enu, wrapped.
+@pytest.mark.parametrize(
+    ("yaw_enu", "expected_ned"),
+    [
+        (0.0, math.pi / 2),  # ENU East -> NED faces East (90 deg CW from North)
+        (math.pi / 2, 0.0),  # ENU North -> NED faces North (0)
+        (-math.pi / 2, math.pi),  # ENU South -> NED faces South (180)
+        (math.pi, -math.pi / 2),  # ENU West -> NED faces West (-90)
+    ],
+    ids=["east", "north", "south", "west"],
+)
+def test_enu_yaw_to_ned_cardinals(yaw_enu, expected_ned):
+    assert enu_yaw_to_ned(yaw_enu) == pytest.approx(expected_ned)
+
+
+# The result is always normalized to the half-open (-pi, pi] regardless of input magnitude.
+@pytest.mark.parametrize("yaw_enu", [-100.0, -10.0, -math.pi, 0.0, math.pi, 7.5, 100.0])
+def test_enu_yaw_to_ned_wraps_to_pi(yaw_enu):
+    result = enu_yaw_to_ned(yaw_enu)
+    assert -math.pi < result <= math.pi

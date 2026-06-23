@@ -1,7 +1,7 @@
 # Definition of Done — Simulation Environment & Assets
 
 **Phase 1 docset:** 3 of 5 · **Milestones:** M5
-**Lifecycle status:** DoD ✅ · PRD ⏳ (/drive) · Design ⏳ (/drive)
+**Lifecycle status:** DoD ✅ · PRD ✅ · Design ✅
 **Source:** docs/phase1_simulation_plan.md — M5 ("Custom world with checkpoints and AprilTags"); cross-cutting: "Repo structure", "Containerization", "What's explicitly NOT in Phase 1", "Phase 1 exit checklist"
 **Stakeholders:** Project owner (solo dev) — operator/maintainer authoring and patrolling the world; downstream — Phase 1 consumers 02-mission-control (patrol target positions) and 04-perception (AprilTag detection + camera frames), plus Phase 4 indoor-VIO which reuses the same AprilTag assets and detection on hardware; reviewers — PR reviewers gating merge to a working-in-sim `main`.
 **Depends on:** 01-platform (Gazebo Harmonic / PX4 SITL / ROS 2 base, `colcon build`, container env) — foundation for loading a world and attaching a sensor; 02-mission-control (patrol mission able to fly a waypoint sequence — used to exercise the world's checkpoints).
@@ -46,7 +46,7 @@ Deliver a checked-in Gazebo Harmonic patrol environment — a crude-but-meaningf
 
 - [ ] **AC-1** — GIVEN the project repo and a running PX4 SITL session, WHEN the custom world is loaded, THEN Gazebo Harmonic renders the patrol environment (flat terrain + building-like boxes + trees) without load errors. (M5 Exit: "custom world loads".)
 - [ ] **AC-2** — GIVEN a checkpoint-positions YAML with >=3 entries, WHEN the world is generated/loaded, THEN >=3 AprilTag checkpoint markers appear at the YAML-configured world positions. (M5 Exit: "custom world loads with 3+ checkpoint AprilTags at YAML-configured positions".)
-- [ ] **AC-3** — GIVEN the world and the M4 patrol mission configured to the same checkpoint positions, WHEN the patrol runs in SITL, THEN the drone visits each checkpoint AprilTag in turn. (M5 Exit: "Patrol mission from M4 visits each in turn"; contributes to exit-checklist item 1.)
+- [ ] **AC-3** — GIVEN the world and the M4 patrol mission configured to the same checkpoint positions, WHEN the patrol runs in SITL, THEN the drone visits each checkpoint AprilTag in turn — *visiting* a checkpoint means hovering at the per-checkpoint stand-off **facing** the tag (SIM-4 approach pose, §7), not on top of it, so the forward camera resolves the marker. (M5 Exit: "Patrol mission from M4 visits each in turn"; contributes to exit-checklist item 1.)
 - [ ] **AC-4** — GIVEN SITL running with the drone in the world, WHEN ROS 2 inspects topics, THEN a simulated RGB camera publishes a `sensor_msgs/Image` topic at a steady rate. (M5 Exit: "Simulated RGB camera attached to the drone publishes a ROS 2 image topic".)
 - [ ] **AC-5** — GIVEN a fresh checkout inside the containerized sim environment (per 01-platform), WHEN the world is launched, THEN it loads with no host-specific assets or absolute paths (all referenced models/textures live in `sim/` and are repo-checked-in). (Cross-cuts "Containerization"; supports exit-checklist item 9's "works in-container" intent.)
 
@@ -77,7 +77,7 @@ Deliver a checked-in Gazebo Harmonic patrol environment — a crude-but-meaningf
 - **Checkpoint-config file location, name, and exact schema** · decide in PRD/Design · the world, the patrol waypoints (02), and perception (04) must agree on one schema mapping `checkpoint_id ↔ world position ↔ tag id`; whether this lives under `sim/`, `patrol_bringup`, or is shared is unresolved. (Must be reconciled jointly with 02 §7 "YAML schema shape" and 04 §7 "checkpoint_id namespace / mapping" during /drive so one schema satisfies all three consumers.)
 - **Whether the world is authored as static SDF or generated from the YAML at launch** · decide in PRD/Design · static SDF is simplest; generation keeps a single source of truth for checkpoint positions but adds tooling.
 - **RGB camera topic name, resolution, frame rate, and frame_id** · decide in PRD/Design · these become the contract perception (04) and logging (05) bind to; resolution/rate trade sim load against image usefulness and bag size.
-- **Camera mount pose and FOV on the airframe** · decide in PRD/Design · must let the drone actually "see" a tag when hovering at a checkpoint; affects waypoint approach geometry in 02.
+- **Camera mount pose and FOV on the airframe** · **RESOLVED (PR #9):** camera mount tuned (640×480, HFOV 1.2 rad, +0.12 m fwd, ~20° down). The drone does **not** hover *at* the tag — checkpoint waypoints resolve to a `standoff_m` (default 3 m) +Y stand-off facing the tag (`patrol_mission.config._approach_pose`, yaw converted at the single MC-7 boundary), so the marker is in frame. Locked by a pure-geometry oracle (`tests/unit/test_checkpoint_visibility.py`) and recorded in [ADR-0008](../../decisions/0008-checkpoint-approach-pose.md). · *(was: must let the drone actually "see" a tag when hovering at a checkpoint; affects waypoint approach geometry in 02.)*
 - **World extent and obstacle layout** · decide in PRD/Design · enough geometry to be "meaningful" without slowing physics; the plan says "a flat plane, some building-like boxes, a few trees" but leaves specifics open.
 - **Which SITL airframe target the camera attaches to** · decide in PRD/Design · `gz_x500` is the M1 default; attaching a camera may require an override/variant.
 

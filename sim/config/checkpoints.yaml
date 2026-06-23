@@ -1,22 +1,33 @@
-# sim/config/checkpoints.yaml — INTERIM 02-authored stand-in for a 03-sim-environment deliverable.
+# sim/config/checkpoints.yaml — world/ENU frame, meters. Single source of truth (Tenet 2).
 #
-# 03-sim-environment owns the authoritative checkpoint-positions file (the world's AprilTag
-# checkpoints). 03 is not delivered yet, but 02's M4 (T2.2) consumes this file to resolve a
-# mission YAML's `checkpoint_id` waypoints to world/ENU positions (design §4.2.5 / Appendix C.1;
-# OQ-2). This provisional file carries the COMBINED-REVIEW-confirmed schema so the checkpoint_id
-# resolution path is real and end-to-end testable now; when 03 lands its own file, it OWNS and
-# REPLACES this one — the loader takes the path as an explicit launch parameter (`checkpoints_yaml`,
-# an absolute path with no in-package default since the file is 03-owned, OQ-2), so an
-# agreed-different location is a one-line launch-arg change, not a code edit.
+# Owned by 03-sim-environment (M5). This is the CANONICAL checkpoint-positions file; it replaces
+# the interim 02-authored bare-list stand-in that lived here on the M4 branch. Consumed by:
+#   - 02-mission-control: reads `position` (world/ENU) and converts to PX4-NED at its single MC-7
+#     frame boundary; references `checkpoint_id` from patrol_mission.yaml waypoints.
+#   - 03 World Composer (sim/tools/compose_world.py): emits one AprilTag <include> per checkpoint
+#     into sim/worlds/patrol_world.sdf at `position` (a CI drift check asserts they stay in sync).
+#   - 04-perception: maps a detected `tag_id` -> `checkpoint_id`.
 #
-# Schema (per design Appendix C.1): a list of { checkpoint_id, position{x,y,z} in world/ENU
-# meters, tag_family, tag_id }. 02 reads `position` (→ NED at the single frame boundary,
-# frames.to_ned_from_origin) and references `checkpoint_id` from patrol_mission.yaml.
-- checkpoint_id: "cp_north"
-  position: { x: 10.0, y: 0.0, z: 2.0 }
-  tag_family: "tag36h11"
-  tag_id: 0
-- checkpoint_id: "cp_east"
-  position: { x: 0.0, y: 10.0, z: 2.0 }
-  tag_family: "tag36h11"
-  tag_id: 1
+# Schema (design §4.2.3, confirmed at combined review 2026-06-03): a top-level `checkpoints:` key
+# holding a list of { checkpoint_id: string, position: {x,y,z} in world/ENU meters,
+# tag_family: string, tag_id: int }. The frame is EXPLICITLY world/ENU — 02 owns the ENU->NED
+# conversion at its boundary. No waypoint fields (dwell/tolerance) live here — those belong to
+# 02's mission YAML (clean ownership).
+#
+# Layout invariants (OQ-6): >=3 checkpoints, each pair separated >=8 m, all within the ~40x40 m
+# world (|x|,|y| <= 20). tag_id is contiguous 0..N-1 and matches sim/models/apriltag_36h11_<id>.
+# To add/move a checkpoint: edit a row here, then regenerate the world
+# (`python3 sim/tools/compose_world.py`) and commit both files (CI's world-drift gate enforces it).
+checkpoints:
+  - checkpoint_id: "cp_north"
+    position: { x: 12.0, y: 8.0, z: 1.5 }   # world/ENU, meters
+    tag_family: "tag36h11"
+    tag_id: 0                                 # matches sim/models/apriltag_36h11_0
+  - checkpoint_id: "cp_east"
+    position: { x: 18.0, y: -6.0, z: 1.5 }
+    tag_family: "tag36h11"
+    tag_id: 1
+  - checkpoint_id: "cp_south"
+    position: { x: -10.0, y: -12.0, z: 1.5 }
+    tag_family: "tag36h11"
+    tag_id: 2
