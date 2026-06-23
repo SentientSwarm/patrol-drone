@@ -5,6 +5,7 @@ but their *logic* — latest-frame buffering, cv_bridge-seam encoding, and NED->
 via the single MC-7 site (frames.to_enu_from_ned) — is exercised here with plain stand-ins (AC-5).
 """
 
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -44,9 +45,12 @@ def test_frame_sampler_encodes_latest_frame():
 # --- PoseSampler: buffer latest NED pose, return it in world/ENU with explicit frame_id ---
 
 
-def _ned_pose(x, y, z):
-    # Minimal VehicleLocalPosition stand-in: x,y,z in NED + a quaternion.
-    return SimpleNamespace(x=x, y=y, z=z, q=[0.0, 0.0, 0.0, 1.0])
+def _ned_pose(x, y, z, heading=0.0):
+    # Minimal VehicleLocalPosition stand-in: matches the REAL message field set — x,y,z in NED plus
+    # a scalar `heading` (NED Euler yaw). VehicleLocalPosition carries NO quaternion field, so the
+    # sampler must derive orientation from `heading`, not a fabricated `.q` (would have caught the
+    # AttributeError that a `.q` stand-in masked).
+    return SimpleNamespace(x=x, y=y, z=z, heading=heading)
 
 
 def test_pose_sampler_no_pose_returns_none():
@@ -59,7 +63,19 @@ def test_pose_sampler_converts_ned_to_enu_and_stamps_frame():
     sample = sampler.sample()
     assert sample.frame_id == "patrol_world"
     assert sample.position == pytest.approx((1.0, 2.0, 3.0))
-    assert sample.orientation == (0.0, 0.0, 0.0, 1.0)
+    # heading 0 (NED, facing North) -> ENU yaw pi/2 (facing North in ENU) -> quaternion about +Up.
+    assert sample.orientation == pytest.approx(
+        (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
+    )
+
+
+def test_pose_sampler_orientation_tracks_ned_heading():
+    # A non-trivial NED heading must produce the corresponding ENU yaw quaternion (honest ENU
+    # orientation, not the raw NED value mislabeled ENU). NED yaw pi/2 (facing East) -> ENU yaw 0.
+    sampler = PoseSampler(world_frame="patrol_world", ekf_origin_ned=(0.0, 0.0, 0.0))
+    sampler.update(_ned_pose(0.0, 0.0, 0.0, heading=math.pi / 2))
+    # ENU yaw 0 -> identity quaternion (facing East in ENU).
+    assert sampler.sample().orientation == pytest.approx((0.0, 0.0, 0.0, 1.0))
 
 
 def test_pose_sampler_applies_ekf_origin_offset():

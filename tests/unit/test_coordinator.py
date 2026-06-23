@@ -172,7 +172,10 @@ def test_metadata_merges_mission_id_waypoint_index_and_detection():
     assert md["tag_id"] == "7"  # resolver-sourced metadata is preserved
 
 
-def test_capture_record_carries_resolved_id_and_enu_pose():
+def test_capture_record_carries_resolved_id_position_and_frame():
+    # The record threads the resolved checkpoint_id, the sampled world/ENU position, the pose
+    # frame_id, and the clock stamp. (Orientation-frame correctness is owned/asserted by the
+    # PoseSampler tests — the coordinator just forwards PoseSample.orientation verbatim.)
     rec = _Recorder()
     coord = _make_coordinator(rec, detections=[_detection()])
     captured: list = []
@@ -181,6 +184,7 @@ def test_capture_record_carries_resolved_id_and_enu_pose():
     record = captured[0]
     assert record.checkpoint_id == "checkpoint_alpha"
     assert record.position == (1.0, 2.0, 3.0)
+    assert record.orientation == (0.0, 0.0, 0.0, 1.0)  # forwarded from the PoseSample unchanged
     assert record.frame_id == "w"
     assert record.stamp_sec == 123
     assert record.stamp_nanosec == 456

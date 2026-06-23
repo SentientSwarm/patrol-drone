@@ -39,8 +39,10 @@ def _camera_info_bridge() -> Node:
 
 
 def _apriltag_node() -> Node:
-    """Off-the-shelf tag36h11 detector (VP-1). family '36h11' is the detector label; the checkpoint
-    config's tag_family ('tag36h11') is reconciled in the resolver/config — see checkpoints.yaml."""
+    """Off-the-shelf tag36h11 detector (VP-1). apriltag_ros emits the bare family token it is given
+    here ('36h11') in AprilTagDetection.family; the checkpoint config's tag_family is the conventional
+    prefixed form ('tag36h11'). CheckpointResolver normalizes the 'tag' prefix so the two compare
+    equal (_families_match) — see checkpoint_resolver.py."""
     return Node(
         package="apriltag_ros",
         executable="apriltag_node",
@@ -68,6 +70,7 @@ def _perception_node() -> Node:
                 "detections_topic": DETECTIONS_TOPIC,
                 "checkpoint_config_path": LaunchConfiguration("checkpoint_config_path"),
                 "world_frame": LaunchConfiguration("world_frame"),
+                "output_root": LaunchConfiguration("output_root"),
             }
         ],
     )
@@ -82,6 +85,9 @@ def generate_launch_description() -> LaunchDescription:
                 "checkpoint_config_path", default_value="sim/config/checkpoints.yaml"
             ),
             DeclareLaunchArgument("world_frame", default_value="patrol_world"),
+            # output_root: where captures land (<output_root>/<run_id>/). Empty -> the node's CWD
+            # "captures" default; mission_patrol forwards 05's bag/run dir here so 04↔05 align (OQ-4).
+            DeclareLaunchArgument("output_root", default_value=""),
             _camera_info_bridge(),
             _apriltag_node(),
             _perception_node(),

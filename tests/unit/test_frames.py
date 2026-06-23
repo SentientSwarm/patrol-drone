@@ -7,7 +7,9 @@ import math
 
 import pytest
 from patrol_mission.frames import (
+    enu_quaternion_from_ned_heading,
     enu_yaw_to_ned,
+    ned_yaw_to_enu,
     takeoff_target_ned,
     to_enu_from_ned,
     to_ned_from_origin,
@@ -133,3 +135,35 @@ def test_enu_yaw_to_ned_cardinals(yaw_enu, expected_ned):
 def test_enu_yaw_to_ned_wraps_to_pi(yaw_enu):
     result = enu_yaw_to_ned(yaw_enu)
     assert -math.pi < result <= math.pi
+
+
+# ned_yaw_to_enu is the exact inverse of enu_yaw_to_ned (the one MC-7 heading boundary, both senses).
+# Inputs are already in (-pi, pi] so the wrap is a no-op and the round-trip returns the input.
+@pytest.mark.parametrize("yaw_enu", [-math.pi / 2, 0.0, 0.7, math.pi / 2, math.pi])
+def test_ned_yaw_to_enu_inverts_enu_yaw_to_ned(yaw_enu):
+    assert ned_yaw_to_enu(enu_yaw_to_ned(yaw_enu)) == pytest.approx(yaw_enu)
+
+
+# enu_quaternion_from_ned_heading: a NED heading becomes a yaw-only ENU quaternion about +Up (z).
+@pytest.mark.parametrize(
+    ("heading_ned", "expected_enu_yaw"),
+    [
+        (0.0, math.pi / 2),  # NED faces North -> ENU yaw pi/2 (North in ENU)
+        (math.pi / 2, 0.0),  # NED faces East -> ENU yaw 0 (East in ENU) -> identity quaternion
+        (math.pi, -math.pi / 2),  # NED faces South -> ENU yaw -pi/2
+    ],
+    ids=["north", "east", "south"],
+)
+def test_enu_quaternion_from_ned_heading(heading_ned, expected_enu_yaw):
+    qx, qy, qz, qw = enu_quaternion_from_ned_heading(heading_ned)
+    # Yaw-only: no roll/pitch component about x/y.
+    assert (qx, qy) == pytest.approx((0.0, 0.0))
+    # The quaternion encodes a rotation of expected_enu_yaw about +Up.
+    assert (qz, qw) == pytest.approx(
+        (math.sin(expected_enu_yaw / 2), math.cos(expected_enu_yaw / 2))
+    )
+
+
+def test_enu_quaternion_is_unit_length():
+    qx, qy, qz, qw = enu_quaternion_from_ned_heading(1.3)
+    assert qx**2 + qy**2 + qz**2 + qw**2 == pytest.approx(1.0)

@@ -35,12 +35,28 @@ class CheckpointResolver:
             raise CheckpointResolverError(
                 f"unmapped tag_id {detection.id} (not present in the checkpoint config)"
             )
-        if detection.family != entry.tag_family:
+        if not _families_match(detection.family, entry.tag_family):
             raise CheckpointResolverError(
                 f"tag family mismatch for tag_id {detection.id}: "
                 f"detection '{detection.family}' != config '{entry.tag_family}'"
             )
         return entry.checkpoint_id, _detection_metadata(detection)
+
+
+def _families_match(detected: str, configured: str) -> bool:
+    """True iff two AprilTag family labels name the same family.
+
+    apriltag_ros emits the bare family token its ``family`` parameter was set to (e.g. ``"36h11"``),
+    while 03's ``checkpoints.yaml`` uses the conventional ``"tag"``-prefixed form (``"tag36h11"``).
+    Both name the same family, so the guard normalizes the optional ``tag`` prefix before comparing —
+    a real mismatch (e.g. ``36h11`` vs ``25h9``) still fails loud (AC-4: no silent frame/tag bug).
+    """
+    return _normalize_family(detected) == _normalize_family(configured)
+
+
+def _normalize_family(family: str) -> str:
+    """Strip the optional conventional ``tag`` prefix so ``36h11`` and ``tag36h11`` compare equal."""
+    return family[3:] if family.startswith("tag") else family
 
 
 def _detection_metadata(detection: Any) -> dict[str, str]:

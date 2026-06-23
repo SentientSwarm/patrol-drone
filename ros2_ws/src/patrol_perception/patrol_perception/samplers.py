@@ -16,7 +16,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from patrol_mission.frames import Point, to_enu_from_ned
+from patrol_mission.frames import (
+    Point,
+    Quaternion,
+    enu_quaternion_from_ned_heading,
+    to_enu_from_ned,
+)
 
 
 class LatestBuffer[T]:
@@ -62,21 +67,29 @@ class FrameSampler:
 
 @dataclass(frozen=True)
 class PoseSample:
-    """A capture pose in world/ENU with an explicit frame_id (ADR-B, Tenet 5)."""
+    """A capture pose in world/ENU with an explicit frame_id (ADR-B, Tenet 5).
+
+    Both position AND orientation are world/ENU: the orientation is a yaw-only ENU quaternion derived
+    from the PX4 NED ``heading`` at the single MC-7 site, so a downstream consumer that trusts
+    ``frame_id`` reads the whole pose in one frame (no mixed NED/ENU pose, design §4.2.4).
+    """
 
     position: Point  # x, y, z in world/ENU meters
-    orientation: tuple[float, float, float, float]  # x, y, z, w
+    orientation: Quaternion  # x, y, z, w in world/ENU (yaw-only, from NED heading)
     frame_id: str
 
 
 class PoseSampler:
     """Buffers the latest PX4 ``VehicleLocalPosition`` (NED) and returns it in world/ENU (PCAP-1).
 
-    On ``sample()`` the buffered NED position is converted to world/ENU through the single MC-7
-    site and stamped with ``world_frame``. Orientation is carried through as the PX4 quaternion
-    (x,y,z,w) unchanged: Phase 1 needs an honest position + explicit frame for a hover capture;
-    a rigorous NED/FRD->ENU/FLU orientation transform is deferred to Phase 3+ with VIO (ADR-B),
-    rather than fabricating precision the ground-truth-hover path does not require.
+    On ``sample()`` the buffered NED position is converted to world/ENU through the single MC-7 site,
+    and the NED ``heading`` (the only attitude PX4 ``VehicleLocalPosition`` carries — there is no
+    quaternion field) is converted to a yaw-only world/ENU quaternion at the same MC-7 boundary
+    (:func:`~patrol_mission.frames.enu_quaternion_from_ned_heading`). Roll/pitch are dropped: a
+    checkpoint visit is a quasi-static hover, so an honest yaw-only ENU orientation is sufficient and
+    a full NED/FRD->ENU/FLU attitude transform is deferred to Phase 3+ with VIO (ADR-B), rather than
+    fabricating precision the ground-truth-hover path does not require. The whole pose is stamped with
+    ``world_frame`` and is genuinely single-frame (no orientation mislabeled ENU).
     """
 
     def __init__(self, world_frame: str, ekf_origin_ned: Point) -> None:
@@ -93,9 +106,9 @@ class PoseSampler:
         if pose_ned is None:
             return None
         position = to_enu_from_ned((pose_ned.x, pose_ned.y, pose_ned.z), self._ekf_origin_ned)
-        qx, qy, qz, qw = pose_ned.q
+        orientation = enu_quaternion_from_ned_heading(pose_ned.heading)
         return PoseSample(
             position=position,
-            orientation=(float(qx), float(qy), float(qz), float(qw)),
+            orientation=orientation,
             frame_id=self._world_frame,
         )

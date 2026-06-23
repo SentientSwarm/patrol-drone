@@ -95,3 +95,31 @@ def enu_yaw_to_ned(yaw_enu: float) -> float:
     normalized to (-pi, pi].
     """
     return _wrap_to_pi(math.pi / 2.0 - yaw_enu)
+
+
+def ned_yaw_to_enu(yaw_ned: float) -> float:
+    """Convert a PX4 NED yaw to an ENU yaw — the exact inverse of :func:`enu_yaw_to_ned`.
+
+    Kept at this single MC-7 boundary (Tenet 4) so the perception pose path (PoseSampler, ADR-B) can
+    express the capture heading in world/ENU without a second heading-conversion site. The map is its
+    own inverse: ``yaw_enu = pi/2 - yaw_ned``, normalized to (-pi, pi].
+    """
+    return _wrap_to_pi(math.pi / 2.0 - yaw_ned)
+
+
+Quaternion = tuple[float, float, float, float]  # (x, y, z, w)
+
+
+def enu_quaternion_from_ned_heading(heading_ned: float) -> Quaternion:
+    """Build a world/ENU yaw-only quaternion (x, y, z, w) from a PX4 NED heading (scalar yaw).
+
+    PX4 ``VehicleLocalPosition`` reports attitude only as ``heading`` (Euler yaw in NED); there is no
+    quaternion field. ADR-B's quasi-static hover capture needs an *honest* ENU orientation, not a raw
+    NED/FRD quaternion mislabeled ENU, so this converts the NED yaw to ENU at the single MC-7 site
+    (:func:`ned_yaw_to_enu`) and emits the corresponding rotation about +Up (ENU z). Roll/pitch are
+    dropped (a hover capture is yaw-dominant; full attitude awaits VIO in Phase 3+, ADR-B) — an honest
+    yaw-only ENU quaternion rather than fabricated precision.
+    """
+    yaw_enu = ned_yaw_to_enu(float(heading_ned))
+    half = yaw_enu / 2.0
+    return (0.0, 0.0, math.sin(half), math.cos(half))

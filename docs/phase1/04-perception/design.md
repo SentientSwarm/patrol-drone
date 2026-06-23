@@ -337,10 +337,12 @@ Declares node parameters, constructs subscriptions (camera, trigger, pose, `/tag
 | `trigger_topic` | `/patrol/dwell` | 02 atomic capture event (`std_msgs/Int32` index) | OQ-3/VP-5 |
 | `detections_topic` | `/tag_detections` | apriltag_ros output | VP-1 |
 | `checkpoint_config_path` | `sim/config/checkpoints.yaml` | 03 shared map | OQ-5/VP-4 |
-| `output_root` | `<run/bag output dir>` | 05 output alignment | OQ-4 |
-| `world_frame` | (from config) | ENU frame name | ADR-B |
+| `output_root` | `""` → CWD `captures/`; `mission_patrol`/`patrol_perception` launches forward 05's run/bag dir when set | 05 output alignment | OQ-4 |
+| `world_frame` | `patrol_world` (the M5 world/ENU frame name) | ENU frame name | ADR-B |
 
 All six parameters are internal configuration seams whose values trace to a cross-docset interface (the OQ/VP column) or a resolved ADR — none introduces a new requirement surface beyond the PRD's FR table.
+
+> **As-built default notes (M6).** `output_root` defaults to empty and resolves to a CWD-relative `captures/` dir at the node; the launch graph exposes an `output_root` argument (forwarded `mission_patrol` → `patrol_perception` → node) so a top-level patrol run can point captures under 05's bag/run dir for OQ-4 alignment without editing code. `world_frame` is the literal `patrol_world` (03's M5 world/ENU frame); the original "(from config)" intent is not realized because `checkpoints.yaml` carries no frame-name field — the positions there are *implicitly* world/ENU and 03/04 share the literal frame name by convention. If 03 ever renames the world frame, this default is the single seam to update (and would be the place to add a `frame_id` key to `checkpoints.yaml`).
 
 *Traces to: PCAP-3 / UAC-PCAP-3.*
 

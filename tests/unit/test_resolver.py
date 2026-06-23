@@ -8,13 +8,16 @@ so no apriltag_msgs/rclpy import is needed (AC-5). PCAP-7 confidence passthrough
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
-from patrol_perception.checkpoint_config import CheckpointEntry
+from patrol_perception.checkpoint_config import CheckpointConfigLoader, CheckpointEntry
 from patrol_perception.checkpoint_resolver import (
     CheckpointResolver,
     CheckpointResolverError,
 )
+
+_CANONICAL_CHECKPOINTS = Path(__file__).resolve().parents[2] / "sim/config/checkpoints.yaml"
 
 
 @dataclass
@@ -79,3 +82,43 @@ def test_rejects_family_mismatch():
 
     with pytest.raises(CheckpointResolverError, match="family"):
         resolver.resolve(_Detection(id=0, family="tag25h9"))
+
+
+@pytest.mark.parametrize("detected_family", ["36h11", "tag36h11"])
+def test_accepts_apriltag_ros_bare_family_token(detected_family):
+    """apriltag_ros emits the bare family token ('36h11') it was configured with, while
+    checkpoints.yaml uses the conventional prefixed form ('tag36h11'); both name the same family
+    and must resolve (the 'tag'-prefix normalization, not a hard string equality)."""
+    resolver = CheckpointResolver(_ENTRIES)
+
+    cid, _ = resolver.resolve(_Detection(id=0, family=detected_family))
+
+    assert cid == "cp_north"
+
+
+def test_rejects_bare_token_for_a_different_family():
+    """Normalization must not mask a genuine family mismatch: bare '25h9' vs config 'tag36h11'."""
+    resolver = CheckpointResolver(_ENTRIES)
+
+    with pytest.raises(CheckpointResolverError, match="family"):
+        resolver.resolve(_Detection(id=0, family="25h9"))
+
+
+# --- real loader -> resolver integration: the two halves wired against the canonical config ---
+
+
+def test_resolver_wired_to_real_loaded_config_resolves_live_detection():
+    """End-to-end of the ROS-free core: load 03's CANONICAL sim/config/checkpoints.yaml through the
+    real CheckpointConfigLoader and resolve a production-shaped detection (apriltag_ros's bare
+    '36h11' family token, the live AprilTagDetection field values). No unit fixture stubs the
+    tag_id->checkpoint_id map here — this is the only test that proves the loader's CheckpointEntry
+    shape and the resolver's family/id logic agree on the actual shipped config (would have caught a
+    family-vocabulary or schema drift between the two halves)."""
+    entries = CheckpointConfigLoader().load(str(_CANONICAL_CHECKPOINTS))
+    resolver = CheckpointResolver(entries)
+
+    cid, meta = resolver.resolve(_Detection(id=0, family="36h11", decision_margin=55.0, hamming=0))
+
+    assert cid == "cp_north"  # tag_id 0 -> cp_north in the shipped checkpoints.yaml
+    assert meta["tag_id"] == "0"
+    assert meta["detection_confidence"] == "55.0"

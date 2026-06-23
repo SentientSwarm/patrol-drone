@@ -53,7 +53,10 @@ def _maybe_perception(context: LaunchContext) -> list[IncludeLaunchDescription]:
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(perception_launch),
             launch_arguments={
-                "checkpoint_config_path": LaunchConfiguration("checkpoints_yaml")
+                "checkpoint_config_path": LaunchConfiguration("checkpoints_yaml"),
+                # forward the capture output root so 04's artifacts co-locate with 05's run/bag dir
+                # when set (OQ-4 alignment); empty falls back to the perception node's CWD default.
+                "output_root": LaunchConfiguration("output_root"),
             }.items(),
         )
     ]
@@ -104,6 +107,12 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="true",
                 description="include 04's perception capture chain (patrol_perception.launch.py) "
                 "if installed; skipped with a warning when the package/apriltag deps are absent",
+            ),
+            DeclareLaunchArgument(
+                "output_root",
+                default_value="",
+                description="root dir for 04's on-disk captures (<output_root>/<run_id>/); set it to "
+                "05's bag/run dir to align artifacts (OQ-4), empty -> the node's CWD 'captures' default",
             ),
             Node(
                 package="patrol_mission",
