@@ -117,7 +117,8 @@ norecursedirs = ["tests/integration", "tests/replay", "ros2_ws/src/external"]
 addopts = "-ra --strict-markers --strict-config"
 # M3: makes `import patrol_mission` work for Layer-A unit tests. M5: + sim/tools for the
 # World Composer / AprilTag-model generator unit tests (`import compose_world`, `gen_apriltag_models`).
-pythonpath = ["ros2_ws/src/patrol_mission", "sim/tools"]
+# M6: + patrol_perception for the ROS-free capture core (`import patrol_perception.*`).
+pythonpath = ["ros2_ws/src/patrol_mission", "ros2_ws/src/patrol_perception", "sim/tools"]
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
 ]
@@ -127,7 +128,14 @@ branch = true
 # The 85% floor targets the ROS-free mission core only (not analysis/ or scripts/).
 # Path-based source aligns with the M3 pytest pythonpath above; may switch to
 # source_pkgs = ["patrol_mission"] once an editable install lands (M3 spike).
-source = ["ros2_ws/src/patrol_mission/patrol_mission"]
+source = [
+    "ros2_ws/src/patrol_mission/patrol_mission",
+    # M6 (04-perception): the ROS-free capture core. M6.A ships config/resolver/builder
+    # (all unit-tested). The M6.B node layer (perception_node.py, samplers.py,
+    # coordinator.py — rclpy plumbing) will be added to `omit` below when it lands,
+    # mirroring patrol_mission/node.py.
+    "ros2_ws/src/patrol_perception/patrol_perception",
+]
 # T1.7 coverage-source resolution (design §4.4.4): node.py is the rclpy plumbing layer
 # (imports rclpy/px4_msgs). Its glue (telemetry/EKF gating, the stale-telemetry pause, tick
 # dispatch, _issue ID mapping, warmup mutation) now has a fast PR-level guard —
