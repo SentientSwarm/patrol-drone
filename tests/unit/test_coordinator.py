@@ -49,6 +49,7 @@ def _make_coordinator(recorder, *, frame=("img", b"bytes"), pose=_UNSET, detecti
         publisher=SimpleNamespace(publish=recorder.published.append),
         writer=None,  # M6.C wires the CaptureWriter; M6.B publishes only
         clock=lambda: (123, 456),
+        mission_id="run42",
     )
 
 
@@ -155,6 +156,20 @@ def test_writer_path_image_path_flows_into_published_record():
     coord.on_trigger(visit_token=1)
     assert len(rec.written) == 1
     assert captured[0].image_path == "/run/000_alpha.png"
+
+
+def test_metadata_merges_mission_id_waypoint_index_and_detection():
+    # T C.3 / PCAP-6/PCAP-7: the record metadata carries mission_id + waypoint_index (the visit
+    # token) merged with the resolver's detection metadata (tag_id, confidence).
+    rec = _Recorder()
+    coord = _make_coordinator(rec, detections=[_detection(tag_id=7)])
+    captured: list = []
+    coord._builder = _spy_builder(captured)
+    coord.on_trigger(visit_token=3)
+    md = captured[0].metadata
+    assert md["mission_id"] == "run42"
+    assert md["waypoint_index"] == "3"
+    assert md["tag_id"] == "7"  # resolver-sourced metadata is preserved
 
 
 def test_capture_record_carries_resolved_id_and_enu_pose():

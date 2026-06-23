@@ -14,6 +14,8 @@ pose uses the PX4 bridge profile (best-effort + transient-local).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import cv2
 import rclpy
 from apriltag_msgs.msg import AprilTagDetectionArray
@@ -35,6 +37,7 @@ from std_msgs.msg import Header, Int32
 
 from patrol_interfaces.msg import CheckpointCapture
 from patrol_perception.capture_builder import CheckpointCaptureBuilder
+from patrol_perception.capture_writer import CaptureWriter
 from patrol_perception.checkpoint_config import CheckpointConfigLoader
 from patrol_perception.checkpoint_resolver import CheckpointResolver
 from patrol_perception.coordinator import CaptureCoordinator
@@ -118,8 +121,10 @@ class PerceptionNode(Node):
             self.declare_parameter("checkpoint_config_path", "sim/config/checkpoints.yaml").value
         )
         world_frame = str(self.declare_parameter("world_frame", "patrol_world").value)
-        # output_root is consumed by the CaptureWriter in M6.C; declared here so the seam exists.
-        self.declare_parameter("output_root", "")
+        # output_root defaults under a CWD-relative "captures" dir (05 may override to align bags);
+        # run_id is a UTC timestamp so each patrol writes to its own <output_root>/<run_id>/ (§4.2.6).
+        output_root = str(self.declare_parameter("output_root", "").value) or "captures"
+        run_id = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
 
         self._bridge = CvBridge()
         self._frame_sampler = FrameSampler(encoder=self._encode_image)
@@ -134,8 +139,9 @@ class PerceptionNode(Node):
             resolver=CheckpointResolver(entries),
             builder=CheckpointCaptureBuilder(_RosCaptureMessageFactory()),
             publisher=_CapturePublisher(self),
-            writer=None,  # M6.C wires the CaptureWriter
+            writer=CaptureWriter(output_root=output_root, run_id=run_id),
             clock=self._now,
+            mission_id=run_id,
         )
 
         self.create_subscription(Image, camera_topic, self._on_image, qos_profile_sensor_data)

@@ -65,9 +65,13 @@ class CheckpointCaptureBuilder:
         msg.metadata = [factory.make_key_value(key, value) for key, value in rec.metadata.items()]
         return msg
 
-    def build_sidecar(self, rec: CaptureRecord) -> dict[str, Any]:
+    @staticmethod
+    def build_sidecar(rec: CaptureRecord) -> dict[str, Any]:
         """Return the JSON-serializable sidecar carrying the SAME checkpoint_id / pose / stamp /
-        metadata as the message, plus the image basename (design §4.2.4, PCAP-3 consistency)."""
+        metadata as the message, plus the image basename (design §4.2.4, PCAP-3 consistency).
+
+        Static/pure: a function of ``rec`` only (no factory), so CaptureWriter can build the sidecar
+        without constructing a builder, while the published message still uses the same record."""
         px, py, pz = rec.position
         ox, oy, oz, ow = rec.orientation
         return {

@@ -38,6 +38,7 @@ class CaptureCoordinator:
         publisher: Any,
         writer: Any | None,
         clock: Callable[[], tuple[int, int]],
+        mission_id: str = "",
     ) -> None:
         self._frame_sampler = frame_sampler
         self._pose_sampler = pose_sampler
@@ -47,6 +48,7 @@ class CaptureCoordinator:
         self._publisher = publisher
         self._writer = writer
         self._clock = clock
+        self._mission_id = mission_id
         self._latched_token: Any = _UNSET
 
     def on_trigger(self, visit_token: Any) -> None:
@@ -70,6 +72,13 @@ class CaptureCoordinator:
             _log.info("skip visit %s: unresolved detection (%s)", visit_token, exc)
             return  # AC-4: no fabricated checkpoint_id; not latched -> retryable
 
+        # T C.3 / PCAP-6: merge run + visit context with the resolver's detection metadata. The
+        # /patrol/dwell trigger value IS the dwelled waypoint index, so visit_token == waypoint_index.
+        metadata = {
+            **metadata,
+            "mission_id": self._mission_id,
+            "waypoint_index": str(visit_token),
+        }
         self._emit(checkpoint_id, metadata, pose, image_bytes)
         self._latched_token = visit_token  # latch ONLY after a successful capture
 
