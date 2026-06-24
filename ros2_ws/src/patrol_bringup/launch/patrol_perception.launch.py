@@ -10,8 +10,10 @@ This launch is wiring only — it starts no simulator and does not bridge the ra
 camera_bridge.launch.py, M5). Run alongside the patrol stack; the end-to-end traversal (one capture
 per checkpoint) is the nightly/manual SITL integration test (AC-2/AC-4/AC-6), not this launch.
 
-    ros2 launch patrol_bringup patrol_perception.launch.py
-    ros2 launch patrol_bringup patrol_perception.launch.py camera_topic:=/drone/camera/image_raw
+    ros2 launch patrol_bringup patrol_perception.launch.py \
+        checkpoint_config_path:=/abs/path/to/sim/config/checkpoints.yaml
+    ros2 launch patrol_bringup patrol_perception.launch.py \
+        checkpoint_config_path:=/abs/path/to/checkpoints.yaml camera_topic:=/drone/camera/image_raw
 """
 
 from launch import LaunchDescription
@@ -82,7 +84,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("camera_topic", default_value=CAMERA_IMAGE_TOPIC),
             DeclareLaunchArgument("trigger_topic", default_value="/patrol/dwell"),
             DeclareLaunchArgument(
-                "checkpoint_config_path", default_value="sim/config/checkpoints.yaml"
+                "checkpoint_config_path",
+                default_value="",
+                description="absolute path to 03's checkpoints.yaml (the installed package cannot "
+                "resolve a CWD-relative path); required for standalone launch, forwarded by "
+                "mission_patrol.launch.py",
             ),
             DeclareLaunchArgument("world_frame", default_value="patrol_world"),
             # output_root: where captures land (<output_root>/<run_id>/). Empty -> the node's CWD

@@ -85,10 +85,14 @@ module = [
     "std_msgs", "std_msgs.*",
     "sensor_msgs", "sensor_msgs.*",
     "geometry_msgs", "geometry_msgs.*",
+    "diagnostic_msgs", "diagnostic_msgs.*",   # M6: perception_node KeyValue (no stubs on Layer A)
     "builtin_interfaces", "builtin_interfaces.*",
     "patrol_interfaces", "patrol_interfaces.*",
+    "apriltag_msgs", "apriltag_msgs.*",       # M6: AprilTagDetectionArray (no stubs on Layer A)
     "rosidl_runtime_py", "rosidl_runtime_py.*",
     "ament_index_python", "ament_index_python.*",
+    "cv2", "cv2.*",                           # M6: OpenCV PNG encode seam (no PEP 561 stubs on Layer A)
+    "cv_bridge", "cv_bridge.*",               # M6: sensor_msgs/Image -> cv2 (no stubs on Layer A)
     "launch", "launch.*",
     "launch_ros", "launch_ros.*",
     "setuptools", "setuptools.*",      # every ament_python package's setup.py imports it (no stubs on Layer A)

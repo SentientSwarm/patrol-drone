@@ -22,6 +22,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
+from patrol_perception.capture_builder import CaptureRecord
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINTS_YAML = REPO_ROOT / "sim/config/checkpoints.yaml"
@@ -192,7 +193,17 @@ def test_factory_make_header_maps_stamp_and_frame(node_mod: ModuleType) -> None:
 def test_factory_pose_stamped_maps_position_and_orientation_in_order(node_mod: ModuleType) -> None:
     # Guards against an x/y/z or quaternion transposition that every ROS-free builder test misses.
     factory = node_mod._RosCaptureMessageFactory()
-    ps = factory.make_pose_stamped(1, 2, "w", (1.5, 2.5, 3.5), (0.1, 0.2, 0.3, 0.4))
+    rec = CaptureRecord(
+        stamp_sec=1,
+        stamp_nanosec=2,
+        frame_id="w",
+        checkpoint_id="cp",
+        position=(1.5, 2.5, 3.5),
+        orientation=(0.1, 0.2, 0.3, 0.4),
+        image_path="",
+        metadata={},
+    )
+    ps = factory.make_pose_stamped(rec)
     assert (ps.pose.position.x, ps.pose.position.y, ps.pose.position.z) == (1.5, 2.5, 3.5)
     o = ps.pose.orientation
     assert (o.x, o.y, o.z, o.w) == (0.1, 0.2, 0.3, 0.4)

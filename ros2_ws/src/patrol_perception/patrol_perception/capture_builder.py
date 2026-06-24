@@ -13,7 +13,7 @@ rosidl factory and the unit-test stand-in both implement these):
 
 * ``new_capture() -> CheckpointCapture`` — an empty message to populate
 * ``make_header(sec, nanosec, frame_id) -> std_msgs/Header``
-* ``make_pose_stamped(sec, nanosec, frame_id, position, orientation) -> geometry_msgs/PoseStamped``
+* ``make_pose_stamped(rec: CaptureRecord) -> geometry_msgs/PoseStamped``
 * ``make_key_value(key, value) -> diagnostic_msgs/KeyValue``
 """
 
@@ -58,9 +58,7 @@ class CheckpointCaptureBuilder:
         msg = factory.new_capture()
         msg.header = factory.make_header(rec.stamp_sec, rec.stamp_nanosec, rec.frame_id)
         msg.checkpoint_id = rec.checkpoint_id
-        msg.pose = factory.make_pose_stamped(
-            rec.stamp_sec, rec.stamp_nanosec, rec.frame_id, rec.position, rec.orientation
-        )
+        msg.pose = factory.make_pose_stamped(rec)
         msg.image_path = rec.image_path
         msg.metadata = [factory.make_key_value(key, value) for key, value in rec.metadata.items()]
         return msg

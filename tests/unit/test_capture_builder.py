@@ -8,7 +8,9 @@ real rosidl-backed factory lands with the node in M6.B.
 """
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from patrol_perception.capture_builder import CaptureRecord, CheckpointCaptureBuilder
@@ -23,13 +25,16 @@ class _FakeFactory:
     def make_header(self, sec, nanosec, frame_id):
         return SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=nanosec), frame_id=frame_id)
 
-    def make_pose_stamped(self, sec, nanosec, frame_id, position, orientation):
+    def make_pose_stamped(self, rec):
         return SimpleNamespace(
-            header=self.make_header(sec, nanosec, frame_id),
+            header=self.make_header(rec.stamp_sec, rec.stamp_nanosec, rec.frame_id),
             pose=SimpleNamespace(
-                position=SimpleNamespace(x=position[0], y=position[1], z=position[2]),
+                position=SimpleNamespace(x=rec.position[0], y=rec.position[1], z=rec.position[2]),
                 orientation=SimpleNamespace(
-                    x=orientation[0], y=orientation[1], z=orientation[2], w=orientation[3]
+                    x=rec.orientation[0],
+                    y=rec.orientation[1],
+                    z=rec.orientation[2],
+                    w=rec.orientation[3],
                 ),
             ),
         )
@@ -38,19 +43,18 @@ class _FakeFactory:
         return SimpleNamespace(key=key, value=value)
 
 
-def _record(**overrides) -> CaptureRecord:
-    base = {
-        "stamp_sec": 100,
-        "stamp_nanosec": 500,
-        "frame_id": "map",
-        "checkpoint_id": "cp_north",
-        "position": (12.0, 8.0, 1.5),
-        "orientation": (0.0, 0.0, 0.0, 1.0),
-        "image_path": "/runs/run1/000_cp_north.png",
-        "metadata": {"tag_id": "0", "detection_confidence": "42.5"},
-    }
-    base.update(overrides)
-    return CaptureRecord(**base)
+def _record(**overrides: Any) -> CaptureRecord:
+    base = CaptureRecord(
+        stamp_sec=100,
+        stamp_nanosec=500,
+        frame_id="map",
+        checkpoint_id="cp_north",
+        position=(12.0, 8.0, 1.5),
+        orientation=(0.0, 0.0, 0.0, 1.0),
+        image_path="/runs/run1/000_cp_north.png",
+        metadata={"tag_id": "0", "detection_confidence": "42.5"},
+    )
+    return replace(base, **overrides)
 
 
 def _kv_dict(msg) -> dict[str, str]:

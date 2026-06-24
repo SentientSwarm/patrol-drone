@@ -9,7 +9,7 @@ import math
 from types import SimpleNamespace
 
 import pytest
-from patrol_perception.samplers import FrameSampler, LatestBuffer, PoseSampler
+from patrol_perception.samplers import FrameSampler, LatestBuffer, PoseSample, PoseSampler
 
 # --- LatestBuffer: keep-latest, return-or-None (shared by both samplers) ---
 
@@ -19,7 +19,7 @@ def test_latest_buffer_starts_empty():
 
 
 def test_latest_buffer_returns_most_recent():
-    buf = LatestBuffer()
+    buf: LatestBuffer[str] = LatestBuffer()
     buf.update("a")
     buf.update("b")
     assert buf.latest() == "b"
@@ -53,6 +53,13 @@ def _ned_pose(x, y, z, heading=0.0):
     return SimpleNamespace(x=x, y=y, z=z, heading=heading)
 
 
+def _require_sample(sampler: PoseSampler) -> PoseSample:
+    """Sample and assert a pose was produced (narrows PoseSample | None for the assertions below)."""
+    sample = sampler.sample()
+    assert sample is not None
+    return sample
+
+
 def test_pose_sampler_no_pose_returns_none():
     assert PoseSampler(world_frame="map", ekf_origin_ned=(0.0, 0.0, 0.0)).sample() is None
 
@@ -60,7 +67,7 @@ def test_pose_sampler_no_pose_returns_none():
 def test_pose_sampler_converts_ned_to_enu_and_stamps_frame():
     sampler = PoseSampler(world_frame="patrol_world", ekf_origin_ned=(0.0, 0.0, 0.0))
     sampler.update(_ned_pose(2.0, 1.0, -3.0))  # NED -> ENU (1, 2, 3)
-    sample = sampler.sample()
+    sample = _require_sample(sampler)
     assert sample.frame_id == "patrol_world"
     assert sample.position == pytest.approx((1.0, 2.0, 3.0))
     # heading 0 (NED, facing North) -> ENU yaw pi/2 (facing North in ENU) -> quaternion about +Up.
@@ -75,13 +82,13 @@ def test_pose_sampler_orientation_tracks_ned_heading():
     sampler = PoseSampler(world_frame="patrol_world", ekf_origin_ned=(0.0, 0.0, 0.0))
     sampler.update(_ned_pose(0.0, 0.0, 0.0, heading=math.pi / 2))
     # ENU yaw 0 -> identity quaternion (facing East in ENU).
-    assert sampler.sample().orientation == pytest.approx((0.0, 0.0, 0.0, 1.0))
+    assert _require_sample(sampler).orientation == pytest.approx((0.0, 0.0, 0.0, 1.0))
 
 
 def test_pose_sampler_applies_ekf_origin_offset():
     sampler = PoseSampler(world_frame="patrol_world", ekf_origin_ned=(10.0, 20.0, 30.0))
     sampler.update(_ned_pose(12.0, 21.0, 27.0))  # rel NED (2,1,-3) -> ENU (1,2,3)
-    assert sampler.sample().position == pytest.approx((1.0, 2.0, 3.0))
+    assert _require_sample(sampler).position == pytest.approx((1.0, 2.0, 3.0))
 
 
 def _fake_encoder(image_msg):

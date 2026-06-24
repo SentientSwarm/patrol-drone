@@ -36,11 +36,11 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Header, Int32
 
 from patrol_interfaces.msg import CheckpointCapture
-from patrol_perception.capture_builder import CheckpointCaptureBuilder
+from patrol_perception.capture_builder import CaptureRecord, CheckpointCaptureBuilder
 from patrol_perception.capture_writer import CaptureWriter
 from patrol_perception.checkpoint_config import CheckpointConfigLoader
 from patrol_perception.checkpoint_resolver import CheckpointResolver
-from patrol_perception.coordinator import CaptureCoordinator
+from patrol_perception.coordinator import CaptureCoordinator, CapturePipeline
 from patrol_perception.samplers import FrameSampler, LatestBuffer, PoseSampler
 
 # PX4 VehicleLocalPosition is already expressed relative to the EKF origin (the mission node treats
@@ -81,11 +81,11 @@ class _RosCaptureMessageFactory:
         header.frame_id = frame_id
         return header
 
-    def make_pose_stamped(self, sec, nanosec, frame_id, position, orientation) -> PoseStamped:
+    def make_pose_stamped(self, rec: CaptureRecord) -> PoseStamped:
         ps = PoseStamped()
-        ps.header = self.make_header(sec, nanosec, frame_id)
-        px, py, pz = position
-        ox, oy, oz, ow = orientation
+        ps.header = self.make_header(rec.stamp_sec, rec.stamp_nanosec, rec.frame_id)
+        px, py, pz = rec.position
+        ox, oy, oz, ow = rec.orientation
         ps.pose = Pose(
             position=PointMsg(x=px, y=py, z=pz),
             orientation=Quaternion(x=ox, y=oy, z=oz, w=ow),
@@ -132,7 +132,7 @@ class PerceptionNode(Node):
         self._detection_buffer: LatestBuffer = LatestBuffer()
 
         entries = CheckpointConfigLoader().load(config_path)
-        self._coordinator = CaptureCoordinator(
+        pipeline = CapturePipeline(
             frame_sampler=self._frame_sampler,
             pose_sampler=self._pose_sampler,
             detection_buffer=self._detection_buffer,
@@ -140,6 +140,9 @@ class PerceptionNode(Node):
             builder=CheckpointCaptureBuilder(_RosCaptureMessageFactory()),
             publisher=_CapturePublisher(self),
             writer=CaptureWriter(output_root=output_root, run_id=run_id),
+        )
+        self._coordinator = CaptureCoordinator(
+            pipeline=pipeline,
             clock=self._now,
             mission_id=run_id,
         )
@@ -173,7 +176,8 @@ class PerceptionNode(Node):
         ok, buf = cv2.imencode(".png", frame)
         if not ok:
             raise RuntimeError("cv2.imencode failed to encode the camera frame to PNG")
-        return buf.tobytes()
+        encoded: bytes = buf.tobytes()
+        return encoded
 
     def _now(self) -> tuple[int, int]:
         now = self.get_clock().now().to_msg()

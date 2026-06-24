@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from patrol_perception.capture_builder import CaptureRecord
@@ -24,29 +24,37 @@ from patrol_perception.checkpoint_resolver import CheckpointResolverError
 _log = logging.getLogger("patrol_perception.coordinator")
 
 
+@dataclass(frozen=True)
+class CapturePipeline:
+    """The capture pipeline's injected collaborators, grouped so the coordinator constructor stays
+    small (one params object, not seven positional collaborators). All duck-typed (M6 seams)."""
+
+    frame_sampler: Any
+    pose_sampler: Any
+    detection_buffer: Any
+    resolver: Any
+    builder: Any
+    publisher: Any
+    writer: Any | None
+
+
 class CaptureCoordinator:
     """Orchestrates trigger -> sample -> resolve -> publish/write -> latch (one per visit)."""
 
     def __init__(
         self,
         *,
-        frame_sampler: Any,
-        pose_sampler: Any,
-        detection_buffer: Any,
-        resolver: Any,
-        builder: Any,
-        publisher: Any,
-        writer: Any | None,
+        pipeline: CapturePipeline,
         clock: Callable[[], tuple[int, int]],
         mission_id: str = "",
     ) -> None:
-        self._frame_sampler = frame_sampler
-        self._pose_sampler = pose_sampler
-        self._detection_buffer = detection_buffer
-        self._resolver = resolver
-        self._builder = builder
-        self._publisher = publisher
-        self._writer = writer
+        self._frame_sampler = pipeline.frame_sampler
+        self._pose_sampler = pipeline.pose_sampler
+        self._detection_buffer = pipeline.detection_buffer
+        self._resolver = pipeline.resolver
+        self._builder = pipeline.builder
+        self._publisher = pipeline.publisher
+        self._writer = pipeline.writer
         self._clock = clock
         self._mission_id = mission_id
         self._latched_token: Any = _UNSET

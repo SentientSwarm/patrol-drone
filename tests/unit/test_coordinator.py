@@ -9,7 +9,7 @@ apriltag_msgs/msg/AprilTagDetection (T B.1).
 from types import SimpleNamespace
 
 from patrol_perception.checkpoint_resolver import CheckpointResolverError
-from patrol_perception.coordinator import CaptureCoordinator
+from patrol_perception.coordinator import CaptureCoordinator, CapturePipeline
 from patrol_perception.samplers import PoseSample
 
 
@@ -41,13 +41,15 @@ def _make_coordinator(recorder, *, frame=("img", b"bytes"), pose=_UNSET, detecti
         build_sidecar=lambda rec: {"checkpoint_id": rec.checkpoint_id},
     )
     return CaptureCoordinator(
-        frame_sampler=SimpleNamespace(take_latest=lambda: frame),
-        pose_sampler=SimpleNamespace(sample=lambda: pose),
-        detection_buffer=SimpleNamespace(latest=lambda: detections),
-        resolver=resolver,
-        builder=builder,
-        publisher=SimpleNamespace(publish=recorder.published.append),
-        writer=None,  # M6.C wires the CaptureWriter; M6.B publishes only
+        pipeline=CapturePipeline(
+            frame_sampler=SimpleNamespace(take_latest=lambda: frame),
+            pose_sampler=SimpleNamespace(sample=lambda: pose),
+            detection_buffer=SimpleNamespace(latest=lambda: detections),
+            resolver=resolver,
+            builder=builder,
+            publisher=SimpleNamespace(publish=recorder.published.append),
+            writer=None,  # M6.C wires the CaptureWriter; M6.B publishes only
+        ),
         clock=lambda: (123, 456),
         mission_id="run42",
     )
