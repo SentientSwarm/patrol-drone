@@ -143,6 +143,16 @@ def _spy_builder(captured: list) -> SimpleNamespace:
     return SimpleNamespace(build_message=_build_message, build_sidecar=lambda _: {})
 
 
+def _raising_writer() -> SimpleNamespace:
+    """A writer fake whose write() raises OSError (disk full / unwritable root) — shared by the
+    §4.4.5 degradation tests so they don't copy-paste the raising setup (CodeScene duplication)."""
+
+    def _write(_record, _image_bytes):
+        raise OSError("disk full")
+
+    return SimpleNamespace(write=_write)
+
+
 def test_writer_path_image_path_flows_into_published_record():
     # M6.B->M6.C seam: when a CaptureWriter is wired, its returned path lands in the published msg.
     rec = _Recorder()
@@ -158,6 +168,35 @@ def test_writer_path_image_path_flows_into_published_record():
     coord.on_trigger(visit_token=1)
     assert len(rec.written) == 1
     assert captured[0].image_path == "/run/000_alpha.png"
+    assert captured[0].metadata["image_write_status"] == "ok"  # success path flags the write
+
+
+# --- §4.4.5: a writer failure still publishes (topic is the bag's source of truth), flagged ---
+
+
+def test_writer_failure_still_publishes_flagged_unwritten():
+    # design §4.4.5 row 1: an OSError on write() must NOT suppress the publish; the message goes out
+    # with an empty image_path and image_write_status="failed" (continue patrol).
+    rec = _Recorder()
+    coord = _make_coordinator(rec, detections=[_detection()])
+    coord._writer = _raising_writer()
+    captured: list = []
+    coord._builder = _spy_builder(captured)
+    coord.on_trigger(visit_token=1)
+    assert len(rec.published) == 1  # exactly one capture published despite the write failure
+    assert captured[0].image_path == ""  # flagged unwritten
+    assert captured[0].metadata["image_write_status"] == "failed"
+
+
+def test_writer_failure_latches_visit_no_republish():
+    # AC-6 on the degraded path: a published-but-unwritten capture still latches the visit, so a
+    # re-trigger for the same token does NOT publish a second time.
+    rec = _Recorder()
+    coord = _make_coordinator(rec, detections=[_detection()])
+    coord._writer = _raising_writer()
+    coord.on_trigger(visit_token=1)
+    coord.on_trigger(visit_token=1)
+    assert len(rec.published) == 1
 
 
 def test_metadata_merges_mission_id_waypoint_index_and_detection():

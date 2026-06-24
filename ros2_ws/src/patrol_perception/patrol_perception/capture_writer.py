@@ -46,5 +46,9 @@ class CaptureWriter:
         sidecar = CheckpointCaptureBuilder.build_sidecar(replace(rec, image_path=str(image_path)))
         sidecar_path.write_text(json.dumps(sidecar, indent=2))
 
+        # Index advances only after BOTH writes succeed: an OSError here propagates (the coordinator
+        # catches it and degrades per §4.4.5), so a failed write does NOT consume an NNN — the next
+        # write reuses this index, overwriting any orphaned PNG from a partial write (no NNN gap, no
+        # dangling sidecar; §4.4.5 row 2).
         self._index += 1
         return str(image_path)

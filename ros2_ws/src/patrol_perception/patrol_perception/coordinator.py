@@ -88,7 +88,9 @@ class CaptureCoordinator:
             "waypoint_index": str(visit_token),
         }
         self._emit(checkpoint_id, metadata, pose, image_bytes)
-        self._latched_token = visit_token  # latch ONLY after a successful capture
+        # Latch after the publish (the topic is the bag's source of truth, §4.4.5): a write failure
+        # is a degraded success, not a skip — re-triggering must NOT re-publish for this visit (AC-6).
+        self._latched_token = visit_token
 
     def _first_detection(self) -> Any | None:
         """The tag-in-view for this visit: the first buffered detection, or None if none in view."""
@@ -107,7 +109,13 @@ class CaptureCoordinator:
         return image_bytes, pose
 
     def _emit(self, checkpoint_id: str, metadata: dict, pose: Any, image_bytes: bytes) -> None:
-        """Build the CaptureRecord, persist (M6.C) if a writer is wired, then publish (PCAP-3)."""
+        """Build the CaptureRecord, persist (M6.C) if a writer is wired, then publish (PCAP-3).
+
+        Per design §4.4.5: if the writer raises (``output_root`` unwritable / disk full), log
+        ``capture_write_failed`` and still publish with an empty ``image_path`` and an
+        ``image_write_status="failed"`` metadata flag — the topic is the bag's source of truth, so a
+        persistence failure must NOT suppress the capture message (continue patrol).
+        """
         sec, nanosec = self._clock()
         record = CaptureRecord(
             stamp_sec=sec,
@@ -116,12 +124,22 @@ class CaptureCoordinator:
             checkpoint_id=checkpoint_id,
             position=pose.position,
             orientation=pose.orientation,
-            image_path="",  # CaptureWriter fills this in M6.C; empty until persistence lands
-            metadata=metadata,
+            image_path="",  # set below on a successful write; left empty on a write failure
+            metadata={**metadata, "image_write_status": "ok"},
         )
-        if self._writer is not None:
-            record = replace(record, image_path=self._writer.write(record, image_bytes))
+        record = self._persist(record, image_bytes)
         self._publisher.publish(self._builder.build_message(record))
+
+    def _persist(self, record: CaptureRecord, image_bytes: bytes) -> CaptureRecord:
+        """Write the image+sidecar if a writer is wired; on OSError, degrade per §4.4.5 (publish
+        anyway with an empty path + ``image_write_status="failed"``). No writer wired -> unchanged."""
+        if self._writer is None:
+            return record
+        try:
+            return replace(record, image_path=self._writer.write(record, image_bytes))
+        except OSError as exc:
+            _log.warning("capture_write_failed for %s: %s", record.checkpoint_id, exc)
+            return replace(record, metadata={**record.metadata, "image_write_status": "failed"})
 
 
 _UNSET = object()

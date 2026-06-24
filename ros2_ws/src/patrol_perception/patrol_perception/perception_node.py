@@ -147,6 +147,9 @@ class PerceptionNode(Node):
         self._coordinator = CaptureCoordinator(
             pipeline=pipeline,
             clock=self._now,
+            # mission_id == run_id == <run dir name> (the UTC timestamp from L130): the settled OQ-4
+            # alignment. 05 correlates captures<->bag by this run id; the "mission_id" capture-metadata
+            # key is intentionally this run timestamp, not a separate mission identifier.
             mission_id=run_id,
         )
 
