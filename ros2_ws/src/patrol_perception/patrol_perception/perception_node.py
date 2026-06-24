@@ -23,6 +23,7 @@ from cv_bridge import CvBridge
 from diagnostic_msgs.msg import KeyValue
 from geometry_msgs.msg import Point as PointMsg
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion
+from patrol_mission.qos import patrol_event_qos
 from px4_msgs.msg import VehicleLocalPosition
 from rclpy.node import Node
 from rclpy.qos import (
@@ -49,7 +50,9 @@ _EKF_ORIGIN_NED = (0.0, 0.0, 0.0)
 
 
 def _capture_publisher_qos() -> QoSProfile:
-    """Reliable, depth-1 so 05's recorder reliably gets every low-rate capture event (§4.4)."""
+    """Publisher-only QoS for /patrol/checkpoint_capture: reliable, depth-1 so 05's recorder
+    reliably gets every low-rate capture event (§4.4). NOT for the /patrol/dwell trigger subscriber
+    — that uses the route-covering patrol_event_qos() so rapid events aren't coalesced (F-01)."""
     return QoSProfile(
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.VOLATILE,
@@ -157,7 +160,7 @@ class PerceptionNode(Node):
             self._pose_sampler.update,
             _px4_pose_qos(),
         )
-        self.create_subscription(Int32, trigger_topic, self._on_trigger, _capture_publisher_qos())
+        self.create_subscription(Int32, trigger_topic, self._on_trigger, patrol_event_qos())
         self.get_logger().info(
             f"patrol_perception up: camera={camera_topic} trigger={trigger_topic} "
             f"detections={detections_topic} checkpoints={len(entries)} world_frame={world_frame}"

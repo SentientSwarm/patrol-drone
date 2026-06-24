@@ -11,6 +11,7 @@ ROS-free by construction — only stdlib + PyYAML, no rclpy/message imports (AC-
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ from typing import Any
 import yaml
 
 _REQUIRED_AXES = ("x", "y", "z")
+# checkpoint_id is interpolated directly into capture filenames (capture_writer.py), so it must be
+# filesystem-safe — reject path separators and other unsafe shapes at load (fail-fast, §4.4.5).
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 class CheckpointConfigError(ValueError):
@@ -47,6 +51,16 @@ def _require_str(row: dict[str, Any], key: str, ctx: str) -> str:
     return value
 
 
+def _require_safe_id(row: dict[str, Any], key: str, ctx: str) -> str:
+    value = _require_str(row, key, ctx)
+    if not _SAFE_ID.fullmatch(value):
+        raise CheckpointConfigError(
+            f"{ctx}: '{key}' {value!r} must match {_SAFE_ID.pattern} "
+            "(it is used directly in capture filenames)"
+        )
+    return value
+
+
 def _require_int(row: dict[str, Any], key: str, ctx: str) -> int:
     value = row.get(key)
     # bool is an int subclass in Python; a YAML `true` is not a valid tag_id.
@@ -72,7 +86,7 @@ def _parse_row(row: Any, index: int) -> CheckpointEntry:
     ctx = f"checkpoint #{index}"
     mapping = _require_mapping(row, ctx)
     return CheckpointEntry(
-        checkpoint_id=_require_str(mapping, "checkpoint_id", ctx),
+        checkpoint_id=_require_safe_id(mapping, "checkpoint_id", ctx),
         tag_id=_require_int(mapping, "tag_id", ctx),
         tag_family=_require_str(mapping, "tag_family", ctx),
         position=_parse_position(mapping, ctx),

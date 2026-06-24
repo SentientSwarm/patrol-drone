@@ -166,10 +166,15 @@ def node_mod(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
     }
     for name, mod in stubs.items():
         monkeypatch.setitem(sys.modules, name, mod)
+    # Force patrol_mission.qos to (re)load against THIS fixture's rclpy.qos stub. Another glue test
+    # (test_node_glue) may have cached it bound to a depth-discarding QoSProfile stub; without this
+    # delete, patrol_event_qos() here would return a profile with no .depth (test-order dependent).
+    monkeypatch.delitem(sys.modules, "patrol_mission.qos", raising=False)
     monkeypatch.delitem(sys.modules, "patrol_perception.perception_node", raising=False)
     module = importlib.import_module("patrol_perception.perception_node")
     yield module
     sys.modules.pop("patrol_perception.perception_node", None)
+    sys.modules.pop("patrol_mission.qos", None)
 
 
 def _make_node(node_mod: ModuleType) -> Any:
@@ -249,6 +254,22 @@ def test_subscribes_to_versioned_px4_local_position_topic(node_mod: ModuleType) 
     topics = {topic for (_t, topic, _cb, _q) in node.subscriptions_made}
     assert "/fmu/out/vehicle_local_position_v1" in topics
     assert "/drone/camera/image_raw" in topics
+
+
+def test_trigger_subscription_uses_route_covering_event_qos(node_mod: ModuleType) -> None:
+    # F-01 (Hermes High): /patrol/dwell must subscribe with the route-covering event depth so
+    # rapid checkpoint triggers are not coalesced to "latest" under backpressure — NOT the
+    # publisher's depth-1 profile. Pinned here so a re-point regression is caught per-PR.
+    # patrol_event_qos is reached via node_mod (the real patrol_mission.qos, loaded under the stub
+    # by perception_node's import); a direct top-level import would pull in real rclpy.qos.
+    node = _make_node(node_mod)
+    trigger_qos = next(
+        qos for (_t, topic, _cb, qos) in node.subscriptions_made if topic == "/patrol/dwell"
+    )
+    assert (
+        trigger_qos.depth == node_mod.patrol_event_qos().depth
+    )  # route-covering (16), not pub's 1
+    assert trigger_qos.depth != node_mod._capture_publisher_qos().depth
 
 
 def test_capture_publisher_created_on_checkpoint_capture_topic(node_mod: ModuleType) -> None:

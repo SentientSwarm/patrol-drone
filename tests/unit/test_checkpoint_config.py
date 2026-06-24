@@ -41,6 +41,12 @@ _INVALID_ROWS = {
     "missing-position": 'checkpoint_id: "cp_a"\n    tag_family: "tag36h11"\n    tag_id: 0',
     "incomplete-position": 'checkpoint_id: "cp_a"\n    position: { x: 1.0, y: 2.0 }\n    tag_family: "tag36h11"\n    tag_id: 0',
     "non-numeric-position": 'checkpoint_id: "cp_a"\n    position: { x: "a", y: 2.0, z: 3.0 }\n    tag_family: "tag36h11"\n    tag_id: 0',
+    # F-02: a checkpoint_id is interpolated into capture filenames, so path-unsafe shapes
+    # (separators, traversal, whitespace) must be rejected at load, not crash persistence later.
+    "checkpoint_id-with-slash": 'checkpoint_id: "cp/north"\n    position: { x: 1.0, y: 2.0, z: 3.0 }\n    tag_family: "tag36h11"\n    tag_id: 0',
+    "checkpoint_id-with-dotdot": 'checkpoint_id: "../escape"\n    position: { x: 1.0, y: 2.0, z: 3.0 }\n    tag_family: "tag36h11"\n    tag_id: 0',
+    "checkpoint_id-with-backslash": 'checkpoint_id: "cp\\\\north"\n    position: { x: 1.0, y: 2.0, z: 3.0 }\n    tag_family: "tag36h11"\n    tag_id: 0',
+    "checkpoint_id-with-space": 'checkpoint_id: "cp north"\n    position: { x: 1.0, y: 2.0, z: 3.0 }\n    tag_family: "tag36h11"\n    tag_id: 0',
 }
 
 # (source text, id) pairs — each is a whole-file source that should fail fast (TS-7).
@@ -79,6 +85,18 @@ def test_loads_valid_config(tmp_path):
     assert set(result) == {0, 1}
     assert result[1].checkpoint_id == "cp_b"
     assert result[1].position == (-4.0, 5.5, 6.0)
+
+
+@pytest.mark.parametrize("safe_id", ["cp-1", "cp.north", "cp_north"])
+def test_accepts_filesystem_safe_checkpoint_id(tmp_path, safe_id):
+    """F-02: hyphen/dot/underscore ids match the safe pattern and still load (not over-strict)."""
+    text = (
+        f'checkpoints:\n  - checkpoint_id: "{safe_id}"\n'
+        "    position: { x: 1.0, y: 2.0, z: 3.0 }\n"
+        '    tag_family: "tag36h11"\n    tag_id: 0\n'
+    )
+    result = CheckpointConfigLoader().load(_write(tmp_path, text))
+    assert result[0].checkpoint_id == safe_id
 
 
 def test_rejects_duplicate_tag_id(tmp_path):
