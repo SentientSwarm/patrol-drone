@@ -41,7 +41,11 @@ from patrol_perception.capture_builder import CaptureRecord, CheckpointCaptureBu
 from patrol_perception.capture_writer import CaptureWriter
 from patrol_perception.checkpoint_config import CheckpointConfigLoader
 from patrol_perception.checkpoint_resolver import CheckpointResolver
-from patrol_perception.coordinator import CaptureCoordinator, CapturePipeline
+from patrol_perception.coordinator import (
+    CaptureCoordinator,
+    CapturePipeline,
+    FreshnessWindows,
+)
 from patrol_perception.samplers import FrameSampler, LatestBuffer, PoseSampler
 
 # PX4 VehicleLocalPosition is already expressed relative to the EKF origin (the mission node treats
@@ -157,9 +161,11 @@ class PerceptionNode(Node):
         self._coordinator = CaptureCoordinator(
             pipeline=pipeline,
             clock=self._now,
-            max_detection_age_s=max_detection_age_s,
-            max_frame_age_s=max_frame_age_s,
-            max_pose_age_s=max_pose_age_s,
+            freshness=FreshnessWindows(
+                detection_s=max_detection_age_s,
+                frame_s=max_frame_age_s,
+                pose_s=max_pose_age_s,
+            ),
             # mission_id == run_id == <run dir name> (the UTC timestamp from L130): the settled OQ-4
             # alignment. 05 correlates captures<->bag by this run id; the "mission_id" capture-metadata
             # key is intentionally this run timestamp, not a separate mission identifier.

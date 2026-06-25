@@ -38,6 +38,17 @@ class CapturePipeline:
     writer: Any | None
 
 
+@dataclass(frozen=True)
+class FreshnessWindows:
+    """The per-stream ADR-B freshness windows (seconds), grouped so the coordinator constructor stays
+    small (one params object, like ``CapturePipeline``). A buffered detection/frame/pose older than
+    its window is treated as *stale* and skipped exactly like an absent one (§4.4.5)."""
+
+    detection_s: float
+    frame_s: float
+    pose_s: float
+
+
 class CaptureCoordinator:
     """Orchestrates trigger -> sample -> resolve -> publish/write -> latch (one per visit)."""
 
@@ -46,9 +57,7 @@ class CaptureCoordinator:
         *,
         pipeline: CapturePipeline,
         clock: Callable[[], tuple[int, int]],
-        max_detection_age_s: float,
-        max_frame_age_s: float,
-        max_pose_age_s: float,
+        freshness: FreshnessWindows,
         mission_id: str = "",
     ) -> None:
         self._frame_sampler = pipeline.frame_sampler
@@ -59,9 +68,7 @@ class CaptureCoordinator:
         self._publisher = pipeline.publisher
         self._writer = pipeline.writer
         self._clock = clock
-        self._max_detection_age_s = max_detection_age_s
-        self._max_frame_age_s = max_frame_age_s
-        self._max_pose_age_s = max_pose_age_s
+        self._freshness = freshness
         self._mission_id = mission_id
         self._latched_token: Any = _UNSET
 
@@ -118,7 +125,7 @@ class CaptureCoordinator:
         detections, received_at = latest
         if not detections:
             return None
-        if not self._is_fresh(received_at, self._max_detection_age_s):
+        if not self._is_fresh(received_at, self._freshness.detection_s):
             _log.info("skip: stale_detection (buffer older than max_detection_age_s)")
             return None
         return detections[0]
@@ -130,14 +137,14 @@ class CaptureCoordinator:
         if frame is None:
             return None
         _image_msg, image_bytes, frame_rx = frame
-        if not self._is_fresh(frame_rx, self._max_frame_age_s):
+        if not self._is_fresh(frame_rx, self._freshness.frame_s):
             _log.info("skip: stale_frame (buffer older than max_frame_age_s)")
             return None
         pose = self._pose_sampler.sample()
         if pose is None:
             return None
         pose_sample, pose_rx = pose
-        if not self._is_fresh(pose_rx, self._max_pose_age_s):
+        if not self._is_fresh(pose_rx, self._freshness.pose_s):
             _log.info("skip: stale_pose (buffer older than max_pose_age_s)")
             return None
         return image_bytes, pose_sample

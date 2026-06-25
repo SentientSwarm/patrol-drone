@@ -6,23 +6,27 @@ exercised directly (AC-5/AC-6). The detection's id/family/decision_margin duck-t
 apriltag_msgs/msg/AprilTagDetection (T B.1).
 """
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from patrol_perception.checkpoint_resolver import CheckpointResolverError
-from patrol_perception.coordinator import CaptureCoordinator, CapturePipeline
+from patrol_perception.coordinator import CaptureCoordinator, CapturePipeline, FreshnessWindows
 from patrol_perception.samplers import PoseSample
 
 # Receipt timestamp the fakes stamp on their buffered values (ADR-B freshness window). The coordinator
 # ages each buffer against its clock; with the default fixed clock below the buffers read as "fresh".
 _RX_FRESH = (123, 0)
 # Generous default windows so the happy-path fakes never trip the freshness gate; individual stale
-# tests pass a tighter window or an older receipt time to drive the stale branches.
-_FRESH_WINDOWS = {
-    "max_detection_age_s": 100.0,
-    "max_frame_age_s": 100.0,
-    "max_pose_age_s": 100.0,
-}
+# tests pass a tighter window (via _tight_window) or an older receipt time to drive the stale branches.
+_FRESH_WINDOWS = FreshnessWindows(detection_s=100.0, frame_s=100.0, pose_s=100.0)
+
+
+def _tight_window(stale_stream):
+    """A FreshnessWindows like _FRESH_WINDOWS but with one stream's window tightened to 0.5 s, so an
+    old receipt time on exactly that stream reads as stale while the other two stay fresh."""
+    field = f"{stale_stream}_s"
+    return replace(_FRESH_WINDOWS, **{field: 0.5})
 
 
 def _detection(tag_id=0, family="tag36h11"):
@@ -78,12 +82,11 @@ class _Recorder:
 _UNSET = object()
 
 
-def _make_coordinator(
-    recorder, *, frame=("img", b"bytes"), pose=_UNSET, detections=None, **windows
-):
-    """Build a coordinator wired to fakes. ``detections`` None => no tag in view (gate skip).
-    ``windows`` overrides any of the max_*_age_s freshness windows (default: all generous/fresh)."""
-    pose = _pose() if pose is _UNSET else pose
+def _make_coordinator(recorder, *, detections=None, freshness=_FRESH_WINDOWS):
+    """Build a coordinator wired to fresh-stream fakes. ``detections`` None => no tag in view (gate
+    skip); ``freshness`` overrides the per-stream windows (default: all generous/fresh). Tests that
+    need an *absent* or *stale* frame/pose reassign ``coord._frame_sampler`` / ``coord._pose_sampler``
+    on the instance (see the no-frame / no-pose / stale-stream cases)."""
     resolver = SimpleNamespace(resolve=lambda det: ("checkpoint_alpha", {"tag_id": str(det.id)}))
     builder = SimpleNamespace(
         build_message=lambda rec: SimpleNamespace(checkpoint_id=rec.checkpoint_id),
@@ -91,8 +94,8 @@ def _make_coordinator(
     )
     return CaptureCoordinator(
         pipeline=CapturePipeline(
-            frame_sampler=_frame_fake(frame),
-            pose_sampler=_pose_fake(pose),
+            frame_sampler=_frame_fake(("img", b"bytes")),
+            pose_sampler=_pose_fake(_pose()),
             detection_buffer=_detection_fake(detections),
             resolver=resolver,
             builder=builder,
@@ -100,7 +103,7 @@ def _make_coordinator(
             writer=None,  # M6.C wires the CaptureWriter; M6.B publishes only
         ),
         clock=lambda: (123, 456),
-        **{**_FRESH_WINDOWS, **windows},
+        freshness=freshness,
         mission_id="run42",
     )
 
@@ -154,7 +157,8 @@ def test_no_tag_in_view_skips_and_stays_retryable():
 
 def test_no_frame_skips_and_stays_retryable():
     rec = _Recorder()
-    coord = _make_coordinator(rec, frame=None, detections=[_detection()])
+    coord = _make_coordinator(rec, detections=[_detection()])
+    coord._frame_sampler = _frame_fake(None)  # no frame buffered yet (absent stream)
     coord.on_trigger(visit_token=1)
     assert rec.published == []
     coord._frame_sampler = _frame_fake(("img", b"bytes"))
@@ -164,7 +168,8 @@ def test_no_frame_skips_and_stays_retryable():
 
 def test_no_pose_skips_and_stays_retryable():
     rec = _Recorder()
-    coord = _make_coordinator(rec, pose=None, detections=[_detection()])
+    coord = _make_coordinator(rec, detections=[_detection()])
+    coord._pose_sampler = _pose_fake(None)  # no pose buffered yet (absent stream)
     coord.on_trigger(visit_token=1)
     assert rec.published == []
 
@@ -295,7 +300,7 @@ _OLD_RX = (0, 0)  # received "long ago" relative to the coordinator clock (123, 
 def _stale_one_stream_coordinator(rec, stale_stream):
     """Coordinator with all streams present + a tight window on ``stale_stream`` whose buffer is old,
     so exactly that one stream reads as stale (the other two stay fresh)."""
-    coord = _make_coordinator(rec, detections=[_detection()], **{f"max_{stale_stream}_age_s": 0.5})
+    coord = _make_coordinator(rec, detections=[_detection()], freshness=_tight_window(stale_stream))
     if stale_stream == "detection":
         coord._detection_buffer = SimpleNamespace(
             latest_at=lambda: ([_detection()], _OLD_RX), update=lambda _v: None
