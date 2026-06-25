@@ -70,6 +70,12 @@ _TELEMETRY_TIMEOUT_S = 2.0
 # 10 s leaves wide margin for a slow-but-alive battery stream; revisit if a measured SITL cadence
 # (not yet pinned in the repo) ever approaches it.
 _BATTERY_TIMEOUT_S = 10.0
+# Settle delay (s) after entering DWELL before firing the atomic /patrol/dwell capture trigger. The
+# drone needs a moment to stop and yaw onto the stand-off pose so the tag is framed and apriltag has
+# produced a buffered detection by the time 04's capture gate evaluates. Must be < the configured
+# dwell_s so the trigger still fires within the hold. Live runs showed detection lagging dwell entry
+# by ~2 s; revisit jointly with completion.hold_time_s / dwell_s if SITL timing changes.
+_DWELL_SETTLE_S = 2.0
 
 
 def _waypoint_yaw_ned(wp: Waypoint) -> float:
@@ -155,6 +161,12 @@ class PatrolMissionNode(Node):
         self._abort_requested = False
         self._state = MissionState.IDLE
         self._warmup = 0
+        # Dwell-trigger settling (capture timing): /patrol/dwell is fired NOT on the rising edge into
+        # DWELL (the drone has not settled and the camera/apriltag have not yet produced a detection at
+        # the stand-off pose), but once the drone has held DWELL for _DWELL_SETTLE_S — by then the tag
+        # is framed and a fresh detection is buffered for 04's capture gate. One trigger per dwell.
+        self._dwell_entered_s: float | None = None
+        self._dwell_fired: bool = False
         # True once a DO_SET_MODE (offboard) has been issued on a prior tick. The pure command builder
         # uses it to hold the first ARM one tick after the first offboard request, so arm never races
         # the mode switch on the BEST_EFFORT publisher (M3 review #2).
@@ -230,21 +242,33 @@ class PatrolMissionNode(Node):
         self._state, cmd = self._sm.tick(self._state, telem)
         self._issue(cmd)
         self._publish_patrol(cmd)  # observable mission surface (OQ-3)
-        self._publish_dwell_event(prev_state, cmd)  # atomic 04 capture trigger (OQ-7)
+        self._publish_dwell_event(prev_state, cmd, now_s)  # atomic 04 capture trigger (OQ-7)
         if self._warmup < _OFFBOARD_STREAM_WARMUP_TICKS:
             self._warmup += 1
 
-    def _publish_dwell_event(self, prev_state: MissionState, cmd: Command) -> None:
+    def _publish_dwell_event(self, prev_state: MissionState, cmd: Command, now_s: float) -> None:
         """Emit the atomic /patrol/dwell capture trigger once per checkpoint (OQ-7).
 
-        Fired only on the rising edge into DWELL (prev != DWELL, now == DWELL), so a single Int32
-        carries the dwelled waypoint identity exactly once — not every 10 Hz tick of the hold. A
-        consumer (04) gets an unambiguous per-checkpoint trigger with no two-topic correlation, so a
-        cross-topic reorder of mission_state vs current_waypoint structurally cannot mis-attribute a
-        capture (Hermes High).
+        Fired once per dwell, _DWELL_SETTLE_S after entering DWELL (not on the rising edge): the drone
+        needs that long to stop and yaw onto the stand-off pose so the tag is framed and apriltag has
+        buffered a fresh detection by the time 04's capture gate runs — firing on entry (the prior
+        behavior) raced detection and the capture was always skipped (live runs: detection lagged dwell
+        entry ~2 s). Still exactly one Int32 per checkpoint carrying the dwelled index, so 04 gets an
+        unambiguous per-checkpoint trigger with no two-topic correlation (Hermes High).
         """
-        if prev_state is not MissionState.DWELL and self._state is MissionState.DWELL:
+        if self._state is not MissionState.DWELL:
+            self._dwell_entered_s = None  # left DWELL; re-arm for the next checkpoint
+            self._dwell_fired = False
+            return
+        if prev_state is not MissionState.DWELL:
+            self._dwell_entered_s = now_s  # rising edge: start the settle clock
+        if (
+            not self._dwell_fired
+            and self._dwell_entered_s is not None
+            and now_s - self._dwell_entered_s >= _DWELL_SETTLE_S
+        ):
             self._pub_dwell.publish(Int32(data=cmd.current_waypoint))
+            self._dwell_fired = True
 
     def _publish_patrol(self, cmd: Command) -> None:
         """Publish the /patrol/* mission surface (OQ-3).

@@ -385,7 +385,7 @@ switch is refused). `topics.py` (02) is the single source of truth for this per-
 | `/fmu/out/vehicle_local_position_v1` | `VehicleLocalPosition` | PX4→ROS 2 | steady 50.0 Hz (PX4 SITL default) over 60 s | 02 (offboard), 05 (record) |
 | `/fmu/out/vehicle_status_v1` | `VehicleStatus` | PX4→ROS 2 | event/periodic | 02, 05 |
 | `/fmu/out/battery_status_v1` | `BatteryStatus` | PX4→ROS 2 | periodic | 02 (low-battery abort), 05 |
-| `/fmu/out/*_v1` (versioned outputs) | various `px4_msgs/*` | PX4→ROS 2 | per topic | 05 (broad record) |
+| `/fmu/out/*_v1` (the `MESSAGE_VERSION ≥ 1` subset) | various `px4_msgs/*` | PX4→ROS 2 | per topic | 05 (broad record) |
 | `/fmu/in/*` (bare: `offboard_control_mode`, `trajectory_setpoint`, `vehicle_command`) | `px4_msgs/*` (v0/unversioned) | ROS 2→PX4 | command-driven | 02 (offboard control) |
 
 Transport: UDP-localhost (`udp4 -p 8888`); the PX4-side `uxrce_dds_client` auto-starts in SITL (A1). The platform's only acceptance obligation (PLAT-2) is that `ros2 topic list | grep fmu` returns the topics and `/fmu/out/vehicle_local_position_v1` holds a steady 50.0 Hz over a 60 s window, with `/fmu/in/*` present and addressable.

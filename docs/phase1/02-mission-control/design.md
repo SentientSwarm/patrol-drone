@@ -558,19 +558,23 @@ def generate_launch_description():
                  [FindPackageShare("patrol_bringup"), "config", "mission_basic.yaml"])}]),
     ])
 
-# mission_patrol.launch.py  (MC-2; includes 05 recorder — exit item 1)
+# mission_patrol.launch.py  (MC-2; resiliently includes 05 recorder — exit item 1)
 def generate_launch_description():
     return LaunchDescription([
-        # checkpoints_yaml has NO default (OQ-2; 03's deliverable) — patrol_mission.yaml uses
-        # checkpoint_id waypoints, so an absolute path is required: checkpoints_yaml:=/abs/path
-        DeclareLaunchArgument("checkpoints_yaml"),
+        # checkpoints_yaml default "" (OQ-2; 03's deliverable). It is OPTIONAL at the launch layer —
+        # the fail-loud is downstream in load_mission_config (ValueError on an unresolved checkpoint_id),
+        # not a required launch arg. patrol_mission.yaml uses checkpoint_id waypoints, so in practice an
+        # absolute path is supplied: checkpoints_yaml:=/abs/path.
+        DeclareLaunchArgument("checkpoints_yaml", default_value=""),
+        # record defaults FALSE until 05 (patrol_logging) lands in-tree; pass record:=true to attach it.
+        DeclareLaunchArgument("record", default_value="false"),
         Node(package="patrol_mission", executable="patrol_mission", name="patrol_mission",
              parameters=[{"mission_yaml": PathJoinSubstitution(
                  [FindPackageShare("patrol_bringup"), "config", "patrol_mission.yaml"]),
                  "checkpoints_yaml": LaunchConfiguration("checkpoints_yaml")}]),
-        IncludeLaunchDescription(PythonLaunchDescriptionSource(PathJoinSubstitution(
-            [FindPackageShare("patrol_logging"), "launch", "record.launch.py"])),  # 05
-            condition=IfCondition(LaunchConfiguration("record", default="true"))),
+        # Resilient include: OpaqueFunction resolves at launch time so an absent 05 is skip-with-warning,
+        # not a hard PackageNotFoundError that would ground the patrol (Hermes PR #8; design §4.4.5).
+        OpaqueFunction(function=_maybe_record),  # includes patrol_logging/record.launch.py iff record:=true AND installed
     ])
 ```
 
@@ -884,6 +888,7 @@ Each milestone's Definition of Done includes a lightweight documentation true-up
 |------|--------|-------------|
 | SITL runtime/flakiness budget re-measure | design OQ-5 (provisional ≤8 min/scenario) | MZ |
 | Manual-takeover abort *trigger* in SITL | design §4.2.3 (scaffold only); PRD Out-of-Scope | Phase 2+ (hardware RC) |
+| Timeout abort *trigger* in SITL | design §4.2.3 (scaffold only); PRD Out-of-Scope | Phase 2+ (hardware RC) |
 | Bag recording mechanics / manifest / Foxglove | design §4.7; owned by 05 | Phase 1 (05) |
 | The world / checkpoint models / camera topic | design §4.4.6; owned by 03 | Phase 1 (03) |
 | e2e/integration test expansion beyond the two canonical scenarios | design §6.5 | MZ |

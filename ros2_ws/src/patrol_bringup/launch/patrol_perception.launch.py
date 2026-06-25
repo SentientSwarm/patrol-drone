@@ -37,6 +37,10 @@ def _camera_info_bridge() -> Node:
         name="camera_info_bridge",
         output="screen",
         arguments=[f"{CAMERA_INFO_TOPIC}@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo"],
+        # All camera-pipeline nodes run on the Gazebo sim clock so the bridged image and camera_info
+        # share one time base; apriltag's exact-time message_filters sync needs matching stamps
+        # (without this it pairs 0 of N and emits no detections — the M6 capture chain stalls).
+        parameters=[{"use_sim_time": True}],
     )
 
 
@@ -55,7 +59,7 @@ def _apriltag_node() -> Node:
             ("camera_info", CAMERA_INFO_TOPIC),
             ("detections", DETECTIONS_TOPIC),
         ],
-        parameters=[{"family": "36h11", "max_hamming": 0}],
+        parameters=[{"family": "36h11", "max_hamming": 0, "use_sim_time": True}],
     )
 
 
@@ -76,6 +80,9 @@ def _perception_node() -> Node:
                 "max_detection_age_s": LaunchConfiguration("max_detection_age_s"),
                 "max_frame_age_s": LaunchConfiguration("max_frame_age_s"),
                 "max_pose_age_s": LaunchConfiguration("max_pose_age_s"),
+                # Sim clock: the perception node's ADR-B freshness gate compares message stamps to
+                # "now", so it must read the same Gazebo clock the bridged camera/detections carry.
+                "use_sim_time": True,
             }
         ],
     )
