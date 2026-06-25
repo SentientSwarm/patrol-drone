@@ -37,10 +37,12 @@ def _pose():
     return PoseSample(position=(1.0, 2.0, 3.0), orientation=(0.0, 0.0, 0.0, 1.0), frame_id="w")
 
 
-def _frame_fake(frame):
-    """A FrameSampler fake: take_latest() returns (image_msg, bytes, received_at) | None (Fix 2)."""
-    take_latest = (lambda: None) if frame is None else (lambda: (*frame, _RX_FRESH))
-    return SimpleNamespace(take_latest=take_latest)
+def _frame_fake(image_msg, encoded=b"bytes"):
+    """A FrameSampler fake matching the F-02 split contract: take_latest() returns the RAW
+    (image_msg, received_at) | None, and encode() yields the bytes the coordinator publishes only
+    after the freshness gate passes. ``image_msg is None`` => no frame buffered (absent stream)."""
+    take_latest = (lambda: None) if image_msg is None else (lambda: (image_msg, _RX_FRESH))
+    return SimpleNamespace(take_latest=take_latest, encode=lambda _img: encoded)
 
 
 def _pose_fake(pose):
@@ -94,7 +96,7 @@ def _make_coordinator(recorder, *, detections=None, freshness=_FRESH_WINDOWS):
     )
     return CaptureCoordinator(
         pipeline=CapturePipeline(
-            frame_sampler=_frame_fake(("img", b"bytes")),
+            frame_sampler=_frame_fake("img"),
             pose_sampler=_pose_fake(_pose()),
             detection_buffer=_detection_fake(detections),
             resolver=resolver,
@@ -161,7 +163,7 @@ def test_no_frame_skips_and_stays_retryable():
     coord._frame_sampler = _frame_fake(None)  # no frame buffered yet (absent stream)
     coord.on_trigger(visit_token=1)
     assert rec.published == []
-    coord._frame_sampler = _frame_fake(("img", b"bytes"))
+    coord._frame_sampler = _frame_fake("img")
     coord.on_trigger(visit_token=1)
     assert len(rec.published) == 1
 
@@ -306,7 +308,9 @@ def _stale_one_stream_coordinator(rec, stale_stream):
             latest_at=lambda: ([_detection()], _OLD_RX), update=lambda _v: None
         )
     elif stale_stream == "frame":
-        coord._frame_sampler = SimpleNamespace(take_latest=lambda: ("img", b"bytes", _OLD_RX))
+        coord._frame_sampler = SimpleNamespace(
+            take_latest=lambda: ("img", _OLD_RX), encode=lambda _img: b"bytes"
+        )
     else:  # pose
         coord._pose_sampler = SimpleNamespace(sample=lambda: (_pose(), _OLD_RX))
     return coord
@@ -324,6 +328,22 @@ def test_stale_stream_skips_and_stays_retryable(stale_stream):
     fresh = _make_coordinator(rec, detections=[_detection()])
     fresh.on_trigger(visit_token=1)
     assert len(rec.published) == 1
+
+
+def test_stale_frame_skipped_before_encode_even_if_encoder_would_raise():
+    # F-02: the frame freshness gate must run BEFORE encode(), so a stale-but-present frame whose
+    # encoder would raise (e.g. the live cv2.imencode failing on a bad buffered frame) is cleanly
+    # skipped — on_trigger must NOT raise and must publish nothing (skip stays retryable). On the old
+    # code (encode inside take_latest, before the gate) this raised in the trigger callback.
+    def _raise(_img):
+        raise RuntimeError("would encode a stale frame")
+
+    rec = _Recorder()
+    coord = _make_coordinator(rec, detections=[_detection()], freshness=_tight_window("frame"))
+    coord._frame_sampler = SimpleNamespace(take_latest=lambda: ("img", _OLD_RX), encode=_raise)
+    # the stale-frame gate fires first; the encoder is never reached (no raise from the callback)
+    coord.on_trigger(visit_token=1)
+    assert rec.published == []
 
 
 def test_repeated_visit_unchanged_buffers_not_republished_for_new_token():

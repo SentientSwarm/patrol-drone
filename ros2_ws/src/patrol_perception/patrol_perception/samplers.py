@@ -69,15 +69,19 @@ class FrameSampler:
     def update(self, image_msg: Any) -> None:
         self._buffer.update(image_msg)
 
-    def take_latest(self) -> tuple[Any, bytes, tuple[int, int]] | None:
-        """Return ``(image_msg, encoded_bytes, received_at)`` for the most recent frame, or ``None``
-        if none has arrived yet. ``received_at`` lets the coordinator enforce ``max_frame_age_s``
-        (ADR-B freshness window); a stale frame is skipped like an absent one (§4.2.8)."""
-        latest = self._buffer.latest_at()
-        if latest is None:
-            return None
-        image_msg, received_at = latest
-        return image_msg, self._encoder(image_msg), received_at
+    def take_latest(self) -> tuple[Any, tuple[int, int]] | None:
+        """Return ``(image_msg, received_at)`` for the most recent *raw* frame, or ``None`` if none
+        has arrived yet. The frame is deliberately NOT encoded here: ``received_at`` lets the
+        coordinator enforce ``max_frame_age_s`` (ADR-B freshness window) FIRST, then call
+        :meth:`encode` only on a fresh frame — so a stale-but-present frame is skipped *before* the
+        cv2.imencode seam runs (no wasted encode, and a raising encoder on a stale buffer can't turn
+        a clean skip into an exception, §4.2.8/§4.4.5)."""
+        return self._buffer.latest_at()
+
+    def encode(self, image_msg: Any) -> bytes:
+        """Encode a raw frame via the injected cv_bridge/OpenCV seam (Image -> PNG/JPEG bytes).
+        Called by the coordinator only after the freshness gate passes (see :meth:`take_latest`)."""
+        return self._encoder(image_msg)
 
 
 @dataclass(frozen=True)

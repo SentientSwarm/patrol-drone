@@ -57,6 +57,11 @@ def _maybe_perception(context: LaunchContext) -> list[IncludeLaunchDescription]:
                 # forward the capture output root so 04's artifacts co-locate with 05's run/bag dir
                 # when set (OQ-4 alignment); empty falls back to the perception node's CWD default.
                 "output_root": LaunchConfiguration("output_root"),
+                # forward the ADR-B freshness windows so a slower detector / noisier sim can retune
+                # them from the top-level patrol launch (defaults preserved in patrol_perception).
+                "max_detection_age_s": LaunchConfiguration("max_detection_age_s"),
+                "max_frame_age_s": LaunchConfiguration("max_frame_age_s"),
+                "max_pose_age_s": LaunchConfiguration("max_pose_age_s"),
             }.items(),
         )
     ]
@@ -113,6 +118,21 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="",
                 description="root dir for 04's on-disk captures (<output_root>/<run_id>/); set it to "
                 "05's bag/run dir to align artifacts (OQ-4), empty -> the node's CWD 'captures' default",
+            ),
+            DeclareLaunchArgument(
+                "max_detection_age_s",
+                default_value="1.0",
+                description="ADR-B freshness window for /tag_detections (s); forwarded to perception",
+            ),
+            DeclareLaunchArgument(
+                "max_frame_age_s",
+                default_value="0.5",
+                description="ADR-B freshness window for the camera frame (s); forwarded to perception",
+            ),
+            DeclareLaunchArgument(
+                "max_pose_age_s",
+                default_value="1.0",
+                description="ADR-B freshness window for the /fmu/out pose (s); forwarded to perception",
             ),
             Node(
                 package="patrol_mission",

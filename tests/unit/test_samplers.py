@@ -53,13 +53,21 @@ def test_frame_sampler_no_frame_returns_none():
     assert FrameSampler(encoder=_fake_encoder, clock=_clock_at()).take_latest() is None
 
 
-def test_frame_sampler_encodes_latest_frame():
+def test_frame_sampler_returns_raw_latest_frame_unencoded():
     sampler = FrameSampler(encoder=_fake_encoder, clock=_clock_at())
     sampler.update("frame-1")
     sampler.update("frame-2")
     result = sampler.take_latest()
-    # Returns (image_msg, encoded_bytes, received_at) for the MOST RECENT frame (ADR-B latest-frame).
-    assert result == ("frame-2", b"encoded:frame-2", _RX)
+    # take_latest() now returns the RAW (image_msg, received_at) for the MOST RECENT frame — it does
+    # NOT encode (the coordinator encodes only after the freshness gate passes, F-02).
+    assert result == ("frame-2", _RX)
+
+
+def test_frame_sampler_encode_runs_the_injected_seam():
+    # encode() is the cv_bridge/OpenCV seam, split out of take_latest() so the freshness gate runs
+    # first; the coordinator calls it only on a fresh frame.
+    sampler = FrameSampler(encoder=_fake_encoder, clock=_clock_at())
+    assert sampler.encode("frame-2") == b"encoded:frame-2"
 
 
 def test_frame_sampler_surfaces_receipt_timestamp():
@@ -68,7 +76,7 @@ def test_frame_sampler_surfaces_receipt_timestamp():
     sampler.update("frame")
     result = sampler.take_latest()
     assert result is not None
-    assert result[2] == (9, 5)
+    assert result[1] == (9, 5)
 
 
 # --- PoseSampler: buffer latest NED pose, return it in world/ENU with explicit frame_id ---

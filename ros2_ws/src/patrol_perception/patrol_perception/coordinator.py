@@ -131,12 +131,13 @@ class CaptureCoordinator:
         return detections[0]
 
     def _sample_world(self) -> tuple[bytes, Any] | None:
-        """Latest encoded frame + ENU pose (ADR-B), each within its freshness window. None if either
-        is absent OR stale (skip, retryable — §4.4.5 stale-but-present)."""
+        """Latest frame + ENU pose (ADR-B), each within its freshness window. None if either is
+        absent OR stale (skip, retryable — §4.4.5 stale-but-present). The frame is encoded ONLY
+        after its freshness gate passes, so a stale frame is never sent to the cv2.imencode seam."""
         frame = self._frame_sampler.take_latest()
         if frame is None:
             return None
-        _image_msg, image_bytes, frame_rx = frame
+        image_msg, frame_rx = frame
         if not self._is_fresh(frame_rx, self._freshness.frame_s):
             _log.info("skip: stale_frame (buffer older than max_frame_age_s)")
             return None
@@ -147,7 +148,7 @@ class CaptureCoordinator:
         if not self._is_fresh(pose_rx, self._freshness.pose_s):
             _log.info("skip: stale_pose (buffer older than max_pose_age_s)")
             return None
-        return image_bytes, pose_sample
+        return self._frame_sampler.encode(image_msg), pose_sample
 
     def _emit(self, checkpoint_id: str, metadata: dict, pose: Any, image_bytes: bytes) -> None:
         """Build the CaptureRecord, persist (M6.C) if a writer is wired, then publish (PCAP-3).
