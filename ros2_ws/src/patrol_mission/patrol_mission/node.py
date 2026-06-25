@@ -262,13 +262,15 @@ class PatrolMissionNode(Node):
             return
         if prev_state is not MissionState.DWELL:
             self._dwell_entered_s = now_s  # rising edge: start the settle clock
-        if (
-            not self._dwell_fired
-            and self._dwell_entered_s is not None
-            and now_s - self._dwell_entered_s >= _DWELL_SETTLE_S
-        ):
+        if self._dwell_settle_elapsed(now_s):
             self._pub_dwell.publish(Int32(data=cmd.current_waypoint))
             self._dwell_fired = True
+
+    def _dwell_settle_elapsed(self, now_s: float) -> bool:
+        """True once the drone has held DWELL for _DWELL_SETTLE_S and has not yet fired this episode."""
+        if self._dwell_fired or self._dwell_entered_s is None:
+            return False
+        return now_s - self._dwell_entered_s >= _DWELL_SETTLE_S
 
     def _publish_patrol(self, cmd: Command) -> None:
         """Publish the /patrol/* mission surface (OQ-3).

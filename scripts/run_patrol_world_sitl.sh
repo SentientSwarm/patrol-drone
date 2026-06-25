@@ -303,8 +303,7 @@ verify_camera() {
   # The /compressed companion (05-logging records it) rides image_transport, so this is a structural
   # presence check, not a literal-drift check (F-05.1). Absent => the bag pipeline loses imagery.
   # image_transport advertises /compressed LAZILY, so poll a few seconds before judging it absent.
-  local i
-  for i in 1 2 3 4 5 6; do
+  for _ in 1 2 3 4 5 6; do
     if ros2 topic list 2>/dev/null | grep -qx "${CAMERA_TOPIC}/compressed"; then
       log "compressed companion present: ${CAMERA_TOPIC}/compressed (F-05.1)"
       return 0
