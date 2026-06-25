@@ -129,10 +129,20 @@ class PerceptionNode(Node):
         output_root = str(self.declare_parameter("output_root", "").value) or "captures"
         run_id = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
 
+        # ADR-B freshness windows (seconds): a buffered detection/frame/pose older than its window is
+        # treated as stale and skipped like an absent buffer (§4.4.5). Defaults are set above the
+        # slowest expected inter-message gap so only a genuine stall trips the gate (15 Hz camera ->
+        # ~0.067 s/frame; detector/pose are slower), keeping the happy-path traversal unaffected.
+        max_detection_age_s = float(self.declare_parameter("max_detection_age_s", 1.0).value)
+        max_frame_age_s = float(self.declare_parameter("max_frame_age_s", 0.5).value)
+        max_pose_age_s = float(self.declare_parameter("max_pose_age_s", 1.0).value)
+
         self._bridge = CvBridge()
-        self._frame_sampler = FrameSampler(encoder=self._encode_image)
-        self._pose_sampler = PoseSampler(world_frame=world_frame, ekf_origin_ned=_EKF_ORIGIN_NED)
-        self._detection_buffer: LatestBuffer = LatestBuffer()
+        self._frame_sampler = FrameSampler(encoder=self._encode_image, clock=self._now)
+        self._pose_sampler = PoseSampler(
+            world_frame=world_frame, ekf_origin_ned=_EKF_ORIGIN_NED, clock=self._now
+        )
+        self._detection_buffer: LatestBuffer = LatestBuffer(self._now)
 
         entries = CheckpointConfigLoader().load(config_path)
         pipeline = CapturePipeline(
@@ -147,6 +157,9 @@ class PerceptionNode(Node):
         self._coordinator = CaptureCoordinator(
             pipeline=pipeline,
             clock=self._now,
+            max_detection_age_s=max_detection_age_s,
+            max_frame_age_s=max_frame_age_s,
+            max_pose_age_s=max_pose_age_s,
             # mission_id == run_id == <run dir name> (the UTC timestamp from L130): the settled OQ-4
             # alignment. 05 correlates captures<->bag by this run id; the "mission_id" capture-metadata
             # key is intentionally this run timestamp, not a separate mission identifier.

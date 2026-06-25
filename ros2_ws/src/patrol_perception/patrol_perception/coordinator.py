@@ -46,6 +46,9 @@ class CaptureCoordinator:
         *,
         pipeline: CapturePipeline,
         clock: Callable[[], tuple[int, int]],
+        max_detection_age_s: float,
+        max_frame_age_s: float,
+        max_pose_age_s: float,
         mission_id: str = "",
     ) -> None:
         self._frame_sampler = pipeline.frame_sampler
@@ -56,6 +59,9 @@ class CaptureCoordinator:
         self._publisher = pipeline.publisher
         self._writer = pipeline.writer
         self._clock = clock
+        self._max_detection_age_s = max_detection_age_s
+        self._max_frame_age_s = max_frame_age_s
+        self._max_pose_age_s = max_pose_age_s
         self._mission_id = mission_id
         self._latched_token: Any = _UNSET
 
@@ -91,22 +97,50 @@ class CaptureCoordinator:
         # Latch after the publish (the topic is the bag's source of truth, §4.4.5): a write failure
         # is a degraded success, not a skip — re-triggering must NOT re-publish for this visit (AC-6).
         self._latched_token = visit_token
+        # Expire the detection buffer so a no-longer-visible tag can't be reused on the next trigger,
+        # even within its freshness window (ADR-B / §4.4.6): latest_at() then returns None -> skip.
+        self._detection_buffer.update(None)
+
+    def _is_fresh(self, received_at: tuple[int, int], max_age_s: float) -> bool:
+        """True if ``received_at`` is within ``max_age_s`` of now (the ADR-B freshness window)."""
+        now_sec, now_ns = self._clock()
+        rx_sec, rx_ns = received_at
+        age_s = (now_sec - rx_sec) + (now_ns - rx_ns) / 1e9
+        return age_s <= max_age_s
 
     def _first_detection(self) -> Any | None:
-        """The tag-in-view for this visit: the first buffered detection, or None if none in view."""
-        detections: Sequence[Any] | None = self._detection_buffer.latest()
+        """The tag-in-view for this visit: the first buffered detection, or None if none in view or
+        the detection stream has stalled (older than max_detection_age_s — skip like absent, §4.4.5)."""
+        latest = self._detection_buffer.latest_at()
+        if not latest:
+            return None  # absent -> no tag in view (ADR-A gate)
+        detections: Sequence[Any]
+        detections, received_at = latest
         if not detections:
+            return None
+        if not self._is_fresh(received_at, self._max_detection_age_s):
+            _log.info("skip: stale_detection (buffer older than max_detection_age_s)")
             return None
         return detections[0]
 
     def _sample_world(self) -> tuple[bytes, Any] | None:
-        """Latest encoded frame + ENU pose (ADR-B). None if either is unavailable (skip, retryable)."""
+        """Latest encoded frame + ENU pose (ADR-B), each within its freshness window. None if either
+        is absent OR stale (skip, retryable — §4.4.5 stale-but-present)."""
         frame = self._frame_sampler.take_latest()
-        pose = self._pose_sampler.sample()
-        if frame is None or pose is None:
+        if frame is None:
             return None
-        _image_msg, image_bytes = frame
-        return image_bytes, pose
+        _image_msg, image_bytes, frame_rx = frame
+        if not self._is_fresh(frame_rx, self._max_frame_age_s):
+            _log.info("skip: stale_frame (buffer older than max_frame_age_s)")
+            return None
+        pose = self._pose_sampler.sample()
+        if pose is None:
+            return None
+        pose_sample, pose_rx = pose
+        if not self._is_fresh(pose_rx, self._max_pose_age_s):
+            _log.info("skip: stale_pose (buffer older than max_pose_age_s)")
+            return None
+        return image_bytes, pose_sample
 
     def _emit(self, checkpoint_id: str, metadata: dict, pose: Any, image_bytes: bytes) -> None:
         """Build the CaptureRecord, persist (M6.C) if a writer is wired, then publish (PCAP-3).

@@ -25,20 +25,32 @@ from patrol_mission.frames import (
 
 
 class LatestBuffer[T]:
-    """Holds only the most-recent pushed value; ``latest()`` is ``None`` until the first update.
+    """Holds only the most-recent pushed value plus its node-receipt timestamp.
 
-    Shared by both samplers so the keep-latest semantics live in one place (ADR-B latest-frame),
-    rather than being re-implemented per sampler.
+    ``latest()`` is the value-or-``None`` accessor (unchanged); ``latest_at()`` additionally returns
+    the receipt time so the coordinator can reason about *age* — the ADR-B freshness window. The
+    clock is the same ``(sec, nanosec)`` seam injected into ``CaptureCoordinator`` (ROS-free,
+    deterministic in unit tests), so no second clock and no ``header.stamp`` parsing is introduced.
+    Shared by both samplers + the detection buffer so keep-latest *and* its timestamp live in one place.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], tuple[int, int]]) -> None:
+        self._clock = clock
         self._value: T | None = None
+        self._received_at: tuple[int, int] | None = None
 
     def update(self, value: T) -> None:
         self._value = value
+        self._received_at = self._clock()
 
     def latest(self) -> T | None:
         return self._value
+
+    def latest_at(self) -> tuple[T, tuple[int, int]] | None:
+        """``(value, received_at)`` for the most-recent push, or ``None`` if nothing buffered yet."""
+        if self._value is None or self._received_at is None:
+            return None
+        return self._value, self._received_at
 
 
 class FrameSampler:
@@ -48,21 +60,24 @@ class FrameSampler:
     needs neither. The live node passes a real cv_bridge-backed encoder.
     """
 
-    def __init__(self, encoder: Callable[[Any], bytes]) -> None:
+    def __init__(
+        self, encoder: Callable[[Any], bytes], clock: Callable[[], tuple[int, int]]
+    ) -> None:
         self._encoder = encoder
-        self._buffer: LatestBuffer[Any] = LatestBuffer()
+        self._buffer: LatestBuffer[Any] = LatestBuffer(clock)
 
     def update(self, image_msg: Any) -> None:
         self._buffer.update(image_msg)
 
-    def take_latest(self) -> tuple[Any, bytes] | None:
-        """Return ``(image_msg, encoded_bytes)`` for the most recent frame, or ``None`` if no
-        frame has arrived yet (the coordinator treats ``None`` as a skip, leaving the visit
-        retryable per §4.2.8)."""
-        image_msg = self._buffer.latest()
-        if image_msg is None:
+    def take_latest(self) -> tuple[Any, bytes, tuple[int, int]] | None:
+        """Return ``(image_msg, encoded_bytes, received_at)`` for the most recent frame, or ``None``
+        if none has arrived yet. ``received_at`` lets the coordinator enforce ``max_frame_age_s``
+        (ADR-B freshness window); a stale frame is skipped like an absent one (§4.2.8)."""
+        latest = self._buffer.latest_at()
+        if latest is None:
             return None
-        return image_msg, self._encoder(image_msg)
+        image_msg, received_at = latest
+        return image_msg, self._encoder(image_msg), received_at
 
 
 @dataclass(frozen=True)
@@ -92,23 +107,34 @@ class PoseSampler:
     ``world_frame`` and is genuinely single-frame (no orientation mislabeled ENU).
     """
 
-    def __init__(self, world_frame: str, ekf_origin_ned: Point) -> None:
+    def __init__(
+        self,
+        world_frame: str,
+        ekf_origin_ned: Point,
+        clock: Callable[[], tuple[int, int]],
+    ) -> None:
         self._world_frame = world_frame
         self._ekf_origin_ned = ekf_origin_ned
-        self._buffer: LatestBuffer[Any] = LatestBuffer()
+        self._buffer: LatestBuffer[Any] = LatestBuffer(clock)
 
     def update(self, pose_ned: Any) -> None:
         self._buffer.update(pose_ned)
 
-    def sample(self) -> PoseSample | None:
-        """Return the latest pose in world/ENU, or ``None`` if no pose has arrived yet."""
-        pose_ned = self._buffer.latest()
-        if pose_ned is None:
+    def sample(self) -> tuple[PoseSample, tuple[int, int]] | None:
+        """Return ``(pose_sample, received_at)`` with the latest pose in world/ENU, or ``None`` if no
+        pose has arrived yet. ``received_at`` lets the coordinator enforce ``max_pose_age_s`` (ADR-B
+        freshness window); a stale pose is skipped like an absent one (§4.2.8)."""
+        latest = self._buffer.latest_at()
+        if latest is None:
             return None
+        pose_ned, received_at = latest
         position = to_enu_from_ned((pose_ned.x, pose_ned.y, pose_ned.z), self._ekf_origin_ned)
         orientation = enu_quaternion_from_ned_heading(pose_ned.heading)
-        return PoseSample(
-            position=position,
-            orientation=orientation,
-            frame_id=self._world_frame,
+        return (
+            PoseSample(
+                position=position,
+                orientation=orientation,
+                frame_id=self._world_frame,
+            ),
+            received_at,
         )

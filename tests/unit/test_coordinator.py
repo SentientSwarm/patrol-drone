@@ -8,9 +8,21 @@ apriltag_msgs/msg/AprilTagDetection (T B.1).
 
 from types import SimpleNamespace
 
+import pytest
 from patrol_perception.checkpoint_resolver import CheckpointResolverError
 from patrol_perception.coordinator import CaptureCoordinator, CapturePipeline
 from patrol_perception.samplers import PoseSample
+
+# Receipt timestamp the fakes stamp on their buffered values (ADR-B freshness window). The coordinator
+# ages each buffer against its clock; with the default fixed clock below the buffers read as "fresh".
+_RX_FRESH = (123, 0)
+# Generous default windows so the happy-path fakes never trip the freshness gate; individual stale
+# tests pass a tighter window or an older receipt time to drive the stale branches.
+_FRESH_WINDOWS = {
+    "max_detection_age_s": 100.0,
+    "max_frame_age_s": 100.0,
+    "max_pose_age_s": 100.0,
+}
 
 
 def _detection(tag_id=0, family="tag36h11"):
@@ -19,6 +31,40 @@ def _detection(tag_id=0, family="tag36h11"):
 
 def _pose():
     return PoseSample(position=(1.0, 2.0, 3.0), orientation=(0.0, 0.0, 0.0, 1.0), frame_id="w")
+
+
+def _frame_fake(frame):
+    """A FrameSampler fake: take_latest() returns (image_msg, bytes, received_at) | None (Fix 2)."""
+    take_latest = (lambda: None) if frame is None else (lambda: (*frame, _RX_FRESH))
+    return SimpleNamespace(take_latest=take_latest)
+
+
+def _pose_fake(pose):
+    """A PoseSampler fake: sample() returns (PoseSample, received_at) | None (Fix 2)."""
+    sample = (lambda: None) if pose is None else (lambda: (pose, _RX_FRESH))
+    return SimpleNamespace(sample=sample)
+
+
+class _DetectionBufferFake:
+    """A stateful detection LatestBuffer fake (Fix 2): ``latest_at()`` returns
+    ``(detections, received_at) | None``, and ``update(None)`` genuinely *expires* it — mirroring the
+    real LatestBuffer so the after-capture detection-expiry (decision #6) is honestly exercised, not
+    masked by a no-op fake."""
+
+    def __init__(self, detections):
+        self._detections = detections
+
+    def update(self, value):
+        self._detections = value
+
+    def latest_at(self):
+        if not self._detections:
+            return None
+        return self._detections, _RX_FRESH
+
+
+def _detection_fake(detections):
+    return _DetectionBufferFake(detections)
 
 
 class _Recorder:
@@ -32,8 +78,11 @@ class _Recorder:
 _UNSET = object()
 
 
-def _make_coordinator(recorder, *, frame=("img", b"bytes"), pose=_UNSET, detections=None):
-    """Build a coordinator wired to fakes. ``detections`` None => no tag in view (gate skip)."""
+def _make_coordinator(
+    recorder, *, frame=("img", b"bytes"), pose=_UNSET, detections=None, **windows
+):
+    """Build a coordinator wired to fakes. ``detections`` None => no tag in view (gate skip).
+    ``windows`` overrides any of the max_*_age_s freshness windows (default: all generous/fresh)."""
     pose = _pose() if pose is _UNSET else pose
     resolver = SimpleNamespace(resolve=lambda det: ("checkpoint_alpha", {"tag_id": str(det.id)}))
     builder = SimpleNamespace(
@@ -42,15 +91,16 @@ def _make_coordinator(recorder, *, frame=("img", b"bytes"), pose=_UNSET, detecti
     )
     return CaptureCoordinator(
         pipeline=CapturePipeline(
-            frame_sampler=SimpleNamespace(take_latest=lambda: frame),
-            pose_sampler=SimpleNamespace(sample=lambda: pose),
-            detection_buffer=SimpleNamespace(latest=lambda: detections),
+            frame_sampler=_frame_fake(frame),
+            pose_sampler=_pose_fake(pose),
+            detection_buffer=_detection_fake(detections),
             resolver=resolver,
             builder=builder,
             publisher=SimpleNamespace(publish=recorder.published.append),
             writer=None,  # M6.C wires the CaptureWriter; M6.B publishes only
         ),
         clock=lambda: (123, 456),
+        **{**_FRESH_WINDOWS, **windows},
         mission_id="run42",
     )
 
@@ -81,6 +131,9 @@ def test_new_token_rearms_after_success():
     rec = _Recorder()
     coord = _make_coordinator(rec, detections=[_detection()])
     coord.on_trigger(visit_token=1)
+    # A successful capture expires the detection buffer (decision #6); in the live node the detector
+    # keeps streaming, so a fresh detection is buffered before the next checkpoint's trigger.
+    coord._detection_buffer.update([_detection()])
     coord.on_trigger(visit_token=2)  # next checkpoint / re-visit -> captures again
     assert len(rec.published) == 2
 
@@ -94,7 +147,7 @@ def test_no_tag_in_view_skips_and_stays_retryable():
     coord.on_trigger(visit_token=1)
     assert rec.published == []
     # re-trigger same token after a tag comes into view -> retry succeeds (not latched by the skip)
-    coord._detection_buffer = SimpleNamespace(latest=lambda: [_detection()])
+    coord._detection_buffer = _detection_fake([_detection()])
     coord.on_trigger(visit_token=1)
     assert len(rec.published) == 1
 
@@ -104,7 +157,7 @@ def test_no_frame_skips_and_stays_retryable():
     coord = _make_coordinator(rec, frame=None, detections=[_detection()])
     coord.on_trigger(visit_token=1)
     assert rec.published == []
-    coord._frame_sampler = SimpleNamespace(take_latest=lambda: ("img", b"bytes"))
+    coord._frame_sampler = _frame_fake(("img", b"bytes"))
     coord.on_trigger(visit_token=1)
     assert len(rec.published) == 1
 
@@ -229,3 +282,67 @@ def test_capture_record_carries_resolved_id_position_and_frame():
     assert record.frame_id == "w"
     assert record.stamp_sec == 123
     assert record.stamp_nanosec == 456
+
+
+# --- ADR-B freshness gate: a STALE-but-present buffer is skipped exactly like an absent one ---
+# These guard Hermes 4566902694: a stalled detector/frame/pose stream must NOT publish a stale tuple
+# for a different visit. The coordinator clock is (123, 456); a receipt time well in the past makes
+# the chosen stream's buffer exceed its (tight) freshness window -> skip, token unlatched (§4.4.5).
+
+_OLD_RX = (0, 0)  # received "long ago" relative to the coordinator clock (123, 456) -> ~123 s old
+
+
+def _stale_one_stream_coordinator(rec, stale_stream):
+    """Coordinator with all streams present + a tight window on ``stale_stream`` whose buffer is old,
+    so exactly that one stream reads as stale (the other two stay fresh)."""
+    coord = _make_coordinator(rec, detections=[_detection()], **{f"max_{stale_stream}_age_s": 0.5})
+    if stale_stream == "detection":
+        coord._detection_buffer = SimpleNamespace(
+            latest_at=lambda: ([_detection()], _OLD_RX), update=lambda _v: None
+        )
+    elif stale_stream == "frame":
+        coord._frame_sampler = SimpleNamespace(take_latest=lambda: ("img", b"bytes", _OLD_RX))
+    else:  # pose
+        coord._pose_sampler = SimpleNamespace(sample=lambda: (_pose(), _OLD_RX))
+    return coord
+
+
+@pytest.mark.parametrize("stale_stream", ["detection", "frame", "pose"])
+def test_stale_stream_skips_and_stays_retryable(stale_stream):
+    # A stalled detection/frame/pose stream skips the visit (zero publishes) and leaves the token
+    # UNLATCHED, so a re-trigger retries once the stream resumes (mirrors the absent-buffer skips).
+    rec = _Recorder()
+    coord = _stale_one_stream_coordinator(rec, stale_stream)
+    coord.on_trigger(visit_token=1)
+    assert rec.published == []  # stale tuple is NOT published for this visit
+    # the skip did not latch -> once all three streams are fresh, the same token captures once
+    fresh = _make_coordinator(rec, detections=[_detection()])
+    fresh.on_trigger(visit_token=1)
+    assert len(rec.published) == 1
+
+
+def test_repeated_visit_unchanged_buffers_not_republished_for_new_token():
+    # The exact probe Hermes reproduced: visit 1 captures, then WITHOUT any new detection/frame/pose
+    # the next visit token must NOT re-publish the stale tuple (both visits were ['checkpoint_alpha']).
+    # Here the detection buffer is expired on the first capture (decision #6) AND no stream refreshes,
+    # so visit 2 finds no in-view tag and skips -> exactly one publish total, not two.
+    rec = _Recorder()
+    coord = _make_coordinator(rec, detections=[_detection()])
+    coord.on_trigger(visit_token=1)
+    assert len(rec.published) == 1
+    coord.on_trigger(visit_token=2)  # new token, but the buffers were never refreshed
+    assert len(rec.published) == 1  # the stale tuple is NOT re-published for visit 2
+
+
+def test_detection_buffer_expired_after_successful_capture():
+    # decision #6 / §4.4.6: a successful capture clears the detection buffer (update(None)) so a
+    # no-longer-visible tag can't be reused on the next trigger, even within its freshness window.
+    rec = _Recorder()
+    coord = _make_coordinator(rec, detections=[_detection()])
+    cleared: list = []
+    coord._detection_buffer = SimpleNamespace(
+        latest_at=lambda: ([_detection()], _RX_FRESH), update=cleared.append
+    )
+    coord.on_trigger(visit_token=1)
+    assert len(rec.published) == 1
+    assert cleared == [None]  # the buffer was expired with update(None) after latching
