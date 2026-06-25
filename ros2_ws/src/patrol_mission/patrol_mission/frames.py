@@ -44,6 +44,29 @@ def to_ned_from_origin(point: Point, frame: str, ekf_origin_ned: Point) -> Point
     raise ValueError(f"unknown frame {frame!r}: expected 'ned' or 'enu'")
 
 
+def to_enu_from_ned(point_ned: Point, ekf_origin_ned: Point) -> Point:
+    """Convert an EKF-origin-relative PX4 NED position back to world/ENU (MC-7 inverse).
+
+    The exact inverse of :func:`to_ned_from_origin` for the ``"enu"`` case, kept at this single
+    boundary so the perception pose path (PoseSampler, ADR-B) expresses the capture pose in
+    world/ENU without sprinkling a second conversion site across the call graph (Tenet 4). PX4
+    ``/fmu/out/vehicle_local_position`` reports x,y,z in NED relative to the EKF origin; subtract
+    that origin offset, then apply the inverse axis map ``(n, e, d) -> (e, n, -d)``.
+
+    Args:
+        point_ned: a position in PX4 NED relative to the EKF origin (meters).
+        ekf_origin_ned: the EKF origin as a NED offset (the same value passed to
+            :func:`to_ned_from_origin`); subtracted to recover an origin-relative point.
+
+    Returns:
+        The point in world/ENU coordinates, as a plain ``float`` tuple.
+    """
+    ox, oy, oz = (float(c) for c in ekf_origin_ned)
+    n, e, d = (float(c) for c in point_ned)
+    rel_n, rel_e, rel_d = (n - ox, e - oy, d - oz)
+    return (rel_e, rel_n, -rel_d)
+
+
 def takeoff_target_ned(home_ned: Point, takeoff_alt_m: float) -> Point:
     """The takeoff/hover setpoint: ``takeoff_alt_m`` above home, in EKF-origin NED.
 
@@ -72,3 +95,31 @@ def enu_yaw_to_ned(yaw_enu: float) -> float:
     normalized to (-pi, pi].
     """
     return _wrap_to_pi(math.pi / 2.0 - yaw_enu)
+
+
+def ned_yaw_to_enu(yaw_ned: float) -> float:
+    """Convert a PX4 NED yaw to an ENU yaw — the exact inverse of :func:`enu_yaw_to_ned`.
+
+    Kept at this single MC-7 boundary (Tenet 4) so the perception pose path (PoseSampler, ADR-B) can
+    express the capture heading in world/ENU without a second heading-conversion site. The map is its
+    own inverse: ``yaw_enu = pi/2 - yaw_ned``, normalized to (-pi, pi].
+    """
+    return _wrap_to_pi(math.pi / 2.0 - yaw_ned)
+
+
+Quaternion = tuple[float, float, float, float]  # (x, y, z, w)
+
+
+def enu_quaternion_from_ned_heading(heading_ned: float) -> Quaternion:
+    """Build a world/ENU yaw-only quaternion (x, y, z, w) from a PX4 NED heading (scalar yaw).
+
+    PX4 ``VehicleLocalPosition`` reports attitude only as ``heading`` (Euler yaw in NED); there is no
+    quaternion field. ADR-B's quasi-static hover capture needs an *honest* ENU orientation, not a raw
+    NED/FRD quaternion mislabeled ENU, so this converts the NED yaw to ENU at the single MC-7 site
+    (:func:`ned_yaw_to_enu`) and emits the corresponding rotation about +Up (ENU z). Roll/pitch are
+    dropped (a hover capture is yaw-dominant; full attitude awaits VIO in Phase 3+, ADR-B) — an honest
+    yaw-only ENU quaternion rather than fabricated precision.
+    """
+    yaw_enu = ned_yaw_to_enu(float(heading_ned))
+    half = yaw_enu / 2.0
+    return (0.0, 0.0, math.sin(half), math.cos(half))

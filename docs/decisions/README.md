@@ -46,6 +46,12 @@ What else did we look at? Why did we not pick those?
 | [0002](0002-ci-architecture.md) | Two-layer CI with xenon complexity and 85% coverage gates | Accepted |
 | [0003](0003-phase1-bootstrap-scope.md) | `setup_phase1.sh` provisions the full Phase 1 toolchain, not just M1 | Accepted |
 | [0004](0004-stack-manifest-location.md) | Pinned stack manifest is a standalone `stack-manifest.toml`; CLAUDE.md table is a synced summary | Accepted |
+| [0005](0005-manifest-derivation-and-pinning.md) | Manifest derivation and pinning | Accepted |
+| [0006](0006-supply-chain-hardening-round2.md) | Supply-chain hardening (round 2) | Accepted |
+| [0007](0007-uxrce-dds-agent-from-source.md) | Micro XRCE-DDS Agent is built from source, not apt-installed | Accepted |
+| [0008](0008-checkpoint-approach-pose.md) | Checkpoint waypoints resolve to a stand-off + yaw-to-tag approach pose | Accepted |
+| [0009](0009-m6-residual-findings-deferred-to-m7.md) | M6 perception residual review findings are hardened in M7, not M6 | Accepted |
+| [0010](0010-m6-capture-verified-dwell-stability-deferred.md) | M6 capture pipeline verified in SITL (cp_north); full multi-checkpoint capture deferred on an 02 dwell-stability finding | Accepted |
 
 ## When to write an ADR
 

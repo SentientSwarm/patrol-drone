@@ -80,3 +80,7 @@ lifecycle-sessions/
 
 # PR fix pipeline artifacts (phase handoff files)
 .pr-fix/
+
+# Perception capture artifacts (runtime output of patrol_perception; the topic is the bag's
+# source of truth, not these on-disk PNG/JSON — see docs/decisions/0010)
+captures/

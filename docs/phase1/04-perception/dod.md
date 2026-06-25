@@ -1,7 +1,7 @@
 # Definition of Done — Perception & Checkpoint Capture
 
 **Phase 1 docset:** 4 of 5 · **Milestones:** M6
-**Lifecycle status:** DoD ✅ · PRD ⏳ (/drive) · Design ⏳ (/drive)
+**Lifecycle status:** DoD ✅ · PRD ✅ · Design ✅
 **Source:** docs/phase1_simulation_plan.md — M6 ("Perception scaffolding, image capture at checkpoint"); cross-cutting: "Test strategy", "What's explicitly NOT in Phase 1", "Phase 1 exit checklist"
 **Stakeholders:** Project owner (solo dev) — operator/maintainer of the perception node and the `patrol_interfaces` contract; downstream — Phase 3 (YOLO/TensorRT), Phase 4 (indoor AprilTag relocalization), Phase 6 (anomaly detection), and docset 05-logging-replay (bag pipeline consumer of `CheckpointCapture`); reviewers — PR reviewers on `main` (working-in-sim gate)
 **Depends on:** 03-sim-environment (checkpoint AprilTags placed at YAML-configured world positions + drone RGB camera publishing a ROS 2 image topic); 02-mission-control (mission signals a checkpoint arrival / "looking at" event); 01-platform (`/fmu/out/*` pose telemetry, container + `colcon build`)

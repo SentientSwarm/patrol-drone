@@ -85,10 +85,14 @@ module = [
     "std_msgs", "std_msgs.*",
     "sensor_msgs", "sensor_msgs.*",
     "geometry_msgs", "geometry_msgs.*",
+    "diagnostic_msgs", "diagnostic_msgs.*",   # M6: perception_node KeyValue (no stubs on Layer A)
     "builtin_interfaces", "builtin_interfaces.*",
     "patrol_interfaces", "patrol_interfaces.*",
+    "apriltag_msgs", "apriltag_msgs.*",       # M6: AprilTagDetectionArray (no stubs on Layer A)
     "rosidl_runtime_py", "rosidl_runtime_py.*",
     "ament_index_python", "ament_index_python.*",
+    "cv2", "cv2.*",                           # M6: OpenCV PNG encode seam (no PEP 561 stubs on Layer A)
+    "cv_bridge", "cv_bridge.*",               # M6: sensor_msgs/Image -> cv2 (no stubs on Layer A)
     "launch", "launch.*",
     "launch_ros", "launch_ros.*",
     "setuptools", "setuptools.*",      # every ament_python package's setup.py imports it (no stubs on Layer A)
@@ -117,7 +121,8 @@ norecursedirs = ["tests/integration", "tests/replay", "ros2_ws/src/external"]
 addopts = "-ra --strict-markers --strict-config"
 # M3: makes `import patrol_mission` work for Layer-A unit tests. M5: + sim/tools for the
 # World Composer / AprilTag-model generator unit tests (`import compose_world`, `gen_apriltag_models`).
-pythonpath = ["ros2_ws/src/patrol_mission", "sim/tools"]
+# M6: + patrol_perception for the ROS-free capture core (`import patrol_perception.*`).
+pythonpath = ["ros2_ws/src/patrol_mission", "ros2_ws/src/patrol_perception", "sim/tools"]
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
 ]
@@ -127,17 +132,30 @@ branch = true
 # The 85% floor targets the ROS-free mission core only (not analysis/ or scripts/).
 # Path-based source aligns with the M3 pytest pythonpath above; may switch to
 # source_pkgs = ["patrol_mission"] once an editable install lands (M3 spike).
-source = ["ros2_ws/src/patrol_mission/patrol_mission"]
+source = [
+    "ros2_ws/src/patrol_mission/patrol_mission",
+    # M6 (04-perception): the ROS-free capture core + node logic. M6.A ships config/resolver/builder;
+    # M6.B adds samplers.py + coordinator.py (rclpy-free logic, 100% unit-tested) and the rclpy
+    # entrypoint perception_node.py (omitted below, mirroring patrol_mission/node.py).
+    "ros2_ws/src/patrol_perception/patrol_perception",
+]
 # T1.7 coverage-source resolution (design §4.4.4): node.py is the rclpy plumbing layer
 # (imports rclpy/px4_msgs). Its glue (telemetry/EKF gating, the stale-telemetry pause, tick
 # dispatch, _issue ID mapping, warmup mutation) now has a fast PR-level guard —
 # tests/unit/test_node_glue.py stubs rclpy/px4_msgs so the branch logic runs ROS-free — with full
 # SITL (AC-5) as the end-to-end check. It stays OMITTED from the percentage gate by design: the
 # path-based source above scopes the ≥85% floor to the whole patrol_mission package EXCEPT node.py —
-# the rclpy-free core {state_machine, frames, config, commands, topics} plus qos.py (which imports
-# rclpy but is exercised through test_node_glue.py's rclpy stub). node.py's publishers/main() still
+# i.e. the rclpy-free mission core, plus qos.py (which imports rclpy but is exercised through
+# test_node_glue.py's rclpy stub). node.py's publishers/main() still
 # only execute under SITL, so measuring it as a percentage would mislead.
-omit = ["ros2_ws/src/patrol_mission/patrol_mission/node.py"]
+# perception_node.py (M6.B) is the same rclpy-plumbing layer: it imports rclpy/cv2/apriltag_msgs and
+# only executes under SITL, so it is verified by `colcon build` + node-import + the downstream SITL
+# test, not measured as a percentage — i.e. the whole patrol_perception package EXCEPT
+# perception_node.py stays measured (the ROS-free capture core, 100%).
+omit = [
+    "ros2_ws/src/patrol_mission/patrol_mission/node.py",
+    "ros2_ws/src/patrol_perception/patrol_perception/perception_node.py",
+]
 
 [tool.coverage.report]
 show_missing = true

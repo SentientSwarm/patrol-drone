@@ -23,6 +23,11 @@
        image_transport_plugins provides the /compressed companion (sensor_msgs/CompressedImage). -->
   <exec_depend>ros_gz_image</exec_depend>
   <exec_depend>image_transport_plugins</exec_depend>
+  <!-- M6.B: patrol_perception.launch.py wires the capture node + off-the-shelf apriltag detector +
+       the gz camera_info bridge (ros_gz_bridge) the detector needs (VP-1/VP-2). -->
+  <exec_depend>patrol_perception</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

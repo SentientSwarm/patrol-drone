@@ -352,8 +352,9 @@ def test_patrol_surface_published_from_returned_state(node: Any, node_mod: Modul
 
 
 # Hermes High (OQ-7): the atomic /patrol/dwell capture trigger fires exactly once per DWELL episode —
-# on the WAYPOINT->DWELL rising edge, carrying the dwelled waypoint index — and NOT on the held ticks
-# that republish DWELL, so a downstream consumer gets one race-free event per checkpoint.
+# _DWELL_SETTLE_S after entering DWELL (so the drone has settled and the tag is framed before 04
+# captures), carrying the dwelled waypoint index — and NOT on entry or any later held tick, so a
+# downstream consumer gets one race-free event per checkpoint.
 def test_dwell_event_fires_once_per_episode_through_tick(
     node: Any, node_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
 ):
@@ -361,37 +362,61 @@ def test_dwell_event_fires_once_per_episode_through_tick(
     sp = (0.0, 0.0, -2.0)
     seq = [
         (wp, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # approach: no event
-        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # entry: ONE event (idx 1)
-        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # held: no re-emit
+        (
+            dwell,
+            node_mod.Command(current_waypoint=1, setpoint_ned=sp),
+        ),  # entry: arm settle, no event
+        (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # settling: no event
+        (
+            dwell,
+            node_mod.Command(current_waypoint=1, setpoint_ned=sp),
+        ),  # settled: ONE event (idx 1)
         (dwell, node_mod.Command(current_waypoint=1, setpoint_ned=sp)),  # held: no re-emit
         (wp, node_mod.Command(current_waypoint=2, setpoint_ned=sp)),  # advance: no event
     ]
     it = iter(seq)
     monkeypatch.setattr(node._sm, "tick", lambda _state, _telem: next(it))
 
+    # Advance the fake clock by enough per tick that the settle window elapses across the held DWELL
+    # ticks; re-feeding fresh telemetry each tick keeps the fix from going stale (the dwell-settle
+    # budget and the telemetry-staleness budget are independent).
+    per_tick_s = node_mod._DWELL_SETTLE_S / 2.0  # two held ticks cross _DWELL_SETTLE_S
     for _ in seq:
+        node.clock.ns += int(per_tick_s * 1e9)
         _feed_valid_fresh(node, node_mod)
         node._on_tick()
 
     published = _pub(node, node_mod.topics.PATROL_DWELL).published
-    assert [m.data for m in published] == [1]  # one atomic event, the dwelled index, on entry only
+    assert [m.data for m in published] == [1]  # one atomic event, the dwelled index, after settling
 
 
-# The edge predicate itself: a rising edge into DWELL emits the index once; a prev-already-DWELL tick
-# (the hold) and any non-DWELL current state emit nothing.
-def test_publish_dwell_event_edge_predicate(node: Any, node_mod: ModuleType):
+# The settle predicate: entering DWELL starts a settle clock; the event fires once _DWELL_SETTLE_S
+# later (not on the rising edge), then never again for that episode; leaving DWELL re-arms it.
+def test_publish_dwell_event_settle_predicate(node: Any, node_mod: ModuleType):
     pub = _pub(node, node_mod.topics.PATROL_DWELL)
     cmd = node_mod.Command(current_waypoint=3)
+    settle = node_mod._DWELL_SETTLE_S
 
     node._state = node_mod.MissionState.WAYPOINT  # current state not DWELL -> nothing
-    node._publish_dwell_event(node_mod.MissionState.WAYPOINT, cmd)
+    node._publish_dwell_event(node_mod.MissionState.WAYPOINT, cmd, 100.0)
     assert pub.published == []
 
-    node._state = node_mod.MissionState.DWELL  # WAYPOINT -> DWELL rising edge -> one event
-    node._publish_dwell_event(node_mod.MissionState.WAYPOINT, cmd)
+    node._state = (
+        node_mod.MissionState.DWELL
+    )  # rising edge: arm the settle clock, but do NOT fire yet
+    node._publish_dwell_event(node_mod.MissionState.WAYPOINT, cmd, 100.0)
+    assert pub.published == []
+
+    # still settling (before _DWELL_SETTLE_S elapses) -> nothing
+    node._publish_dwell_event(node_mod.MissionState.DWELL, cmd, 100.0 + settle - 0.1)
+    assert pub.published == []
+
+    # settle window elapsed -> exactly one event with the dwelled index
+    node._publish_dwell_event(node_mod.MissionState.DWELL, cmd, 100.0 + settle)
     assert [m.data for m in pub.published] == [3]
 
-    node._publish_dwell_event(node_mod.MissionState.DWELL, cmd)  # held (prev already DWELL) -> none
+    # further held ticks -> no re-emit for this episode
+    node._publish_dwell_event(node_mod.MissionState.DWELL, cmd, 100.0 + settle + 5.0)
     assert [m.data for m in pub.published] == [3]
 
 

@@ -29,6 +29,42 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 _RECORDER_PKG = "patrol_logging"  # 05-logging; owns launch/record.launch.py
+_PERCEPTION_PKG = "patrol_perception"  # 04-perception; the capture node + apriltag deps (VP-1)
+
+
+def _maybe_perception(context: LaunchContext) -> list[IncludeLaunchDescription]:
+    """Include 04's perception chain (patrol_perception.launch.py) iff ``perception:=true`` AND
+    ``patrol_perception`` is installed. Resolved at launch time so an environment without the
+    apriltag/perception deps skips with a warning rather than grounding the patrol (design §4.4.5).
+    """
+    if LaunchConfiguration("perception").perform(context) != "true":
+        return []
+    try:
+        get_package_share_directory(_PERCEPTION_PKG)
+    except PackageNotFoundError:
+        get_logger("mission_patrol").warning(
+            f"{_PERCEPTION_PKG} (04 perception) not found — flying the patrol without capture."
+        )
+        return []
+    perception_launch = PathJoinSubstitution(
+        [FindPackageShare("patrol_bringup"), "launch", "patrol_perception.launch.py"]
+    )
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(perception_launch),
+            launch_arguments={
+                "checkpoint_config_path": LaunchConfiguration("checkpoints_yaml"),
+                # forward the capture output root so 04's artifacts co-locate with 05's run/bag dir
+                # when set (OQ-4 alignment); empty falls back to the perception node's CWD default.
+                "output_root": LaunchConfiguration("output_root"),
+                # forward the ADR-B freshness windows so a slower detector / noisier sim can retune
+                # them from the top-level patrol launch (defaults preserved in patrol_perception).
+                "max_detection_age_s": LaunchConfiguration("max_detection_age_s"),
+                "max_frame_age_s": LaunchConfiguration("max_frame_age_s"),
+                "max_pose_age_s": LaunchConfiguration("max_pose_age_s"),
+            }.items(),
+        )
+    ]
 
 
 def _maybe_record(context: LaunchContext) -> list[IncludeLaunchDescription]:
@@ -71,6 +107,33 @@ def generate_launch_description() -> LaunchDescription:
                 description="absolute path to 03's checkpoint-positions YAML (OQ-2); required when "
                 "the mission uses checkpoint_id waypoints (no CWD-relative default)",
             ),
+            DeclareLaunchArgument(
+                "perception",
+                default_value="true",
+                description="include 04's perception capture chain (patrol_perception.launch.py) "
+                "if installed; skipped with a warning when the package/apriltag deps are absent",
+            ),
+            DeclareLaunchArgument(
+                "output_root",
+                default_value="",
+                description="root dir for 04's on-disk captures (<output_root>/<run_id>/); set it to "
+                "05's bag/run dir to align artifacts (OQ-4), empty -> the node's CWD 'captures' default",
+            ),
+            DeclareLaunchArgument(
+                "max_detection_age_s",
+                default_value="1.0",
+                description="ADR-B freshness window for /tag_detections (s); forwarded to perception",
+            ),
+            DeclareLaunchArgument(
+                "max_frame_age_s",
+                default_value="0.5",
+                description="ADR-B freshness window for the camera frame (s); forwarded to perception",
+            ),
+            DeclareLaunchArgument(
+                "max_pose_age_s",
+                default_value="1.0",
+                description="ADR-B freshness window for the /fmu/out pose (s); forwarded to perception",
+            ),
             Node(
                 package="patrol_mission",
                 executable="patrol_mission",
@@ -83,6 +146,7 @@ def generate_launch_description() -> LaunchDescription:
                     }
                 ],
             ),
+            OpaqueFunction(function=_maybe_perception),
             OpaqueFunction(function=_maybe_record),
         ]
     )

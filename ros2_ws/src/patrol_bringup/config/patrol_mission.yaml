@@ -27,12 +27,14 @@ home:
   position: { x: 0.0, y: 0.0, z: 2.0 }
   frame: "enu"
 waypoints:
+  # dwell_s lengthened to 6 s so the drone parks long enough for the camera to settle on the tag and
+  # apriltag to produce a detection that is still fresh when /patrol/dwell fires (capture timing fix).
   - checkpoint_id: "cp_north"   # resolved from sim/config/checkpoints.yaml (ENU)
-    dwell_s: 3.0
+    dwell_s: 6.0
   - checkpoint_id: "cp_east"
-    dwell_s: 3.0
+    dwell_s: 6.0
   - checkpoint_id: "cp_south"
-    dwell_s: 3.0
+    dwell_s: 6.0
   - position: { x: 5.0, y: 5.0, z: 2.5 }   # inline ENU overlook (clear of obstacles); exercises the inline path
     frame: "enu"
-    dwell_s: 3.0
+    dwell_s: 6.0

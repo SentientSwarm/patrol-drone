@@ -1,7 +1,7 @@
 # Definition of Done — Logging & Replay Pipeline
 
 **Phase 1 docset:** 5 of 5 · **Milestones:** M7–M8
-**Lifecycle status:** DoD ✅ · PRD ⏳ (/drive) · Design ⏳ (/drive)
+**Lifecycle status:** DoD ✅ · PRD ✅ · Design ✅
 **Source:** docs/phase1_simulation_plan.md — M7 ("rosbag2 logging, MCAP format, full sensor capture"), M8 ("Replay pipeline: bag → DGX → Foxglove"); plus "Test strategy", "Containerization", "What's explicitly NOT in Phase 1", "Phase 1 exit checklist".
 **Stakeholders:** Project owner (solo dev) — operator who runs missions and maintains the pipeline; downstream — every Phase 2+ flight (the bag is the regression test, training corpus, and debugger per plan §"Project context"); reviewers — anyone debugging a mission via Foxglove or replay test.
 **Depends on:** 01-platform (sim/dev containers, `colcon` workspace, ROS 2 Jazzy base), 04-perception (`patrol_interfaces/msg/CheckpointCapture` and `/patrol/checkpoint_capture` topic), 02-mission-control (mission launch entrypoint that invokes recording; mission/perception topics to record).

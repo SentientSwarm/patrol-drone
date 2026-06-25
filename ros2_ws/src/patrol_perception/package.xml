@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>patrol_perception</name>
+  <version>0.1.0</version>
+  <description>
+    Perception &amp; checkpoint capture for the patrol-drone stack (docset 04-perception).
+    Hosts the ROS-free core — CheckpointConfigLoader / CheckpointResolver /
+    CheckpointCaptureBuilder — that owns construction of the durable
+    patrol_interfaces/msg/CheckpointCapture contract, plus (from M6.B) the thin
+    PerceptionNode rclpy plumbing that samples the camera frame on a checkpoint-arrival
+    trigger, identifies the checkpoint via off-the-shelf apriltag_ros, and publishes +
+    persists the capture. M6.A lands the message + ROS-free core; M6.B adds the live
+    node + detection wiring; M6.C adds on-disk persistence.
+  </description>
+  <maintainer email="egemencankaya14@gmail.com">Egemen Cankaya</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- M6.A: the message this package owns construction of, + the config parser. -->
+  <exec_depend>patrol_interfaces</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <!-- M6.B: the live node — rclpy plumbing, camera/pose sampling, off-the-shelf detection. -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>image_transport</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+  <exec_depend>apriltag_msgs</exec_depend>
+  <!-- PoseSampler reuses the single MC-7 ENU<->NED conversion site (frames.to_enu_from_ned). -->
+  <exec_depend>patrol_mission</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
