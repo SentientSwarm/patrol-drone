@@ -35,6 +35,10 @@ _CHECKPOINTS = (
     "- checkpoint_id: cp_north\n  position: {x: 10, y: 0, z: 2}\n  tag_family: tag36h11\n  tag_id: 0\n"
     "- checkpoint_id: cp_east\n  position: {x: 0, y: 10, z: 2}\n  tag_family: tag36h11\n  tag_id: 1\n"
 )
+# A resolved checkpoint hover rises this far above the tag so the airframe's down-pitched camera
+# centers it (ADR-0012): standoff_m * tan(camera_pitch_rad), at the Approach defaults (3.0, 0.35 rad).
+# Derived from the same constants the code uses, so a future default change updates both at once.
+_STANDOFF_CLIMB_M = 3.0 * math.tan(0.35)
 
 
 def _write(tmp_path: Path, text: str) -> str:
@@ -233,11 +237,9 @@ def test_checkpoint_id_resolves(tmp_path):
     assert len(cfg.waypoints) == 1
     wp = cfg.waypoints[0]
     assert wp.checkpoint_id == "cp_north"
-    assert wp.position == (
-        10.0,
-        3.0,
-        2.0,
-    )  # 3 m +Y stand-off from the tag (Approach default, SIM-4)
+    assert wp.position == pytest.approx(
+        (10.0, 3.0, 2.0 + _STANDOFF_CLIMB_M)
+    )  # 3 m +Y stand-off, climbing to center the down-pitched camera on the tag (SIM-4 / ADR-0012)
     assert wp.yaw_enu == pytest.approx(-math.pi / 2)  # faces the tag (south, toward -Y)
     assert wp.frame == "enu"
     assert wp.dwell_s == 3.0
@@ -288,7 +290,9 @@ def test_non_list_checkpoints_file_raises(tmp_path):
 def test_keyed_checkpoints_file_accepted(tmp_path):
     cps = _write_checkpoints(tmp_path, "checkpoints:\n" + _indent(_CHECKPOINTS))
     cfg = load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_east")), cps)
-    assert cfg.waypoints[0].position == (0.0, 13.0, 2.0)  # cp_east + 3 m +Y stand-off (SIM-4)
+    assert cfg.waypoints[0].position == pytest.approx(
+        (0.0, 13.0, 2.0 + _STANDOFF_CLIMB_M)
+    )  # cp_east + 3 m +Y stand-off, climbing to center the tag (SIM-4 / ADR-0012)
     assert cfg.waypoints[0].checkpoint_id == "cp_east"
 
 
@@ -359,8 +363,10 @@ def test_mixed_checkpoint_and_inline(tmp_path):
     )
     cfg = load_mission_config(_write(tmp_path, _HEAD + _HOME_ENU + wps), cps)
     assert [w.checkpoint_id for w in cfg.waypoints] == ["cp_east", None]
-    assert cfg.waypoints[0].position == (0.0, 13.0, 2.0)  # cp_east + 3 m +Y stand-off (SIM-4)
-    assert cfg.waypoints[1].position == (-10.0, 0.0, 2.0)
+    assert cfg.waypoints[0].position == pytest.approx(
+        (0.0, 13.0, 2.0 + _STANDOFF_CLIMB_M)
+    )  # cp_east + 3 m +Y stand-off, climbing to center the tag (SIM-4 / ADR-0012)
+    assert cfg.waypoints[1].position == (-10.0, 0.0, 2.0)  # inline waypoint: no stand-off climb
 
 
 # TS-C4: the checkpoints path is a parameter (OQ-2) — a non-default location is honored.
@@ -370,7 +376,9 @@ def test_checkpoints_path_override(tmp_path):
     cfg = load_mission_config(
         _write(tmp_path, _HEAD + _HOME_ENU + _wp_checkpoint("cp_north")), str(p)
     )
-    assert cfg.waypoints[0].position == (10.0, 3.0, 2.0)  # cp_north + 3 m +Y stand-off (SIM-4)
+    assert cfg.waypoints[0].position == pytest.approx(
+        (10.0, 3.0, 2.0 + _STANDOFF_CLIMB_M)
+    )  # cp_north + 3 m +Y stand-off, climbing to center the tag (SIM-4 / ADR-0012)
 
 
 # TS-C5: a checkpoint_id reference with no checkpoints file fails loud (not silently empty).
@@ -414,11 +422,10 @@ def test_shipped_patrol_mission_loads():
     assert len(cfg.waypoints) == 4
     assert [w.checkpoint_id for w in cfg.waypoints] == ["cp_north", "cp_east", "cp_south", None]
     assert cfg.waypoints[0].frame == "enu"
-    assert cfg.waypoints[0].position == (
-        12.0,
-        11.0,
-        1.5,
-    )  # cp_north (12,8,1.5) from the canonical checkpoints.yaml + 3 m +Y stand-off (SIM-4)
+    assert cfg.waypoints[0].position == pytest.approx(
+        (12.0, 11.0, 1.5 + _STANDOFF_CLIMB_M)
+    )  # cp_north (12,8,1.5) from the canonical checkpoints.yaml + 3 m +Y stand-off, climbing to
+    # center the down-pitched camera on the tag (SIM-4 / ADR-0012)
 
 
 # TS-C7 (Hermes Medium): each waypoint must be exactly one shape — checkpoint-based
