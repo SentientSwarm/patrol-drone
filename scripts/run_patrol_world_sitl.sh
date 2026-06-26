@@ -25,6 +25,12 @@
 # preflight wants a GCS heartbeat to arm offboard ("No connection to the GCS"), so the patrol path
 # launches QGC (start_qgc), same as run_sitl_mission.sh. Not yet run headless/in-container.
 #
+# M7 RECORD-RUN STRICTNESS (Hermes High): a record run (RUN_PATROL=1, the default) flies the patrol
+# with record:=true, so the camera's /compressed companion is now a RECORDED artifact. verify_camera
+# therefore treats its absence as FATAL by default on a record run (set PATROL_STRICT_CAMERA=0 or pass
+# --no-patrol for a camera-only/M6 smoke), and after a passing patrol assert_bag_has_compressed_imagery
+# asserts the produced bag actually holds /compressed with a non-zero count (PATROL_ASSERT_BAG=0 to skip).
+#
 # No `set -u`: we source ROS's setup.bash (references unbound vars), like run_sitl_mission.sh.
 set -eo pipefail
 
@@ -282,6 +288,8 @@ check_camera_rate() {
   # frame DID arrive, so the camera publishes), and a faster-than-spec rate does not affect the
   # latest-frame-on-trigger capture path. Warn loudly (preserves the M5 AC-4 signal) but do not
   # abort the patrol. Set PATROL_STRICT_CAMERA=1 to restore the hard gate.
+  # PATROL_STRICT_CAMERA is shared: it also gates the /compressed presence check below, where on a
+  # record run (RUN_PATROL=1) it defaults STRICT (:-1). Here (rate) it stays lax-by-default (:-0).
   if [[ "${PATROL_STRICT_CAMERA:-0}" -eq 1 ]]; then
     err "camera rate ${rate_hz} Hz outside band [${CAMERA_RATE_MIN_HZ}, ${CAMERA_RATE_MAX_HZ}] Hz (AC-4 regression)"
     return 1
@@ -301,7 +309,7 @@ verify_camera() {
   log "camera ${CAMERA_TOPIC} steady: ${rate_hz:-(rate sample unavailable)} Hz"
   check_camera_rate "${rate_hz}" || return 1
   # The /compressed companion (05-logging records it) rides image_transport, so this is a structural
-  # presence check, not a literal-drift check (F-05.1). Absent => the bag pipeline loses imagery.
+  # presence check, not a literal-drift check (F-05.1). Absent => the recorded bag loses imagery.
   # image_transport advertises /compressed LAZILY, so poll a few seconds before judging it absent.
   for _ in 1 2 3 4 5 6; do
     if ros2 topic list 2>/dev/null | grep -qx "${CAMERA_TOPIC}/compressed"; then
@@ -310,14 +318,22 @@ verify_camera() {
     fi
     sleep 1
   done
-  # Non-fatal for an M6 perception run: /compressed is an 05-logging (M7) requirement, not an M6
-  # perception input (the node samples the raw Image). Warn loudly but do not abort the patrol.
-  # Set PATROL_STRICT_CAMERA=1 to restore the hard gate (e.g. for an M5/M7 verification run).
-  if [[ "${PATROL_STRICT_CAMERA:-0}" -eq 1 ]]; then
-    err "${CAMERA_TOPIC}/compressed absent — 05-logging needs it; install ros-${ROS_DISTRO}-image-transport-plugins"
+  # This runner now IS the M7 record path: fly_and_verify_patrol launches the patrol with
+  # record:=true, and recorded_topics.yaml lists ${CAMERA_TOPIC}/compressed. Absent here means a
+  # green run would produce a bag with no imagery — a false-negative M7 acceptance gate (Hermes
+  # High). So on a record run (RUN_PATROL=1) compressed-absence is FATAL by default. The lax path
+  # is kept ONLY for a camera-only / M6-perception smoke (--no-patrol, or the explicit opt-out
+  # PATROL_STRICT_CAMERA=0), where /compressed is not a recorded artifact but an unused companion.
+  # NOTE: PATROL_STRICT_CAMERA is SHARED with the camera-RATE gate (verify_camera, ~L285), which
+  # stays lax-by-default (PATROL_STRICT_CAMERA:-0). Compressed is deliberately stricter than rate
+  # here: a record run defaults compressed to STRICT (:-1) because a dropped /compressed corrupts
+  # the M7 bag, whereas an off-band rate only degrades it. Setting PATROL_STRICT_CAMERA=1 makes
+  # BOTH strict; PATROL_STRICT_CAMERA=0 makes BOTH lax.
+  if [[ ${RUN_PATROL} -eq 1 && "${PATROL_STRICT_CAMERA:-1}" -ne 0 ]]; then
+    err "${CAMERA_TOPIC}/compressed absent on a record run (record:=true) — the bag would lose imagery; install ros-${ROS_DISTRO}-image-transport-plugins (or PATROL_STRICT_CAMERA=0 for a camera-only smoke)"
     return 1
   fi
-  warn "${CAMERA_TOPIC}/compressed absent (05/M7 concern, not M6) — continuing (non-fatal; PATROL_STRICT_CAMERA=1 to gate)"
+  warn "${CAMERA_TOPIC}/compressed absent — continuing (non-record/opt-out smoke; the recorded bag would lose imagery if this were a record run)"
   return 0
 }
 
@@ -332,7 +348,37 @@ fly_and_verify_patrol() {
     "output_root:=${run_root}" >"${LOG_DIR}/node.log" 2>&1 &
   NODE_PID=$!
   log "verifying patrol acceptance (timeout ${VERIFY_TIMEOUT}s)..."
-  python3 "${SCRIPT_DIR}/verify_patrol.py" --timeout "${VERIFY_TIMEOUT}"
+  python3 "${SCRIPT_DIR}/verify_patrol.py" --timeout "${VERIFY_TIMEOUT}" || return 1
+  # The patrol passed AND it recorded (record:=true) — assert the bag captured imagery, not just
+  # that the live topic existed before flight. Skippable for a deliberately recordless run.
+  if [[ "${PATROL_ASSERT_BAG:-1}" -ne 0 ]]; then
+    assert_bag_has_compressed_imagery "${run_root}"
+  fi
+}
+
+# After a record run, assert the produced bag actually contains the compressed camera stream with a
+# non-zero message count — checks the ARTIFACT directly (catches a recorder that silently dropped the
+# topic), complementing the live-presence gate in verify_camera (Hermes High, bag-content option).
+assert_bag_has_compressed_imagery() {
+  local run_root="$1"
+  local bag_dir
+  # The recorder writes one bag DIRECTORY (patrol_<id>_<ts>/ holding metadata.yaml) under run_root.
+  bag_dir="$(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null | head -n1)"
+  if [[ -z "${bag_dir}" ]]; then
+    err "no finalized bag (metadata.yaml) found under ${run_root} — recorder produced no ingestable bag"
+    return 1
+  fi
+  local info count
+  info="$(ros2 bag info "${bag_dir}" 2>&1 || true)"
+  # `ros2 bag info` lists each topic with a "Count: N" column; pull the count for the compressed topic.
+  count="$(printf '%s\n' "${info}" | awk -v t="${CAMERA_TOPIC}/compressed" '
+    $0 ~ t { for (i = 1; i <= NF; i++) if ($i == "Count:") { print $(i+1); exit } }')"
+  if [[ -z "${count}" || "${count}" -eq 0 ]]; then
+    err "bag ${bag_dir} has no ${CAMERA_TOPIC}/compressed messages (count=${count:-0}) — recorded artifact lost imagery"
+    return 1
+  fi
+  log "bag ${bag_dir} contains ${count} ${CAMERA_TOPIC}/compressed messages (M7 imagery captured)"
+  return 0
 }
 
 report_keep_up() {

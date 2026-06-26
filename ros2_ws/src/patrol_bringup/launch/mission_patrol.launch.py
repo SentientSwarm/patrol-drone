@@ -228,10 +228,17 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             *_declare_arguments(),
-            mission_node,
-            # Resolve the one shared run id BEFORE the two includes so both read the same value.
+            # Resolve the one shared run id, then set up perception + the recorder BEFORE the
+            # mission node, so `ros2 bag record` is subscribing before patrol_mission starts
+            # publishing (mission_state/offboard/takeoff). With record:=true the default, listing
+            # mission_node first let the earliest samples race ahead of the recorder (Hermes
+            # Medium). _resolve_run_id stays first since _maybe_record/_maybe_perception read the
+            # id it stashes. NOTE: launch process startup is asynchronous, so this list-ordering
+            # NARROWS the window rather than fully closing it — a hard OnProcessStart readiness
+            # gate on the recorder is the complete fix, tracked as a follow-up (design §4.4.5).
             OpaqueFunction(function=_resolve_run_id),
             OpaqueFunction(function=_maybe_perception),
             OpaqueFunction(function=_maybe_record),
+            mission_node,
         ]
     )
