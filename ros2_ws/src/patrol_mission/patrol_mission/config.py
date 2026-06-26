@@ -52,13 +52,19 @@ class AbortConfig:
 
 @dataclass(frozen=True)
 class Approach:
-    """Checkpoint approach geometry (SIM-4). How far back the drone hovers from a tag to resolve it.
+    """Checkpoint approach geometry (SIM-4 / ADR-0012). How the drone hovers to resolve a tag.
 
     Tags are emitted at zero yaw (face normal along world +Y), so the stand-off is taken along +Y and
-    the waypoint yaw is computed to face the tag. Optional section — the default holds a sane stand-off.
+    the waypoint yaw is computed to face the tag. The hover also climbs above the tag so the airframe's
+    fixed down-pitched camera boresight lands on the tag center rather than the tag sitting jammed at
+    the top frame edge (where apriltag could not resolve it at dwell — ADR-0012). Optional section —
+    the defaults hold the shipped stand-off and the airframe's ~20-deg camera down-pitch.
     """
 
     standoff_m: float = 3.0
+    # The airframe camera's fixed downward pitch (rad), gz_x500_patrol model.sdf camera_link pose
+    # (0 0.35 0). The hover rises standoff_m*tan(this) above the tag so the boresight centers it.
+    camera_pitch_rad: float = 0.35
 
 
 @dataclass(frozen=True)
@@ -221,6 +227,13 @@ def _unit_interval(value: Any, name: str) -> None:
         raise ValueError(f"{name} must be in [0, 1], got {value}")
 
 
+def _half_turn_down(value: Any, name: str) -> None:
+    """A fixed downward camera pitch in [0, pi/2): non-negative (the camera looks down, not up) and
+    strictly below vertical so the ``tan`` that sets the hover climb stays finite (ADR-0012)."""
+    if not 0.0 <= _number(value, name) < math.pi / 2.0:
+        raise ValueError(f"{name} must be in [0, pi/2), got {value}")
+
+
 def _validate_semantics(cfg: MissionConfig) -> None:
     """Fail loud on a numerically well-typed but semantically impossible mission (Hermes Medium).
 
@@ -235,6 +248,7 @@ def _validate_semantics(cfg: MissionConfig) -> None:
     _non_negative(cfg.completion.hold_time_s, "completion.hold_time_s")
     _unit_interval(cfg.abort.low_battery_threshold, "abort.low_battery_threshold")
     _positive(cfg.approach.standoff_m, "approach.standoff_m")
+    _half_turn_down(cfg.approach.camera_pitch_rad, "approach.camera_pitch_rad")
     for i, wp in enumerate(cfg.waypoints):
         _non_negative(wp.dwell_s, f"waypoints[{i}].dwell_s")
 
@@ -419,16 +433,23 @@ def _check_waypoint_keys(w: dict, index: int, allowed: frozenset[str]) -> None:
         )
 
 
-def _approach_pose(tag: Point, standoff_m: float) -> tuple[Point, float]:
-    """Hover pose that looks at a zero-yaw AprilTag from a stand-off (SIM-4).
+def _approach_pose(
+    tag: Point, standoff_m: float, camera_pitch_rad: float = 0.35
+) -> tuple[Point, float]:
+    """Hover pose that looks at a zero-yaw AprilTag from a stand-off (SIM-4 / ADR-0012).
 
     The World Composer emits every marker at zero yaw, so a tag's readable face normal lies along
-    world +Y. The drone hovers ``standoff_m`` north (+Y) of the tag at the tag's altitude and yaws to
-    face the tag center, so the forward, slightly-down camera resolves the marker instead of hovering
-    on top of it. Returns the ENU hover point and the ENU yaw (CCW from East) toward the tag.
+    world +Y. The drone hovers ``standoff_m`` north (+Y) of the tag and yaws to face the tag center.
+
+    It also climbs ``standoff_m * tan(camera_pitch_rad)`` **above** the tag. The airframe camera is
+    rigidly pitched ``camera_pitch_rad`` down, so a same-altitude hover put the tag ~20 deg up — at the
+    extreme top of the frame, foreshortened past apriltag's reach at dwell (every SITL checkpoint
+    capture came back empty — ADR-0012). Rising by that much makes the down-pitched boresight land on
+    the tag center at the stand-off range, so the forward camera squarely frames the marker. Returns
+    the ENU hover point and the ENU yaw (CCW from East) toward the tag (yaw is unaffected by the climb).
     """
     tx, ty, tz = tag
-    hover: Point = (tx, ty + standoff_m, tz)
+    hover: Point = (tx, ty + standoff_m, tz + standoff_m * math.tan(camera_pitch_rad))
     return hover, math.atan2(ty - hover[1], tx - hover[0])
 
 
@@ -439,7 +460,9 @@ def _checkpoint_waypoint(
     cid = _checkpoint_id(w["checkpoint_id"], f"waypoint[{index}]")
     if cid not in checkpoints:
         raise ValueError(f"waypoint[{index}] references unknown checkpoint_id {cid!r}")
-    hover, yaw_enu = _approach_pose(checkpoints[cid], approach.standoff_m)
+    hover, yaw_enu = _approach_pose(
+        checkpoints[cid], approach.standoff_m, approach.camera_pitch_rad
+    )
     return Waypoint(
         position=hover,
         frame="enu",

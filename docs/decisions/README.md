@@ -53,6 +53,7 @@ What else did we look at? Why did we not pick those?
 | [0009](0009-m6-residual-findings-deferred-to-m7.md) | M6 perception residual review findings are hardened in M7, not M6 | Accepted |
 | [0010](0010-m6-capture-verified-dwell-stability-deferred.md) | M6 capture pipeline verified in SITL (cp_north); full multi-checkpoint capture deferred on an 02 dwell-stability finding | Accepted |
 | [0011](0011-m7-recording-verified-checkpoint-capture-count-deferred.md) | M7 MCAP recording verified in SITL (AC-1/AC-2); non-zero `/patrol/checkpoint_capture` count carried by ADR-0010's 02/M4 dwell-stability fix | Accepted |
+| [0012](0012-m4-dwell-pose-camera-framing-fix.md) | Checkpoint-capture gap was dwell-pose camera framing (tag jammed at frame edge), not a WAYPOINT↔DWELL flap; fixed by raising the stand-off hover to center the down-pitched camera on the tag (capture count 0→9). Resolves ADR-0010/0011 deferral | Accepted |
 
 ## When to write an ADR
 

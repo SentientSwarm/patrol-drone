@@ -1,6 +1,6 @@
 # ADR-0011: M7 MCAP recording verified in SITL; non-zero `/patrol/checkpoint_capture` count carried by ADR-0010's 02/M4 dwell-stability fix
 
-**Status:** Accepted
+**Status:** Accepted; the deferred non-zero `/patrol/checkpoint_capture` count is **resolved by [ADR-0012](0012-m4-dwell-pose-camera-framing-fix.md)** — with the dwell-pose camera-framing fix landed, a full patrol records Count 9 (was 0) in the MCAP bag, with no M7 change.
 **Date:** 2026-06-26
 **Deciders:** Egemen Cankaya (project owner)
 

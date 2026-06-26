@@ -45,7 +45,7 @@ source "${SCRIPT_DIR}/env_doctor.sh"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 PX4_DIR="${PX4_DIR:-${HOME}/PX4-Autopilot}"
 QGC_APPIMAGE="${QGC_APPIMAGE:-${HOME}/Apps/QGroundControl-x86_64.AppImage}"
-WS_SETUP="${REPO_ROOT}/ros2_ws/install/setup.bash"
+WS_SETUP="${WS_SETUP:-${REPO_ROOT}/ros2_ws/install/setup.bash}"
 LOG_DIR="${PATROL_UAT_LOG_DIR:-}"  # empty -> a fresh mktemp dir, set in main()
 
 WORLD_NAME="patrol_world"

@@ -1,6 +1,6 @@
 # ADR-0010: M6 capture pipeline verified in SITL; full multi-checkpoint capture deferred on a dwell-stability finding
 
-**Status:** Accepted
+**Status:** Accepted; the deferred multi-checkpoint capture is **resolved by [ADR-0012](0012-m4-dwell-pose-camera-framing-fix.md)** — the gap was dwell-pose camera framing (tag jammed at the top frame edge), not the hypothesised WAYPOINT↔DWELL flap (that was already gone). A full patrol now captures all checkpoints (`/patrol/checkpoint_capture` Count 9, was 0).
 **Date:** 2026-06-25
 **Deciders:** Egemen Cankaya (project owner)
 
