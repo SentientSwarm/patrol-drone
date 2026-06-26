@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 import pytest
 from patrol_logging.recorder import (
     BagSidecar,
+    RecordingRun,
     bag_name,
     build_record_argv,
     build_sidecar,
@@ -141,14 +142,13 @@ def test_argv_requires_at_least_one_topic_or_regex(tmp_path) -> None:
 
 
 def _sample_sidecar() -> BagSidecar:
-    return build_sidecar(
+    run = RecordingRun(
         mission_id="alpha",
         bag_filename=f"patrol_alpha_{_TS}.mcap",
         started=_STARTED,
-        ended=_ENDED,
-        recorded_topics=_NAMED_TOPICS + _REGEXES,
         mission_config_ref="/abs/patrol_mission.yaml",
     )
+    return build_sidecar(run, _ENDED, _NAMED_TOPICS + _REGEXES)
 
 
 @pytest.mark.parametrize(

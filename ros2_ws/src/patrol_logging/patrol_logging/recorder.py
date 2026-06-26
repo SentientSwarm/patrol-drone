@@ -106,23 +106,33 @@ class BagSidecar:
     mission_config_ref: str  # path/ref to the mission YAML that produced this run
 
 
-def build_sidecar(
-    *,
-    mission_id: str,
-    bag_filename: str,
-    started: datetime,
-    ended: datetime,
-    recorded_topics: list[str],
-    mission_config_ref: str,
-) -> BagSidecar:
-    """Assemble a :class:`BagSidecar`, rendering the timestamps as ISO-8601 strings."""
+@dataclass
+class RecordingRun:
+    """The identity of a recording, known when it *starts* (design §4.2.2).
+
+    Groups the fields the recorder fixes at record-start — so ``build_sidecar`` takes this plus only
+    the stop-time facts (``ended``, the requested topic set) instead of a long argument list. The
+    launch file builds one of these at ``start`` and hands it to ``stop``.
+    """
+
+    mission_id: str
+    bag_filename: str  # patrol_<missionId>_<timestamp>.mcap
+    started: datetime
+    mission_config_ref: str  # path/ref to the mission YAML that produced this run
+
+
+def build_sidecar(run: RecordingRun, ended: datetime, recorded_topics: list[str]) -> BagSidecar:
+    """Assemble a :class:`BagSidecar` from the run identity + the stop-time facts.
+
+    Renders the timestamps as ISO-8601 strings.
+    """
     return BagSidecar(
-        mission_id=mission_id,
-        bag_filename=bag_filename,
-        started_utc=started.isoformat(),
+        mission_id=run.mission_id,
+        bag_filename=run.bag_filename,
+        started_utc=run.started.isoformat(),
         ended_utc=ended.isoformat(),
         recorded_topics=list(recorded_topics),
-        mission_config_ref=mission_config_ref,
+        mission_config_ref=run.mission_config_ref,
     )
 
 

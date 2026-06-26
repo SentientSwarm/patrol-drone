@@ -32,7 +32,13 @@ from launch.actions import (
 from launch.event_handlers import OnProcessExit
 from launch.logging import get_logger
 from launch.substitutions import LaunchConfiguration
-from patrol_logging.recorder import bag_name, build_record_argv, build_sidecar, write_sidecar
+from patrol_logging.recorder import (
+    RecordingRun,
+    bag_name,
+    build_record_argv,
+    build_sidecar,
+    write_sidecar,
+)
 
 _PKG = "patrol_logging"
 _DEFAULT_OUTPUT_DIR = str(Path.home() / "patrol_bags")
@@ -72,20 +78,19 @@ def _launch_recorder(context: LaunchContext) -> list[ExecuteProcess | RegisterEv
     argv = build_record_argv(
         output_dir=output_dir, bag_basename=basename, topics=topics, regexes=regexes
     )
+    run = RecordingRun(
+        mission_id=mission_id,
+        bag_filename=f"{basename}.mcap",
+        started=started,
+        mission_config_ref=mission_config_ref,
+    )
 
     get_logger("patrol_record").info(f"recording bag {basename}.mcap into {output_dir}")
     recorder = ExecuteProcess(cmd=argv, name="patrol_bag_record", output="screen")
 
     def _write_sidecar_on_exit(_event: object, _context: LaunchContext) -> None:
         """OnProcessExit callback: finalize the JSON sidecar once the recorder has stopped."""
-        sidecar = build_sidecar(
-            mission_id=mission_id,
-            bag_filename=f"{basename}.mcap",
-            started=started,
-            ended=datetime.now(UTC),
-            recorded_topics=topics + regexes,
-            mission_config_ref=mission_config_ref,
-        )
+        sidecar = build_sidecar(run, datetime.now(UTC), topics + regexes)
         sidecar_path = output_dir / f"{basename}.mcap.meta.json"
         write_sidecar(sidecar_path, sidecar)
         get_logger("patrol_record").info(f"wrote bag sidecar {sidecar_path}")
