@@ -156,71 +156,79 @@ def _maybe_record(context: LaunchContext) -> list[IncludeLaunchDescription]:
     ]
 
 
+def _declare_arguments() -> list[DeclareLaunchArgument]:
+    """The launch's CLI surface, split out so ``generate_launch_description`` stays a short assembler."""
+    return [
+        DeclareLaunchArgument(
+            "record",
+            default_value="true",
+            description="include 05's recorder (patrol_logging) so every mission run produces "
+            "one MCAP bag (M7 discipline); resilient — skips with a warning if patrol_logging "
+            "is not built. Pass record:=false to fly without recording",
+        ),
+        DeclareLaunchArgument(
+            "run_id",
+            default_value="",
+            description="shared correlation id forwarded to BOTH 04 (capture run dir) and 05 "
+            "(bag mission-id segment) so captures correlate to their bag (F-01); empty -> one "
+            "is minted here (UTC token) in _resolve_run_id",
+        ),
+        DeclareLaunchArgument(
+            "checkpoints_yaml",
+            default_value="",
+            description="absolute path to 03's checkpoint-positions YAML (OQ-2); required when "
+            "the mission uses checkpoint_id waypoints (no CWD-relative default)",
+        ),
+        DeclareLaunchArgument(
+            "perception",
+            default_value="true",
+            description="include 04's perception capture chain (patrol_perception.launch.py) "
+            "if installed; skipped with a warning when the package/apriltag deps are absent",
+        ),
+        DeclareLaunchArgument(
+            "output_root",
+            default_value="",
+            description="root dir for 04's on-disk captures (<output_root>/<run_id>/); set it to "
+            "05's bag/run dir to align artifacts (OQ-4), empty -> the node's CWD 'captures' default",
+        ),
+        DeclareLaunchArgument(
+            "max_detection_age_s",
+            default_value="1.0",
+            description="ADR-B freshness window for /tag_detections (s); forwarded to perception",
+        ),
+        DeclareLaunchArgument(
+            "max_frame_age_s",
+            default_value="0.5",
+            description="ADR-B freshness window for the camera frame (s); forwarded to perception",
+        ),
+        DeclareLaunchArgument(
+            "max_pose_age_s",
+            default_value="1.0",
+            description="ADR-B freshness window for the /fmu/out pose (s); forwarded to perception",
+        ),
+    ]
+
+
 def generate_launch_description() -> LaunchDescription:
     mission_yaml = PathJoinSubstitution(
         [FindPackageShare("patrol_bringup"), "config", "patrol_mission.yaml"]
     )
+    mission_node = Node(
+        package="patrol_mission",
+        executable="patrol_mission",
+        name="patrol_mission",
+        output="screen",
+        parameters=[
+            {
+                "mission_yaml": mission_yaml,
+                "checkpoints_yaml": LaunchConfiguration("checkpoints_yaml"),
+            }
+        ],
+    )
     return LaunchDescription(
         [
-            DeclareLaunchArgument(
-                "record",
-                default_value="true",
-                description="include 05's recorder (patrol_logging) so every mission run produces "
-                "one MCAP bag (M7 discipline); resilient — skips with a warning if patrol_logging "
-                "is not built. Pass record:=false to fly without recording",
-            ),
-            DeclareLaunchArgument(
-                "run_id",
-                default_value="",
-                description="shared correlation id forwarded to BOTH 04 (capture run dir) and 05 "
-                "(bag mission-id segment) so captures correlate to their bag (F-01); empty -> one "
-                "is minted here (UTC token) in _resolve_run_id",
-            ),
-            DeclareLaunchArgument(
-                "checkpoints_yaml",
-                default_value="",
-                description="absolute path to 03's checkpoint-positions YAML (OQ-2); required when "
-                "the mission uses checkpoint_id waypoints (no CWD-relative default)",
-            ),
-            DeclareLaunchArgument(
-                "perception",
-                default_value="true",
-                description="include 04's perception capture chain (patrol_perception.launch.py) "
-                "if installed; skipped with a warning when the package/apriltag deps are absent",
-            ),
-            DeclareLaunchArgument(
-                "output_root",
-                default_value="",
-                description="root dir for 04's on-disk captures (<output_root>/<run_id>/); set it to "
-                "05's bag/run dir to align artifacts (OQ-4), empty -> the node's CWD 'captures' default",
-            ),
-            DeclareLaunchArgument(
-                "max_detection_age_s",
-                default_value="1.0",
-                description="ADR-B freshness window for /tag_detections (s); forwarded to perception",
-            ),
-            DeclareLaunchArgument(
-                "max_frame_age_s",
-                default_value="0.5",
-                description="ADR-B freshness window for the camera frame (s); forwarded to perception",
-            ),
-            DeclareLaunchArgument(
-                "max_pose_age_s",
-                default_value="1.0",
-                description="ADR-B freshness window for the /fmu/out pose (s); forwarded to perception",
-            ),
-            Node(
-                package="patrol_mission",
-                executable="patrol_mission",
-                name="patrol_mission",
-                output="screen",
-                parameters=[
-                    {
-                        "mission_yaml": mission_yaml,
-                        "checkpoints_yaml": LaunchConfiguration("checkpoints_yaml"),
-                    }
-                ],
-            ),
+            *_declare_arguments(),
+            mission_node,
             # Resolve the one shared run id BEFORE the two includes so both read the same value.
             OpaqueFunction(function=_resolve_run_id),
             OpaqueFunction(function=_maybe_perception),
