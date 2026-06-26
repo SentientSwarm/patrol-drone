@@ -117,21 +117,53 @@ def _tag_corners(tag: Vec3, size: float) -> list[Vec3]:
     return [(tx + dx, ty, tz + dz) for dx in (-h, h) for dz in (-h, h)]
 
 
-@pytest.mark.parametrize("cp", _CHECKPOINTS, ids=[c.checkpoint_id for c in _CHECKPOINTS])
-def test_tag_in_frame_at_resolved_hover_pose(cp):
-    tag: Vec3 = (cp.x, cp.y, cp.z)
+def _tag_angles_at_hover(tag: Vec3) -> tuple[float, list[tuple[float, float]]]:
+    """Project the tag center + four corners through the camera at the resolved hover pose.
+
+    Returns ``(center_el, [(az, el), ...])`` for the four readable-face corners — the azimuth/
+    elevation of each point relative to the camera boresight (radians). One projection used by both
+    the containment test (corners inside FOV) and the centering test (center near boresight), so the
+    geometry under test is composed once.
+    """
     hover, yaw = _approach_pose(tag, _STANDOFF_M)
     cam_pos = _camera_position(hover, yaw, _CAMERA.mount)
     forward, left, up = _camera_basis(yaw, _CAMERA.pitch)
 
-    for corner in _tag_corners(tag, tags.TAG_SIZE_M):
-        v = (corner[0] - cam_pos[0], corner[1] - cam_pos[1], corner[2] - cam_pos[2])
+    def _angles(point: Vec3) -> tuple[float, float, float]:
+        v = (point[0] - cam_pos[0], point[1] - cam_pos[1], point[2] - cam_pos[2])
         depth = _dot(v, forward)
+        return depth, math.atan2(_dot(v, left), depth), math.atan2(_dot(v, up), depth)
+
+    _, _, center_el = _angles(tag)
+    corners = []
+    for corner in _tag_corners(tag, tags.TAG_SIZE_M):
+        depth, az, el = _angles(corner)
         assert depth > _CAMERA.near  # in front of the camera, past the near clip
-        az = math.atan2(_dot(v, left), depth)
-        el = math.atan2(_dot(v, up), depth)
-        # Strict in-frame containment. Worst case is the top corners: el ~= 25 deg vs ~27.2 deg
-        # half-VFOV (the +20 deg mount pitch dominates the elevation, ~2 deg to spare). If a
-        # mount / FOV / stand-off change pushes a corner past an edge, this fails — the F-01 lock.
+        corners.append((az, el))
+    return center_el, corners
+
+
+@pytest.mark.parametrize("cp", _CHECKPOINTS, ids=[c.checkpoint_id for c in _CHECKPOINTS])
+def test_tag_in_frame_at_resolved_hover_pose(cp):
+    _, corners = _tag_angles_at_hover((cp.x, cp.y, cp.z))
+    for az, el in corners:
+        # Strict in-frame containment: every readable-face corner must fall inside the FOV. The
+        # centering test below is what guarantees apriltag can actually resolve the quad (a corner
+        # barely inside the edge is geometrically "in frame" but foreshortened past detection).
         assert abs(az) < _CAMERA.half_hfov
         assert abs(el) < _CAMERA.half_vfov
+
+
+@pytest.mark.parametrize("cp", _CHECKPOINTS, ids=[c.checkpoint_id for c in _CHECKPOINTS])
+def test_tag_centered_at_resolved_hover_pose(cp):
+    """The tag center must sit near the camera boresight, not jammed against a frame edge (ADR-0012).
+
+    The corners-in-frame test alone passed for a same-altitude hover whose camera (pitched ~20 deg
+    down) put the tag center ~20 deg up — 74% toward the top edge, top corners ~2 deg from the edge.
+    Geometrically "in frame," but in SITL apriltag never detected it at dwell (the tag was at the
+    extreme, foreshortened periphery), so every checkpoint capture was empty. The fix raises the
+    dwell altitude so the down-pitched boresight lands on the tag; this locks it: the center must be
+    within half the vertical half-FOV of boresight, which the old edge-jammed pose fails.
+    """
+    center_el, _ = _tag_angles_at_hover((cp.x, cp.y, cp.z))
+    assert abs(center_el) < _CAMERA.half_vfov / 2.0
