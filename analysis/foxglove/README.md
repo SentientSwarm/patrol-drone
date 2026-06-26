@@ -9,8 +9,9 @@ Foxglove check (DoD AC-6 / LR-6).
 
 - Foxglove Studio installed (desktop app) — see the pinned stack in
   [`stack-manifest.toml`](../../stack-manifest.toml) / `CLAUDE.md`.
-- A recorded bag from a patrol run: `patrol_<missionId>_<timestamp>.mcap` (default output dir
-  `~/patrol_bags/`). Produce one with:
+- A recorded bag from a patrol run: the bag directory `patrol_<missionId>_<timestamp>/` (default
+  output dir `~/patrol_bags/`), containing `metadata.yaml` + `patrol_<missionId>_<timestamp>_0.mcap`.
+  Produce one with:
 
   ```bash
   ros2 launch patrol_bringup mission_patrol.launch.py \
@@ -30,7 +31,10 @@ sibling `<bag>.meta.json` sidecar, so `ros2 bag info` gets two arguments and err
 ## Open the bag
 
 1. Launch Foxglove Studio.
-2. **Open local file…** → select the `.mcap` from `~/patrol_bags/` (Foxglove reads MCAP natively).
+2. **Open local file…** → open the `.mcap` **inside** the bag directory
+   (`~/patrol_bags/patrol_<missionId>_<timestamp>/patrol_<missionId>_<timestamp>_0.mcap`); Foxglove
+   reads MCAP natively. (rosbag2's `-o` makes a directory, not a top-level `.mcap` — see the `ros2 bag
+   info` note above.)
 3. **Layouts → Import from file…** → `analysis/foxglove/patrol_layout.json` (this directory).
 
 ## What should render (the LR-6 check)

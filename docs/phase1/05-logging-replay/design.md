@@ -276,7 +276,7 @@ Metadata sidecar (`<bag>.meta.json`, JSON per OQ-10):
 @dataclass
 class BagSidecar:
     mission_id: str            # correlates bag → mission config (LR-2)
-    bag_filename: str          # patrol_<missionId>_<timestamp>.mcap
+    bag_uri: str               # bag directory patrol_<missionId>_<timestamp> (rosbag2 -o URI; .mcap nested inside)
     started_utc: str           # ISO-8601
     ended_utc: str             # ISO-8601
     recorded_topics: list[str] # the topic set requested at record time
@@ -615,7 +615,7 @@ ONE full-patrol bag B = patrol_<id>_<ts>.mcap
 
 | Artifact | Change | Detail |
 |----------|--------|--------|
-| `<bag>.meta.json` | **New artifact** | JSON sidecar (OQ-10): `mission_id`, `bag_filename`, `started_utc`, `ended_utc`, `recorded_topics`, `mission_config_ref`. Realizes LR-2's per-bag metadata. |
+| `<bag>.meta.json` | **New artifact** | JSON sidecar (OQ-10): `mission_id`, `bag_uri`, `started_utc`, `ended_utc`, `recorded_topics`, `mission_config_ref`. Realizes LR-2's per-bag metadata. |
 
 No changes to any 01/02/04-owned message or topic (this docset only *records* them).
 

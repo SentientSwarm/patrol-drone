@@ -7,9 +7,9 @@ asks the core to build the ``ros2 bag record --storage mcap`` argv and the JSON 
 recorder as an ``ExecuteProcess`` (so the launch system SIGINT-finalizes the MCAP at shutdown — no
 manual stop), and writes ``<bag>.meta.json`` once the recorder exits.
 
-Exactly one bag, named ``patrol_<missionId>_<timestamp>.mcap``, lands in ``output_dir`` per run — no
-operator command beyond the launch (LR-1). The timestamp is captured once here so the bag name and
-the sidecar agree.
+Exactly one bag DIRECTORY, named ``patrol_<missionId>_<timestamp>/`` (rosbag2 ``-o`` URI; the ``.mcap``
+storage file is nested inside), lands in ``output_dir`` per run — no operator command beyond the launch
+(LR-1). The timestamp is captured once here so the bag name and the sidecar agree.
 
     ros2 launch patrol_logging record.launch.py
     ros2 launch patrol_logging record.launch.py mission_id:=alpha output_dir:=/data/patrol_bags
@@ -37,6 +37,7 @@ from patrol_logging.recorder import (
     bag_name,
     build_record_argv,
     build_sidecar,
+    recorder_finished_cleanly,
     write_sidecar,
 )
 
@@ -80,18 +81,29 @@ def _launch_recorder(context: LaunchContext) -> list[ExecuteProcess | RegisterEv
     )
     run = RecordingRun(
         mission_id=mission_id,
-        bag_filename=f"{basename}.mcap",
+        bag_uri=basename,
         started=started,
         mission_config_ref=mission_config_ref,
     )
 
-    get_logger("patrol_record").info(f"recording bag {basename}.mcap into {output_dir}")
+    get_logger("patrol_record").info(f"recording bag {basename}/ into {output_dir}")
     recorder = ExecuteProcess(cmd=argv, name="patrol_bag_record", output="screen")
 
-    def _write_sidecar_on_exit(_event: object, _context: LaunchContext) -> None:
-        """OnProcessExit callback: finalize the JSON sidecar once the recorder has stopped."""
+    def _write_sidecar_on_exit(event: object, _context: LaunchContext) -> None:
+        """OnProcessExit callback: write the JSON sidecar only when a real bag was produced (F-03).
+
+        A failed ``ros2 bag record`` (non-zero exit, or no finalized bag) must not leave a
+        success-looking sidecar — M8 treats "sidecar present" as "ingestable bag", so the absence of
+        a sidecar is itself the "don't ingest" signal (dumb-producer invariant, design §3.4).
+        """
+        if not recorder_finished_cleanly(event, output_dir / basename):
+            get_logger("patrol_record").error(
+                f"recorder exited without a complete bag at {output_dir / basename} — "
+                "skipping sidecar so M8 never ingests a failed/empty recording"
+            )
+            return
         sidecar = build_sidecar(run, datetime.now(UTC), topics + regexes)
-        sidecar_path = output_dir / f"{basename}.mcap.meta.json"
+        sidecar_path = output_dir / f"{basename}.meta.json"
         write_sidecar(sidecar_path, sidecar)
         get_logger("patrol_record").info(f"wrote bag sidecar {sidecar_path}")
 
@@ -108,7 +120,8 @@ def generate_launch_description() -> LaunchDescription:
                 "mission_id",
                 default_value="patrol",
                 description="mission identifier baked into the bag name "
-                "patrol_<missionId>_<timestamp>.mcap and the sidecar (correlates bag -> mission)",
+                "patrol_<missionId>_<timestamp> (a rosbag2 bag directory) and the sidecar "
+                "(correlates bag -> mission)",
             ),
             DeclareLaunchArgument(
                 "output_dir",

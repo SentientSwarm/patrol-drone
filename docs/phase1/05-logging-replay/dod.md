@@ -12,7 +12,7 @@ Deliver the logging-and-replay backbone so that every mission run — sim now, r
 
 ## 2. Scope
 **In scope:**
-- Python wrapper around `ros2 bag record` that the mission launch file invokes automatically, recording all relevant topics in MCAP format to a known output location, with a `patrol_<missionId>_<timestamp>.mcap` naming convention.
+- Python wrapper around `ros2 bag record` that the mission launch file invokes automatically, recording all relevant topics in MCAP format to a known output location, named `patrol_<missionId>_<timestamp>` (a rosbag2 bag directory; the `.mcap` storage file is nested inside it).
 - Topic selection sufficient for replay and inspection: `/fmu/out/*`, `/patrol/*` (mission + perception, including `/patrol/checkpoint_capture`), camera image topic, TF tree, mission state / current waypoint / abort signals.
 - Bag metadata sufficient to identify and replay a run (mission ID, timestamp, topic set; correlation with the mission config).
 - Upload daemon: watches the output directory and syncs new bags to the DGX automatically after mission end.
@@ -29,7 +29,7 @@ Deliver the logging-and-replay backbone so that every mission run — sim now, r
 
 ## 3. Capabilities (must-do — seeds the PRD's functional requirements)
 
-1. **(P1) Automatic per-run MCAP recording.** Each mission launch produces exactly one MCAP rosbag in a known output directory, recording the agreed topic set, named `patrol_<missionId>_<timestamp>.mcap`.
+1. **(P1) Automatic per-run MCAP recording.** Each mission launch produces exactly one MCAP rosbag in a known output directory, recording the agreed topic set, named `patrol_<missionId>_<timestamp>` (a rosbag2 bag directory; the `.mcap` storage file is nested inside it).
    *Customer scenario:* operator runs `mission_patrol.launch.py` and, without any extra command, gets a recorded bag for that flight. *Pain removed:* no manual `ros2 bag record` step that gets forgotten — "every mission run produces a bag, no exceptions. This is the discipline" (plan M7).
 
 2. **(P1) Bag identifiability.** `ros2 bag info <bag>` shows expected topics and message counts; the bag carries metadata sufficient to identify the mission and replay it.
@@ -63,7 +63,7 @@ Deliver the logging-and-replay backbone so that every mission run — sim now, r
 ## 5. Interfaces
 
 **Owns (contracts this docset defines that others depend on):**
-- Bag output contract: known output directory path + filename convention `patrol_<missionId>_<timestamp>.mcap`, MCAP storage format, and the recorded-topic set.
+- Bag output contract: known output directory path + bag-naming convention `patrol_<missionId>_<timestamp>` (a rosbag2 bag directory; the `.mcap` storage file is nested inside), MCAP storage format, and the recorded-topic set.
 - Recording entrypoint: the Python `ros2 bag record` wrapper invoked by the mission launch file (the launch file in 02 calls into this; the wrapper's invocation interface is owned here).
 - Metadata sidecar schema: the per-bag metadata fields used for identification/replay and consumed by manifest ingestion.
 - Upload daemon → DGX transfer contract (watched directory in, bag on DGX out).

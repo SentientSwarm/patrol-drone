@@ -77,6 +77,9 @@ def _perception_node() -> Node:
                 "checkpoint_config_path": LaunchConfiguration("checkpoint_config_path"),
                 "world_frame": LaunchConfiguration("world_frame"),
                 "output_root": LaunchConfiguration("output_root"),
+                # run_id: empty -> the node mints its own UTC token; mission_patrol forwards the same
+                # id it gives 05's recorder so captures and the bag correlate (F-01 / OQ-4).
+                "run_id": LaunchConfiguration("run_id"),
                 "max_detection_age_s": LaunchConfiguration("max_detection_age_s"),
                 "max_frame_age_s": LaunchConfiguration("max_frame_age_s"),
                 "max_pose_age_s": LaunchConfiguration("max_pose_age_s"),
@@ -104,6 +107,9 @@ def generate_launch_description() -> LaunchDescription:
             # output_root: where captures land (<output_root>/<run_id>/). Empty -> the node's CWD
             # "captures" default; mission_patrol forwards 05's bag/run dir here so 04↔05 align (OQ-4).
             DeclareLaunchArgument("output_root", default_value=""),
+            # run_id: the shared correlation id (<output_root>/<run_id>/ + the bag's mission-id
+            # segment). Empty -> the node mints its own; mission_patrol forwards one shared id (F-01).
+            DeclareLaunchArgument("run_id", default_value=""),
             # ADR-B freshness windows (seconds): defaults mirror perception_node's, set above the
             # slowest inter-message gap per stream so only a genuine stall trips the gate (§4.2.9).
             DeclareLaunchArgument("max_detection_age_s", default_value="1.0"),

@@ -144,7 +144,7 @@ def test_argv_requires_at_least_one_topic_or_regex(tmp_path) -> None:
 def _sample_sidecar() -> BagSidecar:
     run = RecordingRun(
         mission_id="alpha",
-        bag_filename=f"patrol_alpha_{_TS}.mcap",
+        bag_uri=f"patrol_alpha_{_TS}",  # bag DIRECTORY (rosbag2 -o URI), no .mcap extension
         started=_STARTED,
         mission_config_ref="/abs/patrol_mission.yaml",
     )
@@ -155,7 +155,7 @@ def _sample_sidecar() -> BagSidecar:
     ("field", "expected"),
     [
         ("mission_id", "alpha"),
-        ("bag_filename", f"patrol_alpha_{_TS}.mcap"),
+        ("bag_uri", f"patrol_alpha_{_TS}"),
         ("started_utc", "2026-06-26T14:05:09+00:00"),
         ("ended_utc", "2026-06-26T14:10:09+00:00"),
         ("mission_config_ref", "/abs/patrol_mission.yaml"),
@@ -165,19 +165,25 @@ def test_sidecar_carries_identity_fields(field: str, expected: str) -> None:
     assert getattr(_sample_sidecar(), field) == expected
 
 
+def test_sidecar_bag_uri_is_a_directory_not_an_mcap_file() -> None:
+    # rosbag2's -o makes a bag DIRECTORY; the .mcap storage file is nested inside (F-02). The sidecar
+    # records the directory URI, never a top-level .mcap that doesn't exist.
+    assert not _sample_sidecar().bag_uri.endswith(".mcap")
+
+
 def test_sidecar_records_the_requested_topic_set() -> None:
     assert _sample_sidecar().recorded_topics == _NAMED_TOPICS + _REGEXES
 
 
 def test_write_sidecar_round_trips_as_json(tmp_path) -> None:
     sidecar = _sample_sidecar()
-    path = tmp_path / f"patrol_alpha_{_TS}.mcap.meta.json"
+    path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
 
     write_sidecar(path, sidecar)
 
     loaded = json.loads(path.read_text())
     assert loaded["mission_id"] == "alpha"
-    assert loaded["bag_filename"] == f"patrol_alpha_{_TS}.mcap"
+    assert loaded["bag_uri"] == f"patrol_alpha_{_TS}"
     assert loaded["started_utc"] == "2026-06-26T14:05:09+00:00"
     assert loaded["recorded_topics"] == _NAMED_TOPICS + _REGEXES
     assert loaded["mission_config_ref"] == "/abs/patrol_mission.yaml"

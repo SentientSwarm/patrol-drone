@@ -36,6 +36,11 @@ _FS_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 _BAG_TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
 
+# The shared run-id format (matches patrol_perception's run-dir token) — a single UTC instant both
+# the perception run dir and the bag's mission-id segment are minted from so captures correlate to
+# their bag (OQ-4). Distinct from _BAG_TIMESTAMP_FMT, which is the bag *name*'s trailing timestamp.
+_RUN_ID_FMT = "%Y%m%dT%H%M%SZ"
+
 
 def _sanitize_mission_id(mission_id: str) -> str:
     """Collapse fs-hostile runs to a single '_' so the id is a safe single path segment."""
@@ -99,7 +104,7 @@ class BagSidecar:
     """
 
     mission_id: str
-    bag_filename: str  # patrol_<missionId>_<timestamp>.mcap
+    bag_uri: str  # bag directory patrol_<missionId>_<timestamp> (rosbag2 -o URI; .mcap nested)
     started_utc: str  # ISO-8601
     ended_utc: str  # ISO-8601
     recorded_topics: list[str]  # the named topics + regex patterns requested at record time
@@ -116,7 +121,7 @@ class RecordingRun:
     """
 
     mission_id: str
-    bag_filename: str  # patrol_<missionId>_<timestamp>.mcap
+    bag_uri: str  # bag directory patrol_<missionId>_<timestamp> (rosbag2 -o URI)
     started: datetime
     mission_config_ref: str  # path/ref to the mission YAML that produced this run
 
@@ -128,7 +133,7 @@ def build_sidecar(run: RecordingRun, ended: datetime, recorded_topics: list[str]
     """
     return BagSidecar(
         mission_id=run.mission_id,
-        bag_filename=run.bag_filename,
+        bag_uri=run.bag_uri,
         started_utc=run.started.isoformat(),
         ended_utc=ended.isoformat(),
         recorded_topics=list(recorded_topics),
@@ -139,3 +144,29 @@ def build_sidecar(run: RecordingRun, ended: datetime, recorded_topics: list[str]
 def write_sidecar(path: Path, sidecar: BagSidecar) -> None:
     """Write ``sidecar`` to ``path`` as pretty-printed JSON (stdlib ``json``, no YAML dep)."""
     path.write_text(json.dumps(asdict(sidecar), indent=2, sort_keys=True) + "\n")
+
+
+def resolve_run_id(configured: str, now: datetime) -> str:
+    """Return the shared run id: ``configured`` if non-empty, else a minted UTC token (F-01).
+
+    The composed ``mission_patrol.launch.py`` mints one id and forwards it to both the perception and
+    recorder includes so captures and the bag share an identity; a standalone leaf launch passes an
+    empty ``configured`` and falls back to its own ``now``-stamped token. The format matches
+    perception's run-dir name (``_RUN_ID_FMT``) so the bag's mission-id segment equals the run dir.
+    """
+    return configured or now.strftime(_RUN_ID_FMT)
+
+
+def recorder_finished_cleanly(event: object, bag_dir: Path) -> bool:
+    """True iff the recorder produced a real bag (F-03): clean exit AND ``bag_dir/metadata.yaml``.
+
+    ROS-free so the failure-path decision sits on the Layer-A tier. ``event`` is the launch
+    ``OnProcessExit`` event (a ``ProcessExited`` exposing ``returncode``); a non-zero code means
+    ``ros2 bag record`` failed, and a missing ``metadata.yaml`` means rosbag2 never finalized a bag —
+    either way the sidecar must not bless it. ``returncode is None`` (a non-``ProcessExited`` event
+    with no rc) is treated as inconclusive-but-present and still requires the bag artifact to exist.
+    """
+    returncode = getattr(event, "returncode", None)
+    if returncode not in (0, None):
+        return False
+    return (bag_dir / "metadata.yaml").exists()

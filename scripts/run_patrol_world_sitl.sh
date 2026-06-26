@@ -322,9 +322,14 @@ verify_camera() {
 }
 
 fly_and_verify_patrol() {
-  log "flying the M4 patrol over the stage (mission_patrol.launch.py, checkpoints=${CHECKPOINTS_YAML})"
-  ros2 launch patrol_bringup mission_patrol.launch.py record:=false \
-    "checkpoints_yaml:=${CHECKPOINTS_YAML}" >"${LOG_DIR}/node.log" 2>&1 &
+  # record:=true so 05's recorder produces the correlated MCAP bag end-to-end (M7 landed): one
+  # shared run_id tags both 04's captures and the bag, co-located under output_root (OQ-4). The
+  # recorder include is resilient — a missing/over-shadowed patrol_logging still flies the patrol.
+  local run_root="${PATROL_OUTPUT_ROOT:-${LOG_DIR}/run}"
+  log "flying the M4 patrol over the stage (mission_patrol.launch.py, checkpoints=${CHECKPOINTS_YAML}, record:=true, output_root=${run_root})"
+  ros2 launch patrol_bringup mission_patrol.launch.py record:=true \
+    "checkpoints_yaml:=${CHECKPOINTS_YAML}" \
+    "output_root:=${run_root}" >"${LOG_DIR}/node.log" 2>&1 &
   NODE_PID=$!
   log "verifying patrol acceptance (timeout ${VERIFY_TIMEOUT}s)..."
   python3 "${SCRIPT_DIR}/verify_patrol.py" --timeout "${VERIFY_TIMEOUT}"
