@@ -269,7 +269,7 @@ Get the schema right now and you won't be migrating bag formats two phases from 
 
 **Goal:** every mission run produces a rosbag containing all relevant topics, in MCAP format, with metadata sufficient to identify and replay it.
 
-Critical detail: use the MCAP storage plugin, not the default sqlite3. MCAP is the format Foxglove and modern tooling target; sqlite is legacy. Install `ros-humble-rosbag2-storage-mcap`.
+Critical detail: use the MCAP storage plugin, not the default sqlite3. MCAP is the format Foxglove and modern tooling target; sqlite is legacy. Install `ros-jazzy-rosbag2-storage-mcap` (this stack is Jazzy/24.04 — the "humble" package the original draft named is for the wrong distro; the canonical pin is in `stack-manifest.toml` / `CLAUDE.md`).
 
 Topics to record (start broad, prune later):
 - All `/fmu/out/*` PX4 telemetry topics

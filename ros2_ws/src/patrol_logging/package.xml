@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>patrol_logging</name>
+  <version>0.1.0</version>
+  <description>
+    Logging &amp; replay recording for the patrol-drone stack (docset 05-logging-replay).
+    M7 owns the record side: a ROS-free recorder core (bag naming + `ros2 bag record` argv
+    construction + the JSON metadata sidecar) and an includable record.launch.py that 02's
+    mission_patrol.launch.py attaches, so every mission run produces exactly one MCAP bag named
+    patrol_&lt;missionId&gt;_&lt;timestamp&gt;.mcap in a known output dir with no manual step. The recorder
+    runs `ros2 bag record --storage mcap` (NOT sqlite3) over a broad topic set
+    (config/recorded_topics.yaml). M8 adds the upload daemon / DGX ingest / replay regression test
+    (separate dirs); they are not part of this package.
+  </description>
+  <maintainer email="egemencankaya14@gmail.com">Egemen Cankaya</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- record.launch.py runs `ros2 bag record` (rosbag2) with the MCAP storage plugin. -->
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2_storage_mcap</exec_depend>
+  <!-- launch parses config/recorded_topics.yaml at launch time (ROS env provides PyYAML). -->
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -9,14 +9,14 @@ differently depending on where the launch ran from (Hermes Medium). The shipped 
 uses checkpoint_id waypoints, so an absolute ``checkpoints_yaml:=`` is required (the UAT runner
 ``scripts/run_sitl_mission.sh --patrol`` passes it for you).
 
-The recorder include is **resilient**: 05 (``patrol_logging``) is a later docset and may be absent.
-``record`` defaults to ``false`` until 05 lands in-tree, so the launch never auto-includes a package
-that merely happens to be named ``patrol_logging`` on the path (Hermes Medium). Pass ``record:=true``
-to attach it once 05 is installed — when present it auto-attaches, when absent the include is skipped
-with a warning rather than failing the launch (design §4.4.5: "recorder absent -> mission flies").
+The recorder include is **resilient**: now that 05 (``patrol_logging``) has landed, ``record``
+defaults to ``true`` so every mission run produces one MCAP bag (the M7 discipline). The include is
+still guarded — if ``patrol_logging`` is not built into the environment, the launch logs a warning
+and flies the patrol without recording rather than failing (design §4.4.5: "recorder absent ->
+mission flies"). Pass ``record:=false`` to fly without recording.
 
     ros2 launch patrol_bringup mission_patrol.launch.py checkpoints_yaml:=/abs/path/checkpoints.yaml
-    ros2 launch patrol_bringup mission_patrol.launch.py checkpoints_yaml:=... record:=true
+    ros2 launch patrol_bringup mission_patrol.launch.py checkpoints_yaml:=... record:=false
 """
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
@@ -86,7 +86,21 @@ def _maybe_record(context: LaunchContext) -> list[IncludeLaunchDescription]:
     record_launch = PathJoinSubstitution(
         [FindPackageShare(_RECORDER_PKG), "launch", "record.launch.py"]
     )
-    return [IncludeLaunchDescription(PythonLaunchDescriptionSource(record_launch))]
+    mission_yaml = PathJoinSubstitution(
+        [FindPackageShare("patrol_bringup"), "config", "patrol_mission.yaml"]
+    )
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(record_launch),
+            launch_arguments={
+                # correlate the bag with the mission that produced it (sidecar mission_config_ref)
+                "mission_config_ref": mission_yaml,
+                # co-locate the bag with 04's captures when output_root is set (OQ-4 alignment);
+                # empty -> the recorder's ~/patrol_bags default.
+                "output_dir": LaunchConfiguration("output_root"),
+            }.items(),
+        )
+    ]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -97,9 +111,10 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument(
                 "record",
-                default_value="false",
-                description="include 05's recorder (patrol_logging) if installed; defaults false "
-                "until 05 lands in-tree, pass record:=true to attach it",
+                default_value="true",
+                description="include 05's recorder (patrol_logging) so every mission run produces "
+                "one MCAP bag (M7 discipline); resilient — skips with a warning if patrol_logging "
+                "is not built. Pass record:=false to fly without recording",
             ),
             DeclareLaunchArgument(
                 "checkpoints_yaml",

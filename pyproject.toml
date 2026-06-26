@@ -122,7 +122,13 @@ addopts = "-ra --strict-markers --strict-config"
 # M3: makes `import patrol_mission` work for Layer-A unit tests. M5: + sim/tools for the
 # World Composer / AprilTag-model generator unit tests (`import compose_world`, `gen_apriltag_models`).
 # M6: + patrol_perception for the ROS-free capture core (`import patrol_perception.*`).
-pythonpath = ["ros2_ws/src/patrol_mission", "ros2_ws/src/patrol_perception", "sim/tools"]
+# M7: + patrol_logging for the ROS-free recorder core (`import patrol_logging.recorder`).
+pythonpath = [
+    "ros2_ws/src/patrol_mission",
+    "ros2_ws/src/patrol_perception",
+    "ros2_ws/src/patrol_logging",
+    "sim/tools",
+]
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
 ]
@@ -138,6 +144,10 @@ source = [
     # M6.B adds samplers.py + coordinator.py (rclpy-free logic, 100% unit-tested) and the rclpy
     # entrypoint perception_node.py (omitted below, mirroring patrol_mission/node.py).
     "ros2_ws/src/patrol_perception/patrol_perception",
+    # M7 (05-logging-replay): the ROS-free recorder core (recorder.py — bag naming + `ros2 bag
+    # record` argv construction + the JSON metadata sidecar). It imports no ROS at runtime; the
+    # rclpy/launch plumbing lives in record.launch.py (a launch file, not measured as a percentage).
+    "ros2_ws/src/patrol_logging/patrol_logging",
 ]
 # T1.7 coverage-source resolution (design §4.4.4): node.py is the rclpy plumbing layer
 # (imports rclpy/px4_msgs). Its glue (telemetry/EKF gating, the stale-telemetry pause, tick

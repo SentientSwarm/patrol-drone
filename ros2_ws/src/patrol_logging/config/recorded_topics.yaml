@@ -1,0 +1,37 @@
+# recorded_topics.yaml — the broad topic set M7 records into every mission bag.
+#
+# docset 05-logging-replay, design §4.2.2 / OQ-1 default ("start broad, prune later", plan M7).
+# Consumed by launch/record.launch.py, which parses this file and hands `topics` + `regexes` to the
+# ROS-free recorder core (patrol_logging.recorder.build_record_argv) — the core never reads YAML, so
+# the Layer-A unit suite stays dependency-free.
+#
+# Selection strategy (operator-confirmed 2026-06-26):
+#   * `regexes` — pattern matches via `ros2 bag record --regex <pattern>`. `/fmu/out/.*` records the
+#     whole PX4 telemetry surface and absorbs v1.17's `_v1` topic-version suffixes
+#     (vehicle_local_position_v1, battery_status_v1, vehicle_status_v1, …) without pinning exact
+#     names — robust to a topic-version bump or a newly-published /fmu/out topic.
+#   * `topics` — exact names recorded positionally. Kept explicit so the asserted M8 replay subset
+#     is stable and a reviewer can see precisely what mission/perception/imagery streams are in the
+#     bag.
+#
+# Imagery is recorded COMPRESSED (sensor_msgs/CompressedImage) to keep the bag reasonable
+# (design rabbit-hole: never record raw sensor_msgs/Image by value). /patrol/checkpoint_capture
+# carries `image_path` (a stored-path reference), not pixels (settled cross-docset contract, LR-7).
+
+regexes:
+  - "/fmu/out/.*" # all PX4 telemetry (absorbs _v1 versioning) — LR-2 telemetry/pose
+
+topics:
+  # Mission state surface (02-mission-control) — LR-2 mission state / waypoint / abort
+  - /patrol/mission_state # std_msgs/String
+  - /patrol/current_waypoint # std_msgs/Int32
+  - /patrol/dwell # std_msgs/Int32 (atomic per-checkpoint capture trigger)
+  - /patrol/abort # std_msgs/Bool
+  # Perception (04-perception) — LR-7: the CheckpointCapture stream + the detection feed
+  - /patrol/checkpoint_capture # patrol_interfaces/msg/CheckpointCapture (image_path, not pixels)
+  - /tag_detections # apriltag_msgs/msg/AprilTagDetectionArray
+  # Live imagery (03 camera, surfaced via 04) — compressed to keep bag size manageable
+  - /drone/camera/image_raw/compressed # sensor_msgs/CompressedImage
+  # Transform tree — 3D pose history in Foxglove (LR-6)
+  - /tf # tf2_msgs/TFMessage
+  - /tf_static # tf2_msgs/TFMessage
