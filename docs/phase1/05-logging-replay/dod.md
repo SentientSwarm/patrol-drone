@@ -12,7 +12,7 @@ Deliver the logging-and-replay backbone so that every mission run — sim now, r
 
 ## 2. Scope
 **In scope:**
-- Python wrapper around `ros2 bag record` that the mission launch file invokes automatically, recording all relevant topics in MCAP format to a known output location, with a `patrol_<missionId>_<timestamp>.mcap` naming convention.
+- Python wrapper around `ros2 bag record` that the mission launch file invokes automatically, recording all relevant topics in MCAP format to a known output location, named `patrol_<missionId>_<timestamp>` (a rosbag2 bag directory; the `.mcap` storage file is nested inside it).
 - Topic selection sufficient for replay and inspection: `/fmu/out/*`, `/patrol/*` (mission + perception, including `/patrol/checkpoint_capture`), camera image topic, TF tree, mission state / current waypoint / abort signals.
 - Bag metadata sufficient to identify and replay a run (mission ID, timestamp, topic set; correlation with the mission config).
 - Upload daemon: watches the output directory and syncs new bags to the DGX automatically after mission end.
@@ -29,7 +29,7 @@ Deliver the logging-and-replay backbone so that every mission run — sim now, r
 
 ## 3. Capabilities (must-do — seeds the PRD's functional requirements)
 
-1. **(P1) Automatic per-run MCAP recording.** Each mission launch produces exactly one MCAP rosbag in a known output directory, recording the agreed topic set, named `patrol_<missionId>_<timestamp>.mcap`.
+1. **(P1) Automatic per-run MCAP recording.** Each mission launch produces exactly one MCAP rosbag in a known output directory, recording the agreed topic set, named `patrol_<missionId>_<timestamp>` (a rosbag2 bag directory; the `.mcap` storage file is nested inside it).
    *Customer scenario:* operator runs `mission_patrol.launch.py` and, without any extra command, gets a recorded bag for that flight. *Pain removed:* no manual `ros2 bag record` step that gets forgotten — "every mission run produces a bag, no exceptions. This is the discipline" (plan M7).
 
 2. **(P1) Bag identifiability.** `ros2 bag info <bag>` shows expected topics and message counts; the bag carries metadata sufficient to identify the mission and replay it.
@@ -51,19 +51,19 @@ Deliver the logging-and-replay backbone so that every mission run — sim now, r
 
 ## 4. Acceptance criteria / Definition of Done (falsifiable — seeds the PRD's UACs)
 
-- [ ] **AC-1 (exit-checklist #5):** *Given* a mission run via `ros2 launch patrol_bringup mission_patrol.launch.py`, *when* it completes, *then* exactly one MCAP rosbag exists in the known output location, named `patrol_<missionId>_<timestamp>.mcap`. (M7 Exit)
-- [ ] **AC-2 (exit-checklist #5):** *Given* a produced bag, *when* `ros2 bag info <bag>` is run, *then* it lists the expected topics (`/fmu/out/*`, `/patrol/*`, camera image, TF, mission state/waypoint/abort) with non-zero message counts, and bag size is reasonable (under a few hundred MB for a 5-minute mission). (M7 Exit)
+- [x] **AC-1 (exit-checklist #5):** *Given* a mission run via `ros2 launch patrol_bringup mission_patrol.launch.py`, *when* it completes, *then* exactly one MCAP rosbag exists in the known output location, named `patrol_<missionId>_<timestamp>.mcap`. (M7 Exit) — **PASS** (SITL 2026-06-26: `patrol_patrol_20260626_080740`, MCAP; see [ADR-0011](../../decisions/0011-m7-recording-verified-checkpoint-capture-count-deferred.md)).
+- [x] **AC-2 (exit-checklist #5):** *Given* a produced bag, *when* `ros2 bag info <bag>` is run, *then* it lists the expected topics (`/fmu/out/*`, `/patrol/*`, camera image, TF, mission state/waypoint/abort) with non-zero message counts, and bag size is reasonable (under a few hundred MB for a 5-minute mission). (M7 Exit) — **PASS** (SITL 2026-06-26: 98.5 MiB / 142 s / 76,780 msgs; `/fmu/out/.*`, compressed camera, `/tf`, `/patrol/{mission_state,current_waypoint,dwell}` all non-zero; ADR-0011).
 - [ ] **AC-3 (exit-checklist #6):** *Given* a mission ends, *when* the upload daemon runs, *then* the bag is uploaded to the DGX automatically (target within 30s of mission end). (M8 Exit)
 - [ ] **AC-4 (exit-checklist #6):** *Given* a bag uploaded to the DGX, *when* ingestion indexes it, *then* it appears in the manifest with mission, time, duration, topics, and metadata. (M8 Exit)
 - [ ] **AC-5 (exit-checklist #7):** *Given* a checked-in reference bag, *when* the replay regression test runs in CI, *then* it replays the bag, subscribes to expected topics, and asserts they appear at expected rates — passing in CI. (M8 Exit)
 - [ ] **AC-6 (exit-checklist #8):** *Given* a recorded mission bag, *when* it is opened in Foxglove, *then* the camera feed, mission state, and 3D pose history render with expected panels populated. (M8 Exit)
-- [ ] **AC-7 (exit-checklist #11, consumer side):** *Given* the perception node publishes `patrol_interfaces/msg/CheckpointCapture` on `/patrol/checkpoint_capture`, *when* a mission runs, *then* the bag pipeline records that topic — demonstrating the message is consumed by the bag pipeline as well as the perception node. (M7 topic list; checklist #11)
+- [~] **AC-7 (exit-checklist #11, consumer side):** *Given* the perception node publishes `patrol_interfaces/msg/CheckpointCapture` on `/patrol/checkpoint_capture`, *when* a mission runs, *then* the bag pipeline records that topic — demonstrating the message is consumed by the bag pipeline as well as the perception node. (M7 topic list; checklist #11) — **Record side PASS** (SITL 2026-06-26: recorder subscribed to `/patrol/checkpoint_capture` with the correct compiled type; topic present in `ros2 bag info`). **Non-zero count deferred:** the bag's count is 0 because a full multi-checkpoint patrol hits [ADR-0010](../../decisions/0010-m6-capture-verified-dwell-stability-deferred.md)'s 02/M4 dwell-stability gap (the drone doesn't frame each tag in the trigger window) — not an M7 defect; confirmable >0 once that 02/M4 fix lands, with no M7 change. See [ADR-0011](../../decisions/0011-m7-recording-verified-checkpoint-capture-count-deferred.md).
 - [ ] **AC-8 (supports integrative #1):** *Given* a full multi-checkpoint patrol launched via `mission_patrol.launch.py`, *when* it completes, *then* the bag it produced is the artifact that satisfies AC-1 through AC-6 end-to-end (record → upload → manifest → replay → Foxglove). (M8 Exit; checklist #1 integrative)
 
 ## 5. Interfaces
 
 **Owns (contracts this docset defines that others depend on):**
-- Bag output contract: known output directory path + filename convention `patrol_<missionId>_<timestamp>.mcap`, MCAP storage format, and the recorded-topic set.
+- Bag output contract: known output directory path + bag-naming convention `patrol_<missionId>_<timestamp>` (a rosbag2 bag directory; the `.mcap` storage file is nested inside), MCAP storage format, and the recorded-topic set.
 - Recording entrypoint: the Python `ros2 bag record` wrapper invoked by the mission launch file (the launch file in 02 calls into this; the wrapper's invocation interface is owned here).
 - Metadata sidecar schema: the per-bag metadata fields used for identification/replay and consumed by manifest ingestion.
 - Upload daemon → DGX transfer contract (watched directory in, bag on DGX out).

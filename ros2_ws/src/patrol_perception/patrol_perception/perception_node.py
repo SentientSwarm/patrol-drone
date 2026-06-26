@@ -130,8 +130,12 @@ class PerceptionNode(Node):
         world_frame = str(self.declare_parameter("world_frame", "patrol_world").value)
         # output_root defaults under a CWD-relative "captures" dir (05 may override to align bags);
         # run_id is a UTC timestamp so each patrol writes to its own <output_root>/<run_id>/ (§4.2.6).
+        # A launch-provided run_id (mission_patrol forwards the same id to 05's recorder) wins so
+        # captures and the bag share one identity (F-01 / OQ-4); empty -> this node mints its own.
         output_root = str(self.declare_parameter("output_root", "").value) or "captures"
-        run_id = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+        run_id = str(self.declare_parameter("run_id", "").value) or datetime.now(tz=UTC).strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
 
         # ADR-B freshness windows (seconds): a buffered detection/frame/pose older than its window is
         # treated as stale and skipped like an absent buffer (§4.4.5). Defaults are set above the

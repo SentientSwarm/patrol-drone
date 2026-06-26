@@ -1,0 +1,49 @@
+{
+  "configById": {
+    "Image!camera": {
+      "cameraState": {},
+      "imageMode": {
+        "imageTopic": "/drone/camera/image_raw/compressed"
+      },
+      "foxglovePanelTitle": "Camera"
+    },
+    "RawMessages!missionstate": {
+      "topicPath": "/patrol/mission_state.data",
+      "foxglovePanelTitle": "Mission state"
+    },
+    "RawMessages!checkpointcapture": {
+      "topicPath": "/patrol/checkpoint_capture",
+      "foxglovePanelTitle": "Checkpoint captures"
+    },
+    "3D!posehistory": {
+      "followTf": "base_link",
+      "scene": {},
+      "transforms": {},
+      "topics": {
+        "/fmu/out/vehicle_local_position": { "visible": true }
+      },
+      "foxglovePanelTitle": "3D pose history"
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": {
+    "speed": 1
+  },
+  "layout": {
+    "first": {
+      "first": "Image!camera",
+      "second": "3D!posehistory",
+      "direction": "row",
+      "splitPercentage": 50
+    },
+    "second": {
+      "first": "RawMessages!missionstate",
+      "second": "RawMessages!checkpointcapture",
+      "direction": "row",
+      "splitPercentage": 50
+    },
+    "direction": "column",
+    "splitPercentage": 55
+  }
+}
