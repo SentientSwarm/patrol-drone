@@ -23,7 +23,7 @@ jobs:
     container:
       image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       # Tripwire (Hermes Medium #2): this job's `skip-tests: 'true'` below is a build-only gate.
