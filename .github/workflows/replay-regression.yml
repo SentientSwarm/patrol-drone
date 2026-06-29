@@ -22,6 +22,11 @@ jobs:
   replay_regression:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # The setup-ros-docker image does NOT export ROS_DISTRO as a container env, so set it here. Kept
+    # in sync with stack-manifest.toml middleware.ros_distro (same pin ros-ci passes as
+    # target-ros2-distro); a drift would surface as an apt "unable to locate package" on the line below.
+    env:
+      ROS_DISTRO: jazzy
     # Same ROS toolchain image as ros-ci (ubuntu-noble = 24.04, Jazzy); it carries ros2 + rclpy, and
     # we add the MCAP storage plugin below so `ros2 bag play`/`info` can read the .mcap reference bag.
     container:

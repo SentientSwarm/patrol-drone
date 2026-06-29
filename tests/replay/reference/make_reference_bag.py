@@ -72,9 +72,18 @@ def _first_capture_stamp(source: str) -> int:
     )
 
 
+@dataclass(frozen=True)
+class TrimConfig:
+    """The trim knobs for a reference-bag slice (grouped so callers pass one config, not 3 args)."""
+
+    seconds: float = 20.0  # window length
+    camera_every: int = 5  # keep every Nth camera frame
+    lead: float = 8.0  # seconds before the first capture to start the window
+
+
 @dataclass
 class _Trim:
-    """The window + filter for one reference-bag slice (groups params to keep call sites flat)."""
+    """The resolved window + filter for one slice (per-message keep decision)."""
 
     kept: set[str]
     start_ns: int
@@ -102,19 +111,17 @@ def _copy_window(reader, writer, trim: _Trim) -> None:
             writer.write(topic, data, stamp)
 
 
-def make_reference_bag(
-    source: str, out: str, seconds: float, camera_every: int, lead: float = 8.0
-) -> None:
+def make_reference_bag(source: str, out: str, config: TrimConfig) -> None:
     """Write a trimmed slice of ``source`` to ``out`` (overwrites ``out`` if present).
 
-    The window is anchored ``lead`` seconds before the first checkpoint capture and spans
-    ``seconds`` total, so the reference bag is guaranteed to contain a capture (replay asserts > 0).
+    The window is anchored ``config.lead`` s before the first checkpoint capture and spans
+    ``config.seconds`` total, so the reference bag is guaranteed to contain a capture (replay > 0).
     """
     out_path = Path(out)
     if out_path.exists():
         shutil.rmtree(out_path)
 
-    start_ns = _first_capture_stamp(source) - int(lead * 1e9)
+    start_ns = _first_capture_stamp(source) - int(config.lead * 1e9)
 
     reader = _reader(source)
     kept_types = {
@@ -124,7 +131,9 @@ def make_reference_bag(
     for topic in kept_types.values():
         writer.create_topic(topic)
 
-    trim = _Trim(set(kept_types), start_ns, start_ns + int(seconds * 1e9), camera_every)
+    trim = _Trim(
+        set(kept_types), start_ns, start_ns + int(config.seconds * 1e9), config.camera_every
+    )
     _copy_window(reader, writer, trim)
     del writer  # flush/finalize the MCAP
 
@@ -137,7 +146,8 @@ def main() -> None:
     parser.add_argument("--camera-every", type=int, default=5, help="keep every Nth camera frame")
     parser.add_argument("--lead", type=float, default=8.0, help="seconds before first capture")
     args = parser.parse_args()
-    make_reference_bag(args.source, args.out, args.seconds, args.camera_every, args.lead)
+    config = TrimConfig(seconds=args.seconds, camera_every=args.camera_every, lead=args.lead)
+    make_reference_bag(args.source, args.out, config)
 
 
 if __name__ == "__main__":
