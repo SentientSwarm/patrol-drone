@@ -27,8 +27,11 @@ jobs:
     # target-ros2-distro); a drift would surface as an apt "unable to locate package" on the line below.
     env:
       ROS_DISTRO: jazzy
-    # Same ROS toolchain image as ros-ci (ubuntu-noble = 24.04, Jazzy); it carries ros2 + rclpy, and
-    # we add the MCAP storage plugin below so `ros2 bag play`/`info` can read the .mcap reference bag.
+    # Same ROS toolchain image as ros-ci (ubuntu-noble = 24.04, Jazzy). NOTE: this image ships only
+    # the ROS *tooling* (colcon/rosdep/vcs) + the packages.ros.org apt source — it does NOT carry a
+    # ROS distro (no /opt/ros, no rclpy, no ros2). ros-ci installs ROS via action-ros-ci; this lane
+    # instead apt-installs the focused runtime it needs below (rclpy + ros2bag + the MCAP plugin),
+    # since action-ros-ci is a colcon *build* action, not a "run pytest against a real bag" runner.
     container:
       image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
     steps:
@@ -60,20 +63,30 @@ jobs:
             echo "::notice::no replay test or reference bag yet — skipping replay regression"
           fi
 
-      # The MCAP storage plugin (the bag format is MCAP, not sqlite3 — plan M7) so ros2 bag can read it.
+      # Install the focused ROS runtime this lane needs (the base image has NO ROS distro — see the
+      # container note above). rclpy + std_msgs for the subscriber counter; ros2bag + rosbag2 for
+      # `ros2 bag play`/`info`; the MCAP storage plugin so they can read the .mcap reference bag
+      # (bag format is MCAP, not sqlite3 — plan M7); rsync for the stand-in test's RsyncSshTransport.
+      # This apt-installs ~90 MB from the packages.ros.org source already configured in the image.
       - if: steps.present.outputs.present == 'true'
-        name: Install MCAP storage plugin
+        name: Install the ROS runtime (rclpy + ros2bag + MCAP plugin) and rsync
         shell: bash
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-rosbag2-storage-mcap"
+          apt-get install -y --no-install-recommends \
+            "ros-${ROS_DISTRO}-rclpy" \
+            "ros-${ROS_DISTRO}-std-msgs" \
+            "ros-${ROS_DISTRO}-rosbag2" \
+            "ros-${ROS_DISTRO}-rosbag2-storage-mcap" \
+            rsync
           rm -rf /var/lib/apt/lists/*
 
       # Fail-loud ROS-env probe: import rclpy + std_msgs directly so an image-level ROS problem
       # surfaces clearly here, not as a cryptic "collected 0 items / 1 error" at pytest collection
       # (PR #16 / F-01: the lane's prior failure was an unresolved rclpy import dressed up as a
-      # pytest collection error). If this step fails, the manual `source setup.bash` + system python3
-      # approach is the wrong tool for this image — follow ros-ci.yml's action-ros-ci precedent (F-02).
+      # pytest collection error — root-caused to the base image carrying no ROS distro, now fixed by
+      # the install step above). If this step regresses, the ROS runtime apt-install above is the
+      # first place to look (a renamed/missing ros-jazzy-* package), before any source/PATH issue.
       - if: steps.present.outputs.present == 'true'
         name: Probe the ROS env (rclpy importable)
         shell: bash
