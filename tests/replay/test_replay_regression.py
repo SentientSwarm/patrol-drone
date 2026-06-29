@@ -32,7 +32,10 @@ pytestmark = pytest.mark.ros
 
 _REFERENCE_BAG = Path(__file__).parent / "reference" / "patrol_reference"
 _ASSERTIONS = Path(__file__).parent / "assertions.yaml"
-_PLAY_RATE = 5.0  # play the 20 s slice ~5x so the test stays well under the 90 s budget (OQ-6)
+# Play at real-time (rate 1.0) so wall-clock elapsed equals the bag's own ~20 s duration and the
+# observed rate (count / elapsed) is the true publish rate — NOT inflated by a playback speed-up.
+# The 20 s slice is already well under the 90 s replay budget (OQ-6), so no speed-up is needed.
+_PLAY_RATE = 1.0
 
 
 def _require_reference_bag() -> None:
