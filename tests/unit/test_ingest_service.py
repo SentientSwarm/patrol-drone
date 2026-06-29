@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 
 import pytest
-from ingest.ingest_service import BagFacts, IngestService
+from ingest.ingest_service import BagFacts, BagFactsReader, IngestService
 from ingest.manifest_store import ManifestStore
 
 
@@ -42,7 +42,7 @@ def _write_sidecar(path: Path, *, mission_id: str = "patrol") -> Path:
     return path
 
 
-def _fixed_facts(duration: float = 142.0) -> object:
+def _fixed_facts(duration: float = 142.0) -> BagFactsReader:
     """A bag-fact reader returning fixed DERIVED facts (duration + per-topic counts)."""
 
     def reader(_bag_path: Path) -> BagFacts:

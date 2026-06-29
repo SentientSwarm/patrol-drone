@@ -68,7 +68,9 @@ exclude = [
 ]
 # M3: so `import patrol_mission` resolves for mypy. M5: + sim/tools so the World Composer
 # (`import compose_world`, `import gen_apriltag_models`) resolves for scripts/ + tests/ that import it.
-mypy_path = ["ros2_ws/src/patrol_mission", "sim/tools"]
+# M8: + analysis & docker (the upload-daemon/ingest cores) and tests/replay (the ROS-free
+# `replay_assertions` comparator, which tests/unit imports) so all resolve for mypy.
+mypy_path = ["ros2_ws/src/patrol_mission", "sim/tools", "analysis", "docker", "tests/replay"]
 
 # Tighten the ROS-free mission core (highest bug risk).
 [[tool.mypy.overrides]]
