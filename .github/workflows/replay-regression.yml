@@ -78,3 +78,15 @@ jobs:
           # marker. tests/replay is excluded from the Layer-A run, so point pytest at it explicitly.
           PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests/replay/test_replay_regression.py \
             -o markers=ros -o "norecursedirs=" -p no:cacheprovider -ra
+
+      # The upload→ingest→manifest chain against a LOCAL stand-in target (OQ-7: no real DGX in CI).
+      # Lightweight (rsync + sqlite, no ROS topics) but rsync + ros2 are on PATH here, so it rides
+      # this lane rather than spinning a separate job.
+      - if: steps.present.outputs.present == 'true'
+        name: Run the upload→ingest→manifest stand-in integration test (LR-3/LR-4)
+        shell: bash
+        run: |
+          source /opt/ros/"${ROS_DISTRO}"/setup.bash
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest \
+            tests/integration/test_upload_ingest_standin.py \
+            -o markers=ros -o "norecursedirs=" -p no:cacheprovider -ra
