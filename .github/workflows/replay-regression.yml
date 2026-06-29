@@ -69,13 +69,16 @@ jobs:
           apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-rosbag2-storage-mcap"
           rm -rf /var/lib/apt/lists/*
 
-      # The image ships pytest 7.4 (apt), but pyproject.toml pins minversion 9.0. Upgrade the SYSTEM
-      # python's pytest (the one that sees ROS's rclpy/numpy) so the replay test runs under the
-      # pinned version. --break-system-packages: this throwaway CI container has no other consumer.
+      # The image ships pytest 7.4 (apt), but pyproject.toml pins minversion 9.0. Can't `pip -U` over
+      # the apt pytest/pluggy (Debian-managed, no RECORD to uninstall). Instead make a venv WITH
+      # system site-packages — it sees ROS's rclpy/numpy AND gets a fresh pytest 9. The test steps
+      # invoke /opt/replay-venv/bin/python explicitly.
       - if: steps.present.outputs.present == 'true'
-        name: Upgrade pytest to the pinned version (system python sees ROS deps)
+        name: Provision pytest at the pinned version (venv over system site-packages)
         shell: bash
-        run: python3 -m pip install --break-system-packages -U "pytest>=9,<10" pytest-cov
+        run: |
+          python3 -m venv --system-site-packages /opt/replay-venv
+          /opt/replay-venv/bin/pip install -U "pytest>=9,<10"
 
       # LFS-pointer tripwire: fail loudly here (not as a confusing test error) if the bag did not
       # materialize — i.e. the checkout's `lfs: true` silently failed. The reference bag is required.
@@ -99,7 +102,9 @@ jobs:
           # Plugin autoload off (the ROS launch_testing/pytest plugins pull deps not needed here and
           # break collection — see the repo's pytest-ROS-plugin-collision note); re-declare the `ros`
           # marker. tests/replay is excluded from the Layer-A run, so point pytest at it explicitly.
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests/replay/test_replay_regression.py \
+          # Use the venv python explicitly (pytest 9 + system rclpy/numpy) regardless of PATH order.
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /opt/replay-venv/bin/python -m pytest \
+            tests/replay/test_replay_regression.py \
             -o markers=ros -o "norecursedirs=" -p no:cacheprovider -ra
 
       # The upload→ingest→manifest chain against a LOCAL stand-in target (OQ-7: no real DGX in CI).
@@ -110,6 +115,6 @@ jobs:
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest \
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /opt/replay-venv/bin/python -m pytest \
             tests/integration/test_upload_ingest_standin.py \
             -o markers=ros -o "norecursedirs=" -p no:cacheprovider -ra
