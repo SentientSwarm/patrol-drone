@@ -6,5 +6,6 @@
 # whose LFS pointer fails to resolve makes the replay test fail loudly, not skip (design §4.4.5).
 #
 # Scope is intentionally narrow: only the reference bag under tests/replay/reference/, NOT every
-# .mcap (operator bags under ~/patrol_bags are never committed).
-tests/replay/reference/*.mcap filter=lfs diff=lfs merge=lfs -text
+# .mcap (operator bags under ~/patrol_bags are never committed). The `**` matches the bag's nested
+# `patrol_reference/<bag>_0.mcap` layout (rosbag2 writes the .mcap inside a bag directory).
+tests/replay/reference/**/*.mcap filter=lfs diff=lfs merge=lfs -text
