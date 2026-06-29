@@ -60,13 +60,15 @@ jobs:
             echo "::notice::no replay test or reference bag yet — skipping replay regression"
           fi
 
-      # The MCAP storage plugin (the bag format is MCAP, not sqlite3 — plan M7) so ros2 bag can read it.
+      # The MCAP storage plugin (the bag format is MCAP, not sqlite3 — plan M7) so ros2 bag can read
+      # it; plus python3-venv (the minimal image lacks ensurepip, needed for the pytest venv below).
       - if: steps.present.outputs.present == 'true'
-        name: Install MCAP storage plugin
+        name: Install MCAP storage plugin + python venv support
         shell: bash
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-rosbag2-storage-mcap"
+          apt-get install -y --no-install-recommends \
+            "ros-${ROS_DISTRO}-rosbag2-storage-mcap" python3-venv
           rm -rf /var/lib/apt/lists/*
 
       # The image ships pytest 7.4 (apt), but pyproject.toml pins minversion 9.0. Can't `pip -U` over
