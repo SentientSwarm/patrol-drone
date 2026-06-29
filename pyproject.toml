@@ -128,6 +128,11 @@ pythonpath = [
     "ros2_ws/src/patrol_perception",
     "ros2_ws/src/patrol_logging",
     "sim/tools",
+    # M8 (05-logging-replay): the ROS-free pipeline cores — the upload daemon (`upload_daemon.*`)
+    # and the DGX ingest/manifest (`ingest.*`). Both import no ROS at runtime (rsync/ssh/sqlite3
+    # stdlib); the `ros2 bag play/convert`/launch plumbing is the replay/integration tier.
+    "analysis",
+    "docker",
 ]
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
