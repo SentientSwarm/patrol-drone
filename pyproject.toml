@@ -133,6 +133,10 @@ pythonpath = [
     # stdlib); the `ros2 bag play/convert`/launch plumbing is the replay/integration tier.
     "analysis",
     "docker",
+    # M8: the ROS-free replay assertion comparator (replay_assertions.py) lives beside the replay
+    # test in tests/replay/ but is unit-tested from tests/unit/ — so it's importable here. The bag
+    # play + subscribe half (test_replay_regression.py) is the ROS lane, not collected by Layer-A.
+    "tests/replay",
 ]
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
