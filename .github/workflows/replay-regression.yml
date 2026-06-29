@@ -69,25 +69,17 @@ jobs:
           apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-rosbag2-storage-mcap"
           rm -rf /var/lib/apt/lists/*
 
-      # An isolated pytest config for this lane. We deliberately DON'T use the repo pyproject.toml: it
-      # pins `minversion=9.0`, but this ROS image ships the system pytest 7.4 that carries rclpy/numpy
-      # on its path — and pytest 7.4 runs these tests fine (minversion is just a guard). This config
-      # supplies only what the replay/stand-in tests need: the `ros` marker + the tests/replay
-      # pythonpath (for `import replay_assertions`). Used via `-c` so the pyproject is bypassed.
+      # Fail-loud ROS-env probe: import rclpy + std_msgs directly so an image-level ROS problem
+      # surfaces clearly here, not as a cryptic "collected 0 items / 1 error" at pytest collection
+      # (PR #16 / F-01: the lane's prior failure was an unresolved rclpy import dressed up as a
+      # pytest collection error). If this step fails, the manual `source setup.bash` + system python3
+      # approach is the wrong tool for this image — follow ros-ci.yml's action-ros-ci precedent (F-02).
       - if: steps.present.outputs.present == 'true'
-        name: Write the replay-lane pytest config
+        name: Probe the ROS env (rclpy importable)
         shell: bash
         run: |
-          {
-            echo "[pytest]"
-            echo "markers ="
-            echo "    ros: replay/stand-in test (needs a sourced ROS env)"
-            echo "pythonpath ="
-            echo "    tests/replay"
-            echo "    analysis"
-            echo "    docker"
-          } > /tmp/replay-pytest.ini
-          cat /tmp/replay-pytest.ini
+          source /opt/ros/"${ROS_DISTRO}"/setup.bash
+          python3 -c "import rclpy, std_msgs.msg; print('rclpy OK:', rclpy.__file__)"
 
       # LFS-pointer tripwire: fail loudly here (not as a confusing test error) if the bag did not
       # materialize — i.e. the checkout's `lfs: true` silently failed. The reference bag is required.
@@ -110,9 +102,11 @@ jobs:
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
           # System python3 (carries rclpy/numpy via the ROS env). Plugin autoload off (the ROS
           # launch_testing/pytest plugins pull deps not needed here and break collection — see the
-          # repo's pytest-ROS-plugin-collision note). `-c` uses the lane config (bypasses the
-          # pyproject minversion=9 gate; pytest 7.4 runs these fine).
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c /tmp/replay-pytest.ini \
+          # repo's pytest-ROS-plugin-collision note). `-c replay-lane.ini` uses the checked-in lane
+          # config at the repo root (bypasses the pyproject minversion=9 gate; pytest 7.4 runs these
+          # fine). It MUST be the repo-root file so `rootdir` is the repo and its relative `pythonpath`
+          # entries resolve — a /tmp config sets rootdir=/tmp and breaks them (PR #16 / F-01).
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c replay-lane.ini \
             tests/replay/test_replay_regression.py -p no:cacheprovider -ra
 
       # The upload→ingest→manifest chain against a LOCAL stand-in target (OQ-7: no real DGX in CI).
@@ -123,5 +117,5 @@ jobs:
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c /tmp/replay-pytest.ini \
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c replay-lane.ini \
             tests/integration/test_upload_ingest_standin.py -p no:cacheprovider -ra

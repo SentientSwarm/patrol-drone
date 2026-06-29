@@ -18,6 +18,7 @@ the guard actually guards — a reference bag missing an asserted topic must FAI
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -25,8 +26,24 @@ import pytest
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from replay_assertions import AssertionSpec, ObservedTopic, evaluate, load_specs
 from std_msgs.msg import Int32, String
+
+# Self-bootstrap the dirs this test imports first-party modules from, so the imports do not depend on
+# the lane's pytest `pythonpath` — the /tmp-config rootdir bug (PR #16 / F-01) broke exactly that
+# dependence. Mirrors tests/integration/test_upload_ingest_standin.py, which is immune for this reason.
+#   tests/replay (here) → replay_assertions ;  docker → ingest.bag_reader (the bag-info count source)
+_HERE = Path(__file__).resolve().parent
+for _p in (_HERE, _HERE.parents[1] / "docker"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from ingest.bag_reader import parse_bag_info  # noqa: E402  (after the sys.path bootstrap above)
+from replay_assertions import (  # noqa: E402  (after the sys.path bootstrap above)
+    AssertionSpec,
+    ObservedTopic,
+    evaluate,
+    load_specs,
+)
 
 pytestmark = pytest.mark.ros
 
@@ -65,42 +82,59 @@ class _CountingNode(Node):
         return _cb
 
 
-# The asserted topics we can subscribe to with std/known types (counting drives the comparator).
-# std_msgs cover the mission surface; the camera/fmu/checkpoint types are counted via the bag's own
-# message counts in the typed-count path below — kept to std_msgs here for a dependency-light counter.
-_COUNTABLE = {
+# std_msgs topics are counted by live subscription; the rest (camera/compressed, fmu pose,
+# checkpoint_capture) are counted from `ros2 bag info` so the gate covers ALL asserted topics
+# without importing their (non-std) message types into the subscriber.
+_SUBSCRIBED = {
     "/patrol/mission_state": String,
     "/patrol/current_waypoint": Int32,
 }
 
 
+def _bag_info_observed(bag: Path, topics: set[str]) -> list[ObservedTopic]:
+    """ObservedTopic for each of ``topics`` from `ros2 bag info` (count over the bag's duration)."""
+    info = subprocess.run(
+        ["ros2", "bag", "info", str(bag)], check=True, capture_output=True, text=True
+    )
+    facts = parse_bag_info(info.stdout)
+    return [ObservedTopic(t, facts.topic_counts.get(t, 0), facts.duration_s) for t in topics]
+
+
 def _play_and_count(bag: Path, topics: dict[str, type], window_s: float) -> list[ObservedTopic]:
     """Play ``bag`` and return per-topic ObservedTopic counts over the playback window."""
     rclpy.init()
+    node = _CountingNode(topics)
+    player = subprocess.Popen(["ros2", "bag", "play", "--rate", str(_PLAY_RATE), str(bag)])
     try:
-        node = _CountingNode(topics)
-        player = subprocess.Popen(
-            ["ros2", "bag", "play", "--rate", str(_PLAY_RATE), str(bag)],
-        )
         start = time.monotonic()
         while player.poll() is None and time.monotonic() - start < window_s:
             rclpy.spin_once(node, timeout_sec=0.1)
         player.wait(timeout=10)
         elapsed = time.monotonic() - start
-        observed = [ObservedTopic(t, node.counts[t], elapsed) for t in topics]
-        node.destroy_node()
-        return observed
+        return [ObservedTopic(t, node.counts[t], elapsed) for t in topics]
     finally:
+        _terminate(player)
+        node.destroy_node()
         rclpy.shutdown()
+
+
+def _terminate(player: subprocess.Popen) -> None:
+    """Best-effort: kill the player and reap it so no `ros2 bag play` child leaks (F-05)."""
+    if player.poll() is None:
+        player.kill()
+    player.wait(timeout=10)
 
 
 def test_replay_topics_present_and_rated() -> None:
     """TS-18/TS-20: GIVEN the reference bag (LFS-materialized), WHEN replayed, THEN every asserted
-    topic is present at its rate. _require_reference_bag covers TS-20 (LFS pointer → hard fail)."""
+    topic is present at its rate. std_msgs topics are counted live during playback; the rest are
+    counted from `ros2 bag info`. _require_reference_bag covers TS-20 (LFS pointer → hard fail)."""
     _require_reference_bag()
-    specs = [s for s in load_specs(_ASSERTIONS) if s.topic in _COUNTABLE]
+    specs = load_specs(_ASSERTIONS)
+    info_topics = {s.topic for s in specs} - set(_SUBSCRIBED)
 
-    observed = _play_and_count(_REFERENCE_BAG, _COUNTABLE, window_s=80.0)
+    observed = _play_and_count(_REFERENCE_BAG, _SUBSCRIBED, window_s=80.0)
+    observed += _bag_info_observed(_REFERENCE_BAG, info_topics)
 
     result = evaluate(specs, observed)
     assert result.passed, result.failures
