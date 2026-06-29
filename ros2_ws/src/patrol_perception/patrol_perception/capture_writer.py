@@ -27,8 +27,24 @@ class CaptureWriter:
     """Persists a CaptureRecord's image + sidecar to ``<output_root>/<run_id>/`` (PCAP-5)."""
 
     def __init__(self, output_root: str, run_id: str) -> None:
+        # Defense-in-depth (SWM-83): run_id is validated once upstream at recorder.resolve_run_id,
+        # but CaptureWriter is the actual path-join site, so reject a path-hostile token here too —
+        # a separator / `..` / absolute run_id would let <output_root>/<run_id> escape the root.
+        if (
+            not run_id
+            or run_id != run_id.strip()
+            or "/" in run_id
+            or "\\" in run_id
+            or run_id in (".", "..")
+        ):
+            raise ValueError(f"run_id must be a safe single path segment: {run_id!r}")
         self._run_dir = Path(output_root) / run_id
         self._index = 0
+
+    @property
+    def run_dir(self) -> Path:
+        """The run-scoped output directory (``<output_root>/<run_id>``)."""
+        return self._run_dir
 
     def write(self, rec: CaptureRecord, image_bytes: bytes) -> str:
         """Write ``NNN_<checkpoint_id>.{png,json}``; return the PNG path for ``rec.image_path``.

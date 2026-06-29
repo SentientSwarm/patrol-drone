@@ -49,6 +49,26 @@ def _sanitize_mission_id(mission_id: str) -> str:
     return _FS_SAFE.sub("_", mission_id.strip())
 
 
+def validate_run_id(run_id: str) -> str:
+    """Return ``run_id`` unchanged iff it is a safe single path segment; else raise (SWM-83).
+
+    The run_id is forwarded into the perception capture path (``<root>/<run_id>/...``) and the bag's
+    mission-id segment, so an operator-supplied token must not be able to escape the output root.
+    Rejects (rather than silently rewrites) anything with a path separator, a ``..`` component, an
+    absolute path, or that is empty/whitespace — a bad token is an operator error worth surfacing,
+    and rewriting it would break the bag↔capture correlation the shared id guarantees.
+    """
+    if not run_id or not run_id.strip():
+        raise ValueError("run_id must be a non-empty string")
+    if run_id != run_id.strip():
+        raise ValueError(f"run_id must not have leading/trailing whitespace: {run_id!r}")
+    if "/" in run_id or "\\" in run_id:
+        raise ValueError(f"run_id must be a single path segment (no separators): {run_id!r}")
+    if run_id in (".", "..") or run_id.startswith(("./", "../")):
+        raise ValueError(f"run_id must not be a relative-path component: {run_id!r}")
+    return run_id
+
+
 def bag_name(mission_id: str, started: datetime) -> str:
     """Return the bag basename ``patrol_<missionId>_<timestamp>`` (no extension) (DoD AC-1).
 
@@ -153,8 +173,13 @@ def resolve_run_id(configured: str, now: datetime) -> str:
     recorder includes so captures and the bag share an identity; a standalone leaf launch passes an
     empty ``configured`` and falls back to its own ``now``-stamped token. The format matches
     perception's run-dir name (``_RUN_ID_FMT``) so the bag's mission-id segment equals the run dir.
+
+    A non-empty ``configured`` token is operator-supplied, so it is validated here — the single
+    mint/forward point — before it flows to either consumer's path (SWM-83 path-hygiene).
     """
-    return configured or now.strftime(_RUN_ID_FMT)
+    if configured:
+        return validate_run_id(configured)
+    return now.strftime(_RUN_ID_FMT)
 
 
 def recorder_finished_cleanly(event: object, bag_dir: Path) -> bool:
