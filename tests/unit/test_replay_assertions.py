@@ -14,7 +14,9 @@ Covers:
 
 from __future__ import annotations
 
-from replay_assertions import AssertionSpec, ObservedTopic, evaluate
+from pathlib import Path
+
+from replay_assertions import AssertionSpec, ObservedTopic, evaluate, load_specs
 
 
 def _spec() -> list[AssertionSpec]:
@@ -96,3 +98,36 @@ def test_rate_at_band_edge_passes() -> None:
     result = evaluate(spec, observed)
 
     assert result.passed is True
+
+
+# load_specs parses the assertions.yaml subset into AssertionSpec objects (count-only + rated).
+def test_load_specs_from_yaml(tmp_path: Path) -> None:
+    yaml_text = (
+        "topics:\n"
+        "  - topic: /patrol/current_waypoint\n"
+        "    min_count: 1\n"
+        "  - topic: /patrol/mission_state\n"
+        "    min_count: 2\n"
+        "    expected_hz: 10.0\n"
+        "    tol: 0.4\n"
+    )
+    path = tmp_path / "assertions.yaml"
+    path.write_text(yaml_text)
+
+    specs = load_specs(path)
+
+    assert specs == [
+        AssertionSpec(topic="/patrol/current_waypoint", min_count=1),
+        AssertionSpec(topic="/patrol/mission_state", min_count=2, expected_hz=10.0, tol=0.4),
+    ]
+
+
+# The shipped assertions.yaml loads and lists the design §4.2.5 curated subset.
+def test_shipped_assertions_yaml_loads() -> None:
+    shipped = Path(__file__).resolve().parents[1] / "replay" / "assertions.yaml"
+    specs = load_specs(shipped)
+
+    topics = {s.topic for s in specs}
+    assert "/patrol/checkpoint_capture" in topics
+    assert "/drone/camera/image_raw/compressed" in topics
+    assert "/fmu/out/vehicle_local_position_v1" in topics

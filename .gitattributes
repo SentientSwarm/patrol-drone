@@ -1,0 +1,10 @@
+# Git LFS — the replay regression reference bag (docset 05-logging-replay, M8 / T8.7, SWM-79).
+#
+# The checked-in reference MCAP the replay test (tests/replay/test_replay_regression.py) plays is a
+# binary artifact tracked via Git LFS (design OQ-4) so the repo stays light and the bag's history is
+# pointer-only. CI must check out with `lfs: true` (the replay-regression workflow does) — a bag
+# whose LFS pointer fails to resolve makes the replay test fail loudly, not skip (design §4.4.5).
+#
+# Scope is intentionally narrow: only the reference bag under tests/replay/reference/, NOT every
+# .mcap (operator bags under ~/patrol_bags are never committed).
+tests/replay/reference/*.mcap filter=lfs diff=lfs merge=lfs -text

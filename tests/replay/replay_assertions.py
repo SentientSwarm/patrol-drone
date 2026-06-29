@@ -15,6 +15,9 @@ Two checks per asserted topic:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
 
 
 @dataclass(frozen=True)
@@ -71,3 +74,17 @@ def evaluate(specs: list[AssertionSpec], observed: list[ObservedTopic]) -> Repla
     by_topic = {o.topic: o for o in observed}
     failures = [msg for spec in specs if (msg := _check_topic(spec, by_topic)) is not None]
     return ReplayResult(passed=not failures, failures=failures)
+
+
+def load_specs(path: Path) -> list[AssertionSpec]:
+    """Load the curated assertion subset from an ``assertions.yaml`` (the ``topics:`` sequence)."""
+    doc = yaml.safe_load(Path(path).read_text())
+    return [
+        AssertionSpec(
+            topic=entry["topic"],
+            min_count=entry.get("min_count", 1),
+            expected_hz=entry.get("expected_hz"),
+            tol=entry.get("tol", 0.40),
+        )
+        for entry in doc["topics"]
+    ]

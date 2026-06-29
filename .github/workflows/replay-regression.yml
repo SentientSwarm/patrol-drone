@@ -1,0 +1,80 @@
+name: Replay regression
+# The replay regression gate (docset 05-logging-replay, M8 / LR-5, design §4.2.5/§4.4.2): play the
+# checked-in reference bag through `ros2 bag play`, count messages per topic, and assert the curated
+# subset appears at the expected rates. This is the cheaper-than-SITL regression lane — it plays a
+# fixed bag (not the simulator), so it is deterministic and runs per-PR (unlike the nightly SITL
+# tier). Budget ≤ 90 s for the replay itself (OQ-6); the job timeout covers checkout + ROS env.
+#
+# Required per-PR: a change that drops a recorded topic must be caught here before hardware. The
+# reference bag is Git LFS — checkout MUST set `lfs: true`, or the replay test fails loudly (it does
+# not skip; design §4.4.5 "LFS pointer unresolved → hard CI failure").
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: replay-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay_regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Same ROS toolchain image as ros-ci (ubuntu-noble = 24.04, Jazzy); it carries ros2 + rclpy, and
+    # we add the MCAP storage plugin below so `ros2 bag play`/`info` can read the .mcap reference bag.
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          lfs: true # materialize the reference bag (LFS) — without this the replay test hard-fails
+
+      # Bootstrap guard: the reference bag + replay test only exist once M8 lands them. Skip cleanly
+      # on a repo state without them so the check is GREEN until the artifacts arrive, then activates.
+      - id: present
+        shell: bash
+        run: |
+          if [ -f tests/replay/test_replay_regression.py ] \
+             && [ -n "$(find tests/replay/reference -name '*.mcap' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no replay test or reference bag yet — skipping replay regression"
+          fi
+
+      # The MCAP storage plugin (the bag format is MCAP, not sqlite3 — plan M7) so ros2 bag can read it.
+      - if: steps.present.outputs.present == 'true'
+        name: Install MCAP storage plugin
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-rosbag2-storage-mcap"
+          rm -rf /var/lib/apt/lists/*
+
+      # LFS-pointer tripwire: fail loudly here (not as a confusing test error) if the bag did not
+      # materialize — i.e. the checkout's `lfs: true` silently failed. The reference bag is required.
+      - if: steps.present.outputs.present == 'true'
+        name: Verify the reference bag materialized (LFS)
+        shell: bash
+        run: |
+          bag="$(find tests/replay/reference -name '*.mcap' | head -n1)"
+          size="$(stat -c%s "$bag")"
+          if [ "$size" -lt 1024 ]; then
+            echo "::error::reference bag $bag is $size bytes — an unresolved Git LFS pointer. Checkout needs lfs:true."
+            exit 1
+          fi
+          echo "reference bag OK: $bag ($size bytes)"
+
+      - if: steps.present.outputs.present == 'true'
+        name: Run the replay regression test (LR-5; ≤90 s replay budget)
+        shell: bash
+        run: |
+          source /opt/ros/"${ROS_DISTRO}"/setup.bash
+          # Plugin autoload off (the ROS launch_testing/pytest plugins pull deps not needed here and
+          # break collection — see the repo's pytest-ROS-plugin-collision note); re-declare the `ros`
+          # marker. tests/replay is excluded from the Layer-A run, so point pytest at it explicitly.
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests/replay/test_replay_regression.py \
+            -o markers=ros -o "norecursedirs=" -p no:cacheprovider -ra
