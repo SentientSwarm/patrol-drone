@@ -27,9 +27,10 @@ def _row(
     *,
     mission: str = "patrol",
     duration: float = 142.0,
-    recorded_utc: str = "2026-06-26T08:07:40+00:00",
-    ingested_utc: str = "2026-06-26T09:00:00+00:00",
+    times: tuple[str, str] = ("2026-06-26T08:07:40+00:00", "2026-06-26T09:00:00+00:00"),
 ) -> ManifestRow:
+    """Build a ManifestRow; ``times`` is the (recorded_utc, ingested_utc) pair."""
+    recorded_utc, ingested_utc = times
     return ManifestRow(
         bag_id=bag_id,
         mission_id=mission,
@@ -90,20 +91,8 @@ def test_query_recent_orders_and_limits(tmp_path: Path) -> None:
 def test_recently_recorded_orders_by_record_time_not_ingest_time(tmp_path: Path) -> None:
     store = ManifestStore(tmp_path / "manifest.db")
     # "old" was flown first (earlier recorded_utc) but ingested last (later ingested_utc).
-    store.upsert(
-        _row(
-            "old.mcap",
-            recorded_utc="2026-06-20T10:00:00+00:00",
-            ingested_utc="2026-06-26T09:05:00+00:00",
-        )
-    )
-    store.upsert(
-        _row(
-            "new.mcap",
-            recorded_utc="2026-06-25T10:00:00+00:00",
-            ingested_utc="2026-06-26T09:00:00+00:00",
-        )
-    )
+    store.upsert(_row("old.mcap", times=("2026-06-20T10:00:00+00:00", "2026-06-26T09:05:00+00:00")))
+    store.upsert(_row("new.mcap", times=("2026-06-25T10:00:00+00:00", "2026-06-26T09:00:00+00:00")))
 
     by_recorded = [r.bag_id for r in store.query_recently_recorded(10)]
     by_ingested = [r.bag_id for r in store.query_recent(10)]
