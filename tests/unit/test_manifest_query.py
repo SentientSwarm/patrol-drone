@@ -20,6 +20,18 @@ from ingest.manifest_query import render_rows, run
 from ingest.manifest_store import ManifestRow, ManifestStore
 
 
+def _row(bag_id: str, *, recorded_utc: str, ingested_utc: str) -> ManifestRow:
+    return ManifestRow(
+        bag_id=bag_id,
+        mission_id="patrol",
+        recorded_utc=recorded_utc,
+        duration_s=10.0,
+        topics_json='{"/patrol/mission_state": 1}',
+        metadata_json="{}",
+        ingested_utc=ingested_utc,
+    )
+
+
 def _seed(store: ManifestStore) -> None:
     store.upsert(
         ManifestRow(
@@ -58,6 +70,34 @@ def test_recent_lists_rows(tmp_path: Path, capsys) -> None:
     assert "survey_b_20260626_090000.mcap" in out
     assert "patrol" in out
     assert "142" in out  # duration surfaced
+
+
+# F-03: --recent orders by RECORD (flown) time, not ingest time, so a rebuild can't float old bags.
+# Seed two rows whose record order is the reverse of their ingest order, then assert the operator
+# output lists the most-recently-FLOWN bag first.
+def test_recent_orders_by_record_time(tmp_path: Path, capsys) -> None:
+    store = ManifestStore(tmp_path / "m.db")
+    store.upsert(
+        _row(
+            "flown_first.mcap",
+            recorded_utc="2026-06-20T10:00:00+00:00",
+            ingested_utc="2026-06-26T09:05:00+00:00",
+        )  # flown first, ingested last
+    )
+    store.upsert(
+        _row(
+            "flown_last.mcap",
+            recorded_utc="2026-06-25T10:00:00+00:00",
+            ingested_utc="2026-06-26T09:00:00+00:00",
+        )  # flown last, ingested first
+    )
+
+    rc = run(["--recent", "5"], store=store)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    # The most-recently-flown bag is printed before the older one.
+    assert out.index("flown_last.mcap") < out.index("flown_first.mcap")
 
 
 # TS-13: --mission <id> filters to one mission's bags.

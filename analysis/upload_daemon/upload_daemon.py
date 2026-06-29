@@ -20,13 +20,34 @@ from upload_daemon.transport import Transport
 
 
 def sidecar_path_for(bag_path: Path) -> Path:
-    """Return the sidecar path the recorder writes next to ``bag_path`` (``<bag>.meta.json``)."""
+    """Return the sidecar path the recorder writes beside the bag dir (``<bag>.meta.json``)."""
     return bag_path.with_name(bag_path.name + ".meta.json")
 
 
+def is_finalized_bag_dir(bag_path: Path) -> bool:
+    """True iff ``bag_path`` is a rosbag2 bag directory rosbag2 has finalized.
+
+    The M7 recorder writes each run as a directory ``<name>/`` (the ``ros2 bag record -o`` URI) with
+    the MCAP nested inside; rosbag2 drops ``metadata.yaml`` into it only on a clean finalize. So the
+    finalized-bag marker is the directory's ``metadata.yaml`` — not a flat ``<name>.mcap`` (which
+    never exists at the watch-dir top level). The same predicate is the ingest service's bag guard.
+    """
+    return (bag_path / "metadata.yaml").is_file()
+
+
+def iter_bag_dirs(watch_dir: Path) -> list[Path]:
+    """Return the candidate bag directories directly under ``watch_dir`` (sorted, deterministic).
+
+    rosbag2 writes each run as its own directory; the upload + ingest loops both poll for these.
+    Completeness/finalization is decided per-dir by :func:`is_complete` / :func:`is_finalized_bag_dir`,
+    not here — this only enumerates the candidates so both loops share one discovery rule.
+    """
+    return sorted(p for p in watch_dir.iterdir() if p.is_dir())
+
+
 def is_complete(bag_path: Path) -> bool:
-    """A bag is complete iff the finalized .mcap AND its sidecar both exist (the upload marker)."""
-    return bag_path.is_file() and sidecar_path_for(bag_path).is_file()
+    """A bag is complete iff it is a finalized bag dir AND its sidecar both exist (upload marker)."""
+    return is_finalized_bag_dir(bag_path) and sidecar_path_for(bag_path).is_file()
 
 
 class UploadDaemon:

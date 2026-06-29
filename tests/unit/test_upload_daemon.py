@@ -38,12 +38,21 @@ class _FakeTransport:
         return True
 
 
-def _make_bag(tmp_path: Path, *, with_sidecar: bool) -> Path:
-    """Create a bag .mcap (and optionally its sidecar) under tmp_path; return the bag path."""
-    bag = tmp_path / "patrol_x_20260629_120000.mcap"
-    bag.write_bytes(b"\x89MCAP0\r\n")  # a few bytes; content is irrelevant to the guard
+def _make_bag(tmp_path: Path, *, with_sidecar: bool, with_metadata: bool = True) -> Path:
+    """Create a rosbag2 bag directory under tmp_path; return the bag-directory path.
+
+    The recorder writes each run as a directory ``<name>/`` (the ``ros2 bag record -o`` URI) holding
+    a nested ``<name>_0.mcap`` and — only on a clean finalize — a ``metadata.yaml``. The sidecar is a
+    *sibling* of the directory: ``<name>.meta.json``. ``with_metadata=False`` models a recorder
+    killed before finalize (no ``metadata.yaml`` ⇒ not a complete bag).
+    """
+    bag = tmp_path / "patrol_x_20260629_120000"
+    bag.mkdir()
+    (bag / "patrol_x_20260629_120000_0.mcap").write_bytes(b"\x89MCAP0\r\n")
+    if with_metadata:
+        (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
     if with_sidecar:
-        (tmp_path / "patrol_x_20260629_120000.mcap.meta.json").write_text("{}")
+        (tmp_path / "patrol_x_20260629_120000.meta.json").write_text("{}")
     return bag
 
 
@@ -55,6 +64,17 @@ def _daemon(transport: _FakeTransport, *, target: str = "dgx:/data/bags/", **kwa
 def test_bag_without_sidecar_is_not_uploaded(tmp_path: Path) -> None:
     transport = _FakeTransport()
     bag = _make_bag(tmp_path, with_sidecar=False)
+
+    uploaded = _daemon(transport).on_bag_complete(bag)
+
+    assert uploaded is False
+    assert transport.sent == []
+
+
+# TS-3: a bag dir not yet finalized (no metadata.yaml — recorder killed pre-finalize) is NOT complete.
+def test_unfinalized_bag_dir_is_not_uploaded(tmp_path: Path) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=True, with_metadata=False)
 
     uploaded = _daemon(transport).on_bag_complete(bag)
 

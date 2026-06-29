@@ -13,7 +13,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import subprocess
 import time
 from pathlib import Path
 
@@ -25,9 +27,47 @@ logger = logging.getLogger("ingest")
 
 _POLL_INTERVAL_S = 5.0
 
+# The documented fail-loud set IngestService.index raises on a bad input. The watch loop catches
+# exactly these (not bare Exception) so one bad bag is skipped + retried later instead of crashing
+# the service, while a genuine programming bug still surfaces loudly.
+_INGEST_FAULTS = (
+    FileNotFoundError,  # bag missing / not a finalized dir
+    json.JSONDecodeError,  # malformed sidecar
+    KeyError,  # sidecar missing a required field (e.g. mission_id)
+    subprocess.CalledProcessError,  # `ros2 bag info` failed
+)
+
 
 def _sidecar_for(bag: Path) -> Path:
     return bag.with_name(bag.name + ".meta.json")
+
+
+def _iter_bag_dirs(watch_dir: Path) -> list[Path]:
+    """Candidate bag directories under ``watch_dir`` (sorted; empty if the dir doesn't exist yet)."""
+    if not watch_dir.is_dir():
+        return []
+    return sorted(p for p in watch_dir.iterdir() if p.is_dir())
+
+
+def _try_index(service: IngestService, bag: Path, sidecar: Path) -> bool:
+    """Index one bag; on a known ingest fault log at ERROR and return False (skip, retry later)."""
+    try:
+        service.index(bag, sidecar)
+    except _INGEST_FAULTS:
+        logger.exception("skipping un-indexable bag %s (will retry on a later poll)", bag.name)
+        return False
+    logger.info("indexed %s", bag.name)
+    return True
+
+
+def _drain_once(service: IngestService, watch_dir: Path, indexed: set[Path]) -> None:
+    """One discovery+index pass over ``watch_dir`` (mutates ``indexed`` with the freshly indexed)."""
+    for bag in _iter_bag_dirs(watch_dir):
+        sidecar = _sidecar_for(bag)
+        if bag in indexed or not sidecar.is_file():
+            continue
+        if _try_index(service, bag, sidecar):
+            indexed.add(bag)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -39,15 +79,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _watch_loop(service: IngestService, watch_dir: Path, poll_interval: float) -> None:
-    """Poll ``watch_dir``; index each bag once its sidecar is also present (idempotent re-index)."""
+    """Poll ``watch_dir``; index each finalized bag dir once its sidecar is present.
+
+    Fault-tolerant: a bag that fails to index (missing/corrupt input, malformed sidecar) is logged
+    and skipped, never added to ``indexed`` — so it retries on a later poll once corrected and one
+    bad bag can't starve the rest. A clean re-index of the same bag is idempotent (store-keyed).
+    """
     indexed: set[Path] = set()
     while True:
-        for bag in sorted(watch_dir.glob("*.mcap")):
-            if bag in indexed or not _sidecar_for(bag).is_file():
-                continue
-            service.index(bag, _sidecar_for(bag))
-            indexed.add(bag)
-            logger.info("indexed %s", bag.name)
+        _drain_once(service, watch_dir, indexed)
         time.sleep(poll_interval)
 
 

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from upload_daemon.transport import RsyncSshTransport, S3Transport, Transport
-from upload_daemon.upload_daemon import UploadDaemon, is_complete
+from upload_daemon.upload_daemon import UploadDaemon, is_complete, iter_bag_dirs
 
 logger = logging.getLogger("upload_daemon")
 
@@ -43,10 +43,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _watch_loop(daemon: UploadDaemon, watch_dir: Path, poll_interval: float) -> None:
-    """Poll ``watch_dir`` for newly-completed bags and upload each one exactly once."""
+    """Poll ``watch_dir`` for newly-completed bag dirs and upload each one exactly once."""
     uploaded: set[Path] = set()
     while True:
-        for bag in sorted(watch_dir.glob("*.mcap")):
+        for bag in iter_bag_dirs(watch_dir):
             if bag in uploaded or not is_complete(bag):
                 continue
             if daemon.on_bag_complete(bag):

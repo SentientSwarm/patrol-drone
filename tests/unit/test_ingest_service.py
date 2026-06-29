@@ -25,6 +25,19 @@ from ingest.ingest_service import BagFacts, BagFactsReader, IngestService
 from ingest.manifest_store import ManifestStore
 
 
+def _make_bag_dir(tmp_path: Path, name: str = "patrol_patrol_20260626_080740") -> Path:
+    """Create a finalized rosbag2 bag directory (``<name>/metadata.yaml`` + nested ``_0.mcap``).
+
+    rosbag2 writes each run as a directory finalized by ``metadata.yaml``; the ingest guard keys on
+    that marker. Returns the bag-directory path (the unit IngestService.index now takes).
+    """
+    bag = tmp_path / name
+    bag.mkdir()
+    (bag / f"{name}_0.mcap").write_bytes(b"\x89MCAP0\r\n")
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    return bag
+
+
 def _write_sidecar(path: Path, *, mission_id: str = "patrol") -> Path:
     """Write a sidecar in the CURRENT recorder schema (bag_uri/started_utc — Research F4)."""
     path.write_text(
@@ -56,8 +69,7 @@ def _fixed_facts(duration: float = 142.0) -> BagFactsReader:
 
 # TS-9: duration_s + topic counts come FROM THE BAG (the injected reader), not the sidecar.
 def test_index_derives_duration_and_topics_from_bag(tmp_path: Path) -> None:
-    bag = tmp_path / "patrol_patrol_20260626_080740.mcap"
-    bag.write_bytes(b"\x89MCAP0\r\n")
+    bag = _make_bag_dir(tmp_path)
     sidecar = _write_sidecar(tmp_path / (bag.name + ".meta.json"))
     store = ManifestStore(tmp_path / "m.db")
 
@@ -72,8 +84,7 @@ def test_index_derives_duration_and_topics_from_bag(tmp_path: Path) -> None:
 
 # TS-10: identity (mission_id, recorded_utc) + metadata come from the CURRENT sidecar schema.
 def test_index_reads_identity_from_current_sidecar_schema(tmp_path: Path) -> None:
-    bag = tmp_path / "patrol_patrol_20260626_080740.mcap"
-    bag.write_bytes(b"\x89MCAP0\r\n")
+    bag = _make_bag_dir(tmp_path)
     sidecar = _write_sidecar(tmp_path / (bag.name + ".meta.json"), mission_id="patrol")
     store = ManifestStore(tmp_path / "m.db")
 
@@ -88,8 +99,7 @@ def test_index_reads_identity_from_current_sidecar_schema(tmp_path: Path) -> Non
 
 # TS-9: re-indexing the same bag is idempotent end-to-end (one row, latest facts).
 def test_reindex_same_bag_is_idempotent(tmp_path: Path) -> None:
-    bag = tmp_path / "patrol_patrol_20260626_080740.mcap"
-    bag.write_bytes(b"\x89MCAP0\r\n")
+    bag = _make_bag_dir(tmp_path)
     sidecar = _write_sidecar(tmp_path / (bag.name + ".meta.json"))
     store = ManifestStore(tmp_path / "m.db")
 
@@ -103,8 +113,7 @@ def test_reindex_same_bag_is_idempotent(tmp_path: Path) -> None:
 
 # TS-11: an unparseable sidecar fails loudly (not a silent skip) — §4.4.5 guard.
 def test_index_raises_on_unparseable_sidecar(tmp_path: Path) -> None:
-    bag = tmp_path / "patrol_x.mcap"
-    bag.write_bytes(b"\x89MCAP0\r\n")
+    bag = _make_bag_dir(tmp_path, name="patrol_x")
     sidecar = tmp_path / (bag.name + ".meta.json")
     sidecar.write_text("{not json")
     store = ManifestStore(tmp_path / "m.db")
@@ -113,9 +122,22 @@ def test_index_raises_on_unparseable_sidecar(tmp_path: Path) -> None:
         IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
 
 
-# TS-11: a missing bag file fails loudly before any manifest write.
+# TS-11: a bag dir without metadata.yaml (not finalized / wrong path) fails loudly, indexes nothing.
+def test_index_raises_on_unfinalized_bag_dir(tmp_path: Path) -> None:
+    bag = tmp_path / "patrol_unfinalized"
+    bag.mkdir()  # exists, but no metadata.yaml — rosbag2 never finalized it
+    sidecar = _write_sidecar(tmp_path / (bag.name + ".meta.json"))
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(FileNotFoundError):
+        IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
+
+    assert store.query_recent(10) == []  # nothing indexed
+
+
+# TS-11: a wholly absent bag path also fails loudly before any manifest write.
 def test_index_raises_on_missing_bag(tmp_path: Path) -> None:
-    bag = tmp_path / "absent.mcap"  # never created
+    bag = tmp_path / "absent"  # never created
     sidecar = _write_sidecar(tmp_path / (bag.name + ".meta.json"))
     store = ManifestStore(tmp_path / "m.db")
 

@@ -76,10 +76,27 @@ class ManifestStore:
             )
 
     def query_recent(self, limit: int) -> list[ManifestRow]:
-        """Return the ``limit`` most-recently-ingested bags, newest first."""
+        """Return the ``limit`` most-recently-*ingested* bags, newest first (rebuild-order-stable)."""
+        return self._query_ordered("ingested_utc DESC", limit)
+
+    def query_recently_recorded(self, limit: int) -> list[ManifestRow]:
+        """Return the ``limit`` most-recently-*recorded* (flown) bags, newest first.
+
+        Orders by ``recorded_utc`` (the mission's start time from the sidecar) with ``ingested_utc``
+        as a tiebreaker, so the operator ``--recent`` view tracks "recently flown" and is stable
+        across a manifest rebuild (re-ingesting old bags does not float them to the top).
+        """
+        return self._query_ordered("recorded_utc DESC, ingested_utc DESC", limit)
+
+    def _query_ordered(self, order_by: str, limit: int) -> list[ManifestRow]:
+        """Run the ``SELECT * ... ORDER BY <order_by> LIMIT ?`` shared by the recent queries.
+
+        ``order_by`` is a fixed internal literal (never operator input), so interpolating it here is
+        safe; ``limit`` stays a bound ``?`` parameter.
+        """
         with self._connect() as conn:
             cursor = conn.execute(
-                "SELECT * FROM bag_manifest ORDER BY ingested_utc DESC LIMIT ?",
+                f"SELECT * FROM bag_manifest ORDER BY {order_by} LIMIT ?",
                 (limit,),
             )
             return [self._to_row(r) for r in cursor.fetchall()]

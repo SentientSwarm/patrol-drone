@@ -41,14 +41,14 @@ class IngestService:
         self._bag_facts = bag_facts
 
     def index(self, bag_path: Path, sidecar_path: Path) -> None:
-        """Index ``bag_path`` using ``sidecar_path`` for identity; derive facts from the bag.
+        """Index ``bag_path`` (a finalized rosbag2 bag dir) using ``sidecar_path`` for identity.
 
-        Guards: the bag must exist/be readable and the sidecar must parse as JSON — both fail loudly
-        (FileNotFoundError / JSONDecodeError) before any manifest write, so a bad input is never
-        silently half-indexed (§4.4.5).
+        Guards: the bag must be a finalized bag directory (``metadata.yaml`` present) and the sidecar
+        must parse as JSON — both fail loudly (FileNotFoundError / JSONDecodeError) before any
+        manifest write, so a bad input is never silently half-indexed (§4.4.5).
         """
-        if not bag_path.is_file():
-            raise FileNotFoundError(f"bag not found: {bag_path}")
+        if not (bag_path / "metadata.yaml").is_file():
+            raise FileNotFoundError(f"not a finalized bag dir (no metadata.yaml): {bag_path}")
         sidecar = json.loads(sidecar_path.read_text())
 
         facts = self._bag_facts(bag_path)  # DERIVED from the bag — the trusted topic/duration truth

@@ -52,7 +52,7 @@ def run(argv: list[str] | None = None, *, store: ManifestStore) -> int:
     if args.mission is not None:
         rows = store.query_by_mission(args.mission)
     else:
-        rows = store.query_recent(args.recent if args.recent is not None else 10)
+        rows = store.query_recently_recorded(args.recent if args.recent is not None else 10)
 
     lines = render_rows(rows)
     if not lines:
