@@ -60,27 +60,34 @@ jobs:
             echo "::notice::no replay test or reference bag yet — skipping replay regression"
           fi
 
-      # The MCAP storage plugin (the bag format is MCAP, not sqlite3 — plan M7) so ros2 bag can read
-      # it; plus python3-venv (the minimal image lacks ensurepip, needed for the pytest venv below).
+      # The MCAP storage plugin (the bag format is MCAP, not sqlite3 — plan M7) so ros2 bag can read it.
       - if: steps.present.outputs.present == 'true'
-        name: Install MCAP storage plugin + python venv support
+        name: Install MCAP storage plugin
         shell: bash
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends \
-            "ros-${ROS_DISTRO}-rosbag2-storage-mcap" python3-venv
+          apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-rosbag2-storage-mcap"
           rm -rf /var/lib/apt/lists/*
 
-      # The image ships pytest 7.4 (apt), but pyproject.toml pins minversion 9.0. Can't `pip -U` over
-      # the apt pytest/pluggy (Debian-managed, no RECORD to uninstall). Instead make a venv WITH
-      # system site-packages — it sees ROS's rclpy/numpy AND gets a fresh pytest 9. The test steps
-      # invoke /opt/replay-venv/bin/python explicitly.
+      # An isolated pytest config for this lane. We deliberately DON'T use the repo pyproject.toml: it
+      # pins `minversion=9.0`, but this ROS image ships the system pytest 7.4 that carries rclpy/numpy
+      # on its path — and pytest 7.4 runs these tests fine (minversion is just a guard). This config
+      # supplies only what the replay/stand-in tests need: the `ros` marker + the tests/replay
+      # pythonpath (for `import replay_assertions`). Used via `-c` so the pyproject is bypassed.
       - if: steps.present.outputs.present == 'true'
-        name: Provision pytest at the pinned version (venv over system site-packages)
+        name: Write the replay-lane pytest config
         shell: bash
         run: |
-          python3 -m venv --system-site-packages /opt/replay-venv
-          /opt/replay-venv/bin/pip install -U "pytest>=9,<10"
+          {
+            echo "[pytest]"
+            echo "markers ="
+            echo "    ros: replay/stand-in test (needs a sourced ROS env)"
+            echo "pythonpath ="
+            echo "    tests/replay"
+            echo "    analysis"
+            echo "    docker"
+          } > /tmp/replay-pytest.ini
+          cat /tmp/replay-pytest.ini
 
       # LFS-pointer tripwire: fail loudly here (not as a confusing test error) if the bag did not
       # materialize — i.e. the checkout's `lfs: true` silently failed. The reference bag is required.
@@ -101,13 +108,12 @@ jobs:
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
-          # Plugin autoload off (the ROS launch_testing/pytest plugins pull deps not needed here and
-          # break collection — see the repo's pytest-ROS-plugin-collision note); re-declare the `ros`
-          # marker. tests/replay is excluded from the Layer-A run, so point pytest at it explicitly.
-          # Use the venv python explicitly (pytest 9 + system rclpy/numpy) regardless of PATH order.
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /opt/replay-venv/bin/python -m pytest \
-            tests/replay/test_replay_regression.py \
-            -o markers=ros -o "norecursedirs=" -p no:cacheprovider -ra
+          # System python3 (carries rclpy/numpy via the ROS env). Plugin autoload off (the ROS
+          # launch_testing/pytest plugins pull deps not needed here and break collection — see the
+          # repo's pytest-ROS-plugin-collision note). `-c` uses the lane config (bypasses the
+          # pyproject minversion=9 gate; pytest 7.4 runs these fine).
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c /tmp/replay-pytest.ini \
+            tests/replay/test_replay_regression.py -p no:cacheprovider -ra
 
       # The upload→ingest→manifest chain against a LOCAL stand-in target (OQ-7: no real DGX in CI).
       # Lightweight (rsync + sqlite, no ROS topics) but rsync + ros2 are on PATH here, so it rides
@@ -117,6 +123,5 @@ jobs:
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /opt/replay-venv/bin/python -m pytest \
-            tests/integration/test_upload_ingest_standin.py \
-            -o markers=ros -o "norecursedirs=" -p no:cacheprovider -ra
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c /tmp/replay-pytest.ini \
+            tests/integration/test_upload_ingest_standin.py -p no:cacheprovider -ra
