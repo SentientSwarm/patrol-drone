@@ -51,22 +51,38 @@ class ReplayResult:
     failures: list[str] = field(default_factory=list)
 
 
-def _check_topic(spec: AssertionSpec, observed: dict[str, ObservedTopic]) -> str | None:
-    """Return a failure message for ``spec``, or None if it passes (presence + rate)."""
-    seen = observed.get(spec.topic)
-    if seen is None or seen.count < spec.min_count:
-        got = "absent" if seen is None else f"count={seen.count}"
-        return f"{spec.topic}: expected count >= {spec.min_count}, got {got}"
+def _presence_failure(spec: AssertionSpec, seen: ObservedTopic | None) -> str | None:
+    """Failure message if ``seen`` doesn't meet ``spec``'s min_count, else None."""
+    if seen is not None and seen.count >= spec.min_count:
+        return None
+    got = "absent" if seen is None else f"count={seen.count}"
+    return f"{spec.topic}: expected count >= {spec.min_count}, got {got}"
 
-    if spec.expected_hz is not None:
-        low = spec.expected_hz * (1 - spec.tol)
-        high = spec.expected_hz * (1 + spec.tol)
-        if not (low <= seen.hz <= high):
-            return (
-                f"{spec.topic}: rate {seen.hz:.2f} Hz outside "
-                f"[{low:.2f}, {high:.2f}] (expected {spec.expected_hz} ±{spec.tol:.0%})"
-            )
-    return None
+
+def _rate_failure(spec: AssertionSpec, seen: ObservedTopic) -> str | None:
+    """Failure message if ``seen``'s rate is outside ``spec``'s ±tol band, else None.
+
+    A spec with no ``expected_hz`` is count-only and never fails on rate.
+    """
+    if spec.expected_hz is None:
+        return None
+    low = spec.expected_hz * (1 - spec.tol)
+    high = spec.expected_hz * (1 + spec.tol)
+    if low <= seen.hz <= high:
+        return None
+    return (
+        f"{spec.topic}: rate {seen.hz:.2f} Hz outside "
+        f"[{low:.2f}, {high:.2f}] (expected {spec.expected_hz} ±{spec.tol:.0%})"
+    )
+
+
+def _check_topic(spec: AssertionSpec, observed: dict[str, ObservedTopic]) -> str | None:
+    """Return a failure message for ``spec``, or None if it passes (presence then rate)."""
+    seen = observed.get(spec.topic)
+    presence = _presence_failure(spec, seen)
+    if presence is not None or seen is None:
+        return presence
+    return _rate_failure(spec, seen)
 
 
 def evaluate(specs: list[AssertionSpec], observed: list[ObservedTopic]) -> ReplayResult:

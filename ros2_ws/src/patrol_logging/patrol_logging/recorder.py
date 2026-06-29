@@ -49,23 +49,33 @@ def _sanitize_mission_id(mission_id: str) -> str:
     return _FS_SAFE.sub("_", mission_id.strip())
 
 
+def run_id_rejection(run_id: str) -> str | None:
+    """Return why ``run_id`` is an unsafe path segment, or None if it is safe (SWM-83).
+
+    A run_id is forwarded into the perception capture path (``<root>/<run_id>/...``) and the bag's
+    mission-id segment, so it must be a single, separator-free, non-relative, non-empty segment that
+    cannot escape the output root. Returns the rejection reason as a string (the caller decides
+    whether to raise) — a data table of (predicate, reason) keeps the check flat and reusable across
+    the recorder and ``CaptureWriter`` (which can't import this module — separate colcon packages).
+    """
+    checks = (
+        (not run_id or not run_id.strip(), "must be a non-empty string"),
+        (run_id != run_id.strip(), "must not have leading/trailing whitespace"),
+        ("/" in run_id or "\\" in run_id, "must be a single path segment (no separators)"),
+        (run_id in (".", ".."), "must not be a relative-path component"),
+    )
+    return next((reason for failed, reason in checks if failed), None)
+
+
 def validate_run_id(run_id: str) -> str:
     """Return ``run_id`` unchanged iff it is a safe single path segment; else raise (SWM-83).
 
-    The run_id is forwarded into the perception capture path (``<root>/<run_id>/...``) and the bag's
-    mission-id segment, so an operator-supplied token must not be able to escape the output root.
-    Rejects (rather than silently rewrites) anything with a path separator, a ``..`` component, an
-    absolute path, or that is empty/whitespace — a bad token is an operator error worth surfacing,
-    and rewriting it would break the bag↔capture correlation the shared id guarantees.
+    Rejects (rather than silently rewrites) a path-hostile token — a bad token is an operator error
+    worth surfacing, and rewriting it would break the bag↔capture correlation the shared id grants.
     """
-    if not run_id or not run_id.strip():
-        raise ValueError("run_id must be a non-empty string")
-    if run_id != run_id.strip():
-        raise ValueError(f"run_id must not have leading/trailing whitespace: {run_id!r}")
-    if "/" in run_id or "\\" in run_id:
-        raise ValueError(f"run_id must be a single path segment (no separators): {run_id!r}")
-    if run_id in (".", "..") or run_id.startswith(("./", "../")):
-        raise ValueError(f"run_id must not be a relative-path component: {run_id!r}")
+    reason = run_id_rejection(run_id)
+    if reason is not None:
+        raise ValueError(f"run_id {reason}: {run_id!r}")
     return run_id
 
 

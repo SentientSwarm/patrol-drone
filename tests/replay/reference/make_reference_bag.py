@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import rosbag2_py
@@ -71,6 +72,36 @@ def _first_capture_stamp(source: str) -> int:
     )
 
 
+@dataclass
+class _Trim:
+    """The window + filter for one reference-bag slice (groups params to keep call sites flat)."""
+
+    kept: set[str]
+    start_ns: int
+    end_ns: int
+    camera_every: int
+    _camera_seen: int = 0
+
+    def keep(self, topic: str, stamp: int) -> bool:
+        """True if this message should be written (on a kept topic, in-window, camera-downsampled)."""
+        if topic not in self.kept or stamp < self.start_ns:
+            return False
+        if topic != _CAMERA_TOPIC:
+            return True
+        self._camera_seen += 1
+        return self._camera_seen % self.camera_every == 0
+
+
+def _copy_window(reader, writer, trim: _Trim) -> None:
+    """Copy ``reader``'s in-window messages to ``writer`` per ``trim``; stop past ``trim.end_ns``."""
+    while reader.has_next():
+        topic, data, stamp = reader.read_next()
+        if stamp > trim.end_ns:
+            return
+        if trim.keep(topic, stamp):
+            writer.write(topic, data, stamp)
+
+
 def make_reference_bag(
     source: str, out: str, seconds: float, camera_every: int, lead: float = 8.0
 ) -> None:
@@ -84,7 +115,6 @@ def make_reference_bag(
         shutil.rmtree(out_path)
 
     start_ns = _first_capture_stamp(source) - int(lead * 1e9)
-    end_ns = start_ns + int(seconds * 1e9)
 
     reader = _reader(source)
     kept_types = {
@@ -94,18 +124,8 @@ def make_reference_bag(
     for topic in kept_types.values():
         writer.create_topic(topic)
 
-    camera_seen = 0
-    while reader.has_next():
-        topic, data, stamp = reader.read_next()
-        if topic not in kept_types or stamp < start_ns:
-            continue
-        if stamp > end_ns:
-            break
-        if topic == _CAMERA_TOPIC:
-            camera_seen += 1
-            if camera_seen % camera_every != 0:
-                continue
-        writer.write(topic, data, stamp)
+    trim = _Trim(set(kept_types), start_ns, start_ns + int(seconds * 1e9), camera_every)
+    _copy_window(reader, writer, trim)
     del writer  # flush/finalize the MCAP
 
 

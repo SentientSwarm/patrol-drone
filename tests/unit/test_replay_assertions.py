@@ -18,29 +18,36 @@ from pathlib import Path
 
 from replay_assertions import AssertionSpec, ObservedTopic, evaluate, load_specs
 
+_WP = "/patrol/current_waypoint"
+_STATE = "/patrol/mission_state"
+_POS = "/fmu/out/vehicle_local_position"
+
 
 def _spec() -> list[AssertionSpec]:
     # The design §4.2.5 curated subset (trimmed for the test): one count-only, two rated.
     return [
-        AssertionSpec(topic="/patrol/current_waypoint", min_count=1),
-        AssertionSpec(topic="/patrol/mission_state", min_count=1, expected_hz=10.0, tol=0.40),
-        AssertionSpec(
-            topic="/fmu/out/vehicle_local_position", min_count=1, expected_hz=50.0, tol=0.40
-        ),
+        AssertionSpec(topic=_WP, min_count=1),
+        AssertionSpec(topic=_STATE, min_count=1, expected_hz=10.0, tol=0.40),
+        AssertionSpec(topic=_POS, min_count=1, expected_hz=50.0, tol=0.40),
     ]
+
+
+# The all-passing baseline counts (over a 10 s window): wp=1.4 Hz, state=10 Hz, pos=60 Hz (in band).
+_BASELINE = {_WP: 14, _STATE: 100, _POS: 600}
+
+
+def _observed(**counts: int) -> list[ObservedTopic]:
+    """The baseline ObservedTopics over a 10 s window, with per-topic count overrides.
+
+    Pass ``count=None`` (via the absent key) to omit a topic; pass an int to override its count.
+    """
+    merged = {**_BASELINE, **counts}
+    return [ObservedTopic(t, count=c, duration_s=10.0) for t, c in merged.items()]
 
 
 # TS-15: every asserted topic present, all rates within ±40% → PASS (no failures).
 def test_all_present_and_rated_passes() -> None:
-    observed = [
-        ObservedTopic("/patrol/current_waypoint", count=14, duration_s=10.0),
-        ObservedTopic("/patrol/mission_state", count=100, duration_s=10.0),  # 10 Hz, exact
-        ObservedTopic(
-            "/fmu/out/vehicle_local_position", count=600, duration_s=10.0
-        ),  # 60 Hz, in band
-    ]
-
-    result = evaluate(_spec(), observed)
+    result = evaluate(_spec(), _observed())
 
     assert result.passed is True
     assert result.failures == []
@@ -48,45 +55,29 @@ def test_all_present_and_rated_passes() -> None:
 
 # TS-16: a missing asserted topic → FAIL, with that topic named in the failures.
 def test_missing_topic_fails() -> None:
-    observed = [
-        ObservedTopic("/patrol/current_waypoint", count=14, duration_s=10.0),
-        # /patrol/mission_state is ABSENT (the deliberate-break shape)
-        ObservedTopic("/fmu/out/vehicle_local_position", count=600, duration_s=10.0),
-    ]
+    observed = [o for o in _observed() if o.topic != _STATE]  # mission_state ABSENT
 
     result = evaluate(_spec(), observed)
 
     assert result.passed is False
-    assert any("/patrol/mission_state" in f for f in result.failures)
+    assert any(_STATE in f for f in result.failures)
 
 
 # TS-16: a present-but-zero-count asserted topic → FAIL (min_count not met).
 def test_zero_count_topic_fails() -> None:
-    observed = [
-        ObservedTopic("/patrol/current_waypoint", count=0, duration_s=10.0),
-        ObservedTopic("/patrol/mission_state", count=100, duration_s=10.0),
-        ObservedTopic("/fmu/out/vehicle_local_position", count=600, duration_s=10.0),
-    ]
-
-    result = evaluate(_spec(), observed)
+    result = evaluate(_spec(), _observed(**{_WP: 0}))
 
     assert result.passed is False
-    assert any("/patrol/current_waypoint" in f for f in result.failures)
+    assert any(_WP in f for f in result.failures)
 
 
 # TS-17: a rated topic outside the ±40% band → FAIL.
 def test_rate_outside_band_fails() -> None:
-    observed = [
-        ObservedTopic("/patrol/current_waypoint", count=14, duration_s=10.0),
-        ObservedTopic("/patrol/mission_state", count=100, duration_s=10.0),
-        # expected 50 Hz ±40% = [30, 70]; 200/10 = 20 Hz → below band
-        ObservedTopic("/fmu/out/vehicle_local_position", count=200, duration_s=10.0),
-    ]
-
-    result = evaluate(_spec(), observed)
+    # expected 50 Hz ±40% = [30, 70]; 200/10 = 20 Hz → below band
+    result = evaluate(_spec(), _observed(**{_POS: 200}))
 
     assert result.passed is False
-    assert any("/fmu/out/vehicle_local_position" in f for f in result.failures)
+    assert any(_POS in f for f in result.failures)
 
 
 # TS-17: a rated topic at the band edge passes (±40% is inclusive).

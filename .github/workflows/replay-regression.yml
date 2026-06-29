@@ -27,6 +27,16 @@ jobs:
     container:
       image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
     steps:
+      # git-lfs is NOT in the ROS toolchain image, so `checkout` with `lfs: true` would fail to
+      # locate the git-lfs executable. Install it FIRST so the checkout's LFS smudge can materialize
+      # the reference bag.
+      - name: Install git-lfs
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git-lfs
+          rm -rf /var/lib/apt/lists/*
+
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
