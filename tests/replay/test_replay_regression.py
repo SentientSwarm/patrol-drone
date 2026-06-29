@@ -95,7 +95,8 @@ def _play_and_count(bag: Path, topics: dict[str, type], window_s: float) -> list
 
 
 def test_replay_topics_present_and_rated() -> None:
-    """GIVEN the reference bag, WHEN replayed, THEN every asserted topic is present at its rate."""
+    """TS-18/TS-20: GIVEN the reference bag (LFS-materialized), WHEN replayed, THEN every asserted
+    topic is present at its rate. _require_reference_bag covers TS-20 (LFS pointer → hard fail)."""
     _require_reference_bag()
     specs = [s for s in load_specs(_ASSERTIONS) if s.topic in _COUNTABLE]
 
@@ -106,7 +107,7 @@ def test_replay_topics_present_and_rated() -> None:
 
 
 def test_dropped_topic_fails() -> None:
-    """Deliberate break: asserting a topic the playback never delivers MUST fail (LR-5 self-check)."""
+    """TS-19: Deliberate break — asserting a topic the playback never delivers MUST fail (LR-5)."""
     # A spec for a topic that is not in the bag / not subscribed → the comparator must report failure.
     specs = [AssertionSpec(topic="/patrol/this_topic_was_dropped", min_count=1)]
     observed = [ObservedTopic("/patrol/mission_state", count=200, duration_s=20.0)]
