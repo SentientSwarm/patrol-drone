@@ -69,6 +69,14 @@ jobs:
           apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-rosbag2-storage-mcap"
           rm -rf /var/lib/apt/lists/*
 
+      # The image ships pytest 7.4 (apt), but pyproject.toml pins minversion 9.0. Upgrade the SYSTEM
+      # python's pytest (the one that sees ROS's rclpy/numpy) so the replay test runs under the
+      # pinned version. --break-system-packages: this throwaway CI container has no other consumer.
+      - if: steps.present.outputs.present == 'true'
+        name: Upgrade pytest to the pinned version (system python sees ROS deps)
+        shell: bash
+        run: python3 -m pip install --break-system-packages -U "pytest>=9,<10" pytest-cov
+
       # LFS-pointer tripwire: fail loudly here (not as a confusing test error) if the bag did not
       # materialize — i.e. the checkout's `lfs: true` silently failed. The reference bag is required.
       - if: steps.present.outputs.present == 'true'
