@@ -34,7 +34,8 @@ _INGEST_FAULTS = (
     FileNotFoundError,  # bag missing / not a finalized dir
     json.JSONDecodeError,  # malformed sidecar
     KeyError,  # sidecar missing a required field (e.g. mission_id)
-    subprocess.CalledProcessError,  # `ros2 bag info` failed
+    subprocess.CalledProcessError,  # `ros2 bag info` failed (non-zero exit)
+    ValueError,  # `ros2 bag info` ran (exit 0) but had no parseable Duration line
 )
 
 
