@@ -40,8 +40,12 @@ def iter_bag_dirs(watch_dir: Path) -> list[Path]:
 
     rosbag2 writes each run as its own directory; the upload + ingest loops both poll for these.
     Completeness/finalization is decided per-dir by :func:`is_complete` / :func:`is_finalized_bag_dir`,
-    not here — this only enumerates the candidates so both loops share one discovery rule.
+    not here — this only enumerates the candidates so both loops share one discovery rule. Returns
+    empty if ``watch_dir`` doesn't exist yet (the daemon may start before the first recording run
+    creates it), mirroring the ingest sibling ``docker/ingest/__main__._iter_bag_dirs``.
     """
+    if not watch_dir.is_dir():
+        return []
     return sorted(p for p in watch_dir.iterdir() if p.is_dir())
 
 

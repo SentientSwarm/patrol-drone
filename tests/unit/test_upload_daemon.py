@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from upload_daemon.upload_daemon import UploadDaemon
+from upload_daemon.upload_daemon import UploadDaemon, iter_bag_dirs
 
 
 class _FakeTransport:
@@ -58,6 +58,19 @@ def _make_bag(tmp_path: Path, *, with_sidecar: bool, with_metadata: bool = True)
 
 def _daemon(transport: _FakeTransport, *, target: str = "dgx:/data/bags/", **kwargs):
     return UploadDaemon(transport=transport, target=target, **kwargs)
+
+
+# iter_bag_dirs returns [] when the watch dir doesn't exist yet — the daemon may start before the
+# first recording run creates it (greptile P1; mirrors the ingest sibling's guard). Must not raise.
+def test_iter_bag_dirs_missing_watch_dir_returns_empty(tmp_path: Path) -> None:
+    assert iter_bag_dirs(tmp_path / "not_created_yet") == []
+
+
+# iter_bag_dirs enumerates only the bag *directories* under the watch dir, sorted, ignoring files.
+def test_iter_bag_dirs_lists_bag_directories(tmp_path: Path) -> None:
+    bag = _make_bag(tmp_path, with_sidecar=True)  # creates a bag dir + a sibling .meta.json file
+
+    assert iter_bag_dirs(tmp_path) == [bag]
 
 
 # TS-3: the "complete" guard REJECTS a bag without its sidecar — nothing is sent.
