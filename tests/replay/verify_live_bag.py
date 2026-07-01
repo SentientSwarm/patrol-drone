@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import struct
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Self-bootstrap the dirs this script imports first-party modules from (mirrors
@@ -79,34 +80,43 @@ def _open_reader(bag: Path):
     return reader, types
 
 
+@dataclass
+class _TopicAccumulator:
+    """Per-topic running tally while reading the bag once (rows + rate/sim de-dup keys)."""
+
+    has_header: bool
+    reader_rows: int = 0
+    log_times: list[int] = field(default_factory=list)
+    sim_stamps: list[int] = field(default_factory=list)
+
+    def add(self, data: bytes, log_time: int) -> None:
+        self.reader_rows += 1
+        self.log_times.append(log_time)
+        if self.has_header and (stamp := _header_stamp_ns(data)) is not None:
+            self.sim_stamps.append(stamp)
+
+    def sample(self, topic: str, info_count: int) -> TopicSample:
+        return TopicSample(
+            topic,
+            info_count=info_count,
+            reader_rows=self.reader_rows,
+            rate_stamps_ns=self.log_times,
+            sim_stamps_ns=self.sim_stamps,
+        )
+
+
 def _read_samples(bag: Path, topics: set[str]) -> dict[str, TopicSample]:
     """Read ``bag`` once; per asserted topic collect reader rows, log_time (rate key) + sim stamps."""
     reader, types = _open_reader(bag)
-    rows: dict[str, int] = dict.fromkeys(topics, 0)
-    log_times: dict[str, list[int]] = {t: [] for t in topics}
-    sim_stamps: dict[str, list[int]] = {t: [] for t in topics}
-    header_topics = {t for t in topics if types.get(t) in _HEADER_LEADING_TYPES}
+    acc = {t: _TopicAccumulator(types.get(t) in _HEADER_LEADING_TYPES) for t in topics}
 
     while reader.has_next():
         topic, data, log_time = reader.read_next()
-        if topic not in topics:
-            continue
-        rows[topic] += 1
-        log_times[topic].append(log_time)
-        if topic in header_topics and (stamp := _header_stamp_ns(data)) is not None:
-            sim_stamps[topic].append(stamp)
+        if topic in acc:
+            acc[topic].add(data, log_time)
 
     info_counts = read_bag_facts(bag).topic_counts
-    return {
-        t: TopicSample(
-            t,
-            info_count=info_counts.get(t, 0),
-            reader_rows=rows[t],
-            rate_stamps_ns=log_times[t],
-            sim_stamps_ns=sim_stamps[t],
-        )
-        for t in topics
-    }
+    return {t: acc[t].sample(t, info_counts.get(t, 0)) for t in topics}
 
 
 def _report(samples: dict[str, TopicSample]) -> None:
