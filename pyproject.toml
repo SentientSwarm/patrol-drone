@@ -68,7 +68,9 @@ exclude = [
 ]
 # M3: so `import patrol_mission` resolves for mypy. M5: + sim/tools so the World Composer
 # (`import compose_world`, `import gen_apriltag_models`) resolves for scripts/ + tests/ that import it.
-mypy_path = ["ros2_ws/src/patrol_mission", "sim/tools"]
+# M8: + analysis & docker (the upload-daemon/ingest cores) and tests/replay (the ROS-free
+# `replay_assertions` comparator, which tests/unit imports) so all resolve for mypy.
+mypy_path = ["ros2_ws/src/patrol_mission", "sim/tools", "analysis", "docker", "tests/replay"]
 
 # Tighten the ROS-free mission core (highest bug risk).
 [[tool.mypy.overrides]]
@@ -128,6 +130,15 @@ pythonpath = [
     "ros2_ws/src/patrol_perception",
     "ros2_ws/src/patrol_logging",
     "sim/tools",
+    # M8 (05-logging-replay): the ROS-free pipeline cores — the upload daemon (`upload_daemon.*`)
+    # and the DGX ingest/manifest (`ingest.*`). Both import no ROS at runtime (rsync/ssh/sqlite3
+    # stdlib); the `ros2 bag play/convert`/launch plumbing is the replay/integration tier.
+    "analysis",
+    "docker",
+    # M8: the ROS-free replay assertion comparator (replay_assertions.py) lives beside the replay
+    # test in tests/replay/ but is unit-tested from tests/unit/ — so it's importable here. The bag
+    # play + subscribe half (test_replay_regression.py) is the ROS lane, not collected by Layer-A.
+    "tests/replay",
 ]
 markers = [
     "ros: test requires a sourced ROS 2 environment (Layer B / nightly only)",
@@ -148,6 +159,12 @@ source = [
     # record` argv construction + the JSON metadata sidecar). It imports no ROS at runtime; the
     # rclpy/launch plumbing lives in record.launch.py (a launch file, not measured as a percentage).
     "ros2_ws/src/patrol_logging/patrol_logging",
+    # M8 (05-logging-replay): the ROS-free pipeline cores — the upload daemon (Transport +
+    # UploadDaemon) and the DGX ingest (ManifestStore + IngestService + manifest_query + the
+    # bag_info parser). All import no ROS at runtime; the I/O shells (__main__ watch loops, the real
+    # `ros2 bag info` reader) are the integration tier, measured by the stand-in test not a %.
+    "analysis/upload_daemon",
+    "docker/ingest",
 ]
 # T1.7 coverage-source resolution (design §4.4.4): node.py is the rclpy plumbing layer
 # (imports rclpy/px4_msgs). Its glue (telemetry/EKF gating, the stale-telemetry pause, tick
@@ -165,6 +182,12 @@ source = [
 omit = [
     "ros2_ws/src/patrol_mission/patrol_mission/node.py",
     "ros2_ws/src/patrol_perception/patrol_perception/perception_node.py",
+    # M8 I/O shells — the watch-loop entry points (argparse + a poll loop, like a launch file) and
+    # the real `ros2 bag info` subprocess reader. They carry no first-party logic worth a Layer-A
+    # unit test (the tested cores are upload_daemon.py / ingest_service.py / manifest_store.py /
+    # bag_reader.parse_bag_info); the loops + subprocess are the integration tier (stand-in test).
+    "analysis/upload_daemon/__main__.py",
+    "docker/ingest/__main__.py",
 ]
 
 [tool.coverage.report]

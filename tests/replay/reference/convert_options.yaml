@@ -1,0 +1,21 @@
+# ros2 bag convert output-options for the replay reference bag (M8 / T8.7, SWM-79).
+#
+# Trims a full M7 patrol bag (~99 MB / 142 s) down to a small, deterministic MCAP slice the replay
+# regression test can play in CI within the ≤90 s budget (design OQ-6). See tests/replay/README.md
+# for the full regeneration procedure and provenance.
+#
+# Strategy: keep the curated asserted subset (design §4.2.5) + enough surrounding telemetry for the
+# rate assertions, and rely on the start/end time window (passed on the convert CLI via the input
+# bag's StorageOptions, or trimmed beforehand) to bound size. Imagery stays compressed.
+output_bags:
+  - uri: patrol_reference
+    storage_id: mcap
+    all_topics: false
+    # The asserted subset the replay test checks (presence + rate), plus tf for Foxglove pose.
+    topics:
+      - /patrol/mission_state
+      - /patrol/current_waypoint
+      - /patrol/checkpoint_capture
+      - /drone/camera/image_raw/compressed
+      - /fmu/out/vehicle_local_position_v1
+      - /tf

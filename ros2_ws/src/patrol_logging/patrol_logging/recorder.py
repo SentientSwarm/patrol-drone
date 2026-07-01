@@ -49,6 +49,36 @@ def _sanitize_mission_id(mission_id: str) -> str:
     return _FS_SAFE.sub("_", mission_id.strip())
 
 
+def run_id_rejection(run_id: str) -> str | None:
+    """Return why ``run_id`` is an unsafe path segment, or None if it is safe (SWM-83).
+
+    A run_id is forwarded into the perception capture path (``<root>/<run_id>/...``) and the bag's
+    mission-id segment, so it must be a single, separator-free, non-relative, non-empty segment that
+    cannot escape the output root. Returns the rejection reason as a string (the caller decides
+    whether to raise) — a data table of (predicate, reason) keeps the check flat and reusable across
+    the recorder and ``CaptureWriter`` (which can't import this module — separate colcon packages).
+    """
+    checks = (
+        (not run_id or not run_id.strip(), "must be a non-empty string"),
+        (run_id != run_id.strip(), "must not have leading/trailing whitespace"),
+        ("/" in run_id or "\\" in run_id, "must be a single path segment (no separators)"),
+        (run_id in (".", ".."), "must not be a relative-path component"),
+    )
+    return next((reason for failed, reason in checks if failed), None)
+
+
+def validate_run_id(run_id: str) -> str:
+    """Return ``run_id`` unchanged iff it is a safe single path segment; else raise (SWM-83).
+
+    Rejects (rather than silently rewrites) a path-hostile token — a bad token is an operator error
+    worth surfacing, and rewriting it would break the bag↔capture correlation the shared id grants.
+    """
+    reason = run_id_rejection(run_id)
+    if reason is not None:
+        raise ValueError(f"run_id {reason}: {run_id!r}")
+    return run_id
+
+
 def bag_name(mission_id: str, started: datetime) -> str:
     """Return the bag basename ``patrol_<missionId>_<timestamp>`` (no extension) (DoD AC-1).
 
@@ -153,8 +183,13 @@ def resolve_run_id(configured: str, now: datetime) -> str:
     recorder includes so captures and the bag share an identity; a standalone leaf launch passes an
     empty ``configured`` and falls back to its own ``now``-stamped token. The format matches
     perception's run-dir name (``_RUN_ID_FMT``) so the bag's mission-id segment equals the run dir.
+
+    A non-empty ``configured`` token is operator-supplied, so it is validated here — the single
+    mint/forward point — before it flows to either consumer's path (SWM-83 path-hygiene).
     """
-    return configured or now.strftime(_RUN_ID_FMT)
+    if configured:
+        return validate_run_id(configured)
+    return now.strftime(_RUN_ID_FMT)
 
 
 def recorder_finished_cleanly(event: object, bag_dir: Path) -> bool:

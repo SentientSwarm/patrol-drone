@@ -1,0 +1,106 @@
+"""The ROS-free replay assertion comparator (docset 05-logging-replay, M8 / T8.8, SWM-80).
+
+The replay regression test (LR-5) plays a reference bag, counts messages per topic over the play
+window, then asserts the result against a curated subset + rate band (design §4.2.5, OQ-5). This
+module holds the *comparison* — pure data in, pass/fail + reasons out — so it is host- and ROS-free
+and unit-tested directly. The ``ros2 bag play`` + subscribe half that produces the observed counts
+lives in ``test_replay_regression.py`` (the ROS CI lane).
+
+Two checks per asserted topic:
+  * presence/count — observed count must meet ``min_count`` (a missing topic is count 0 → fail; this
+    is what makes the deliberate-break self-check bite).
+  * rate (optional) — when ``expected_hz`` is set, observed mean rate must lie within ±``tol`` of it.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+
+@dataclass(frozen=True)
+class AssertionSpec:
+    """The expected shape of one asserted topic: a minimum count and an optional rate band."""
+
+    topic: str
+    min_count: int = 1
+    expected_hz: float | None = None
+    tol: float = 0.40  # ±40% default (OQ-5)
+
+
+@dataclass(frozen=True)
+class ObservedTopic:
+    """What the replay actually saw for one topic: a message count over a play window."""
+
+    topic: str
+    count: int
+    duration_s: float
+
+    @property
+    def hz(self) -> float:
+        return self.count / self.duration_s if self.duration_s > 0 else 0.0
+
+
+@dataclass(frozen=True)
+class ReplayResult:
+    """The verdict of evaluating a spec against the observed topics."""
+
+    passed: bool
+    failures: list[str] = field(default_factory=list)
+
+
+def _presence_failure(spec: AssertionSpec, seen: ObservedTopic | None) -> str | None:
+    """Failure message if ``seen`` doesn't meet ``spec``'s min_count, else None."""
+    if seen is not None and seen.count >= spec.min_count:
+        return None
+    got = "absent" if seen is None else f"count={seen.count}"
+    return f"{spec.topic}: expected count >= {spec.min_count}, got {got}"
+
+
+def _rate_failure(spec: AssertionSpec, seen: ObservedTopic) -> str | None:
+    """Failure message if ``seen``'s rate is outside ``spec``'s ±tol band, else None.
+
+    A spec with no ``expected_hz`` is count-only and never fails on rate.
+    """
+    if spec.expected_hz is None:
+        return None
+    low = spec.expected_hz * (1 - spec.tol)
+    high = spec.expected_hz * (1 + spec.tol)
+    if low <= seen.hz <= high:
+        return None
+    return (
+        f"{spec.topic}: rate {seen.hz:.2f} Hz outside "
+        f"[{low:.2f}, {high:.2f}] (expected {spec.expected_hz} ±{spec.tol:.0%})"
+    )
+
+
+def _check_topic(spec: AssertionSpec, observed: dict[str, ObservedTopic]) -> str | None:
+    """Return a failure message for ``spec``, or None if it passes (presence then rate)."""
+    seen = observed.get(spec.topic)
+    presence = _presence_failure(spec, seen)
+    if presence is not None or seen is None:
+        return presence
+    return _rate_failure(spec, seen)
+
+
+def evaluate(specs: list[AssertionSpec], observed: list[ObservedTopic]) -> ReplayResult:
+    """Evaluate every asserted topic; pass iff none fails presence/count or its rate band."""
+    by_topic = {o.topic: o for o in observed}
+    failures = [msg for spec in specs if (msg := _check_topic(spec, by_topic)) is not None]
+    return ReplayResult(passed=not failures, failures=failures)
+
+
+def load_specs(path: Path) -> list[AssertionSpec]:
+    """Load the curated assertion subset from an ``assertions.yaml`` (the ``topics:`` sequence)."""
+    doc = yaml.safe_load(Path(path).read_text())
+    return [
+        AssertionSpec(
+            topic=entry["topic"],
+            min_count=entry.get("min_count", 1),
+            expected_hz=entry.get("expected_hz"),
+            tol=entry.get("tol", 0.40),
+        )
+        for entry in doc["topics"]
+    ]

@@ -24,6 +24,9 @@ log/
 # Bags — these are huge and don't belong in git
 # Store in object storage or DGX bag pipeline instead
 *.mcap
+# ...except the small replay regression reference bag, which IS committed (via Git LFS — see
+# .gitattributes). Operator bags (~/patrol_bags, anywhere else) stay ignored.
+!tests/replay/reference/**/*.mcap
 *.bag
 *.db3
 bags/

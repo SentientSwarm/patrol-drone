@@ -1,0 +1,134 @@
+name: Replay regression
+# The replay regression gate (docset 05-logging-replay, M8 / LR-5, design §4.2.5/§4.4.2): play the
+# checked-in reference bag through `ros2 bag play`, count messages per topic, and assert the curated
+# subset appears at the expected rates. This is the cheaper-than-SITL regression lane — it plays a
+# fixed bag (not the simulator), so it is deterministic and runs per-PR (unlike the nightly SITL
+# tier). Budget ≤ 90 s for the replay itself (OQ-6); the job timeout covers checkout + ROS env.
+#
+# Required per-PR: a change that drops a recorded topic must be caught here before hardware. The
+# reference bag is Git LFS — checkout MUST set `lfs: true`, or the replay test fails loudly (it does
+# not skip; design §4.4.5 "LFS pointer unresolved → hard CI failure").
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: replay-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay_regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The setup-ros-docker image does NOT export ROS_DISTRO as a container env, so set it here. Kept
+    # in sync with stack-manifest.toml middleware.ros_distro (same pin ros-ci passes as
+    # target-ros2-distro); a drift would surface as an apt "unable to locate package" on the line below.
+    env:
+      ROS_DISTRO: jazzy
+    # Same ROS toolchain image as ros-ci (ubuntu-noble = 24.04, Jazzy). NOTE: this image ships only
+    # the ROS *tooling* (colcon/rosdep/vcs) + the packages.ros.org apt source — it does NOT carry a
+    # ROS distro (no /opt/ros, no rclpy, no ros2). ros-ci installs ROS via action-ros-ci; this lane
+    # instead apt-installs the focused runtime it needs below (rclpy + ros2bag + the MCAP plugin),
+    # since action-ros-ci is a colcon *build* action, not a "run pytest against a real bag" runner.
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
+    steps:
+      # git-lfs is NOT in the ROS toolchain image, so `checkout` with `lfs: true` would fail to
+      # locate the git-lfs executable. Install it FIRST so the checkout's LFS smudge can materialize
+      # the reference bag.
+      - name: Install git-lfs
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git-lfs
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          lfs: true # materialize the reference bag (LFS) — without this the replay test hard-fails
+
+      # Bootstrap guard: the reference bag + replay test only exist once M8 lands them. Skip cleanly
+      # on a repo state without them so the check is GREEN until the artifacts arrive, then activates.
+      - id: present
+        shell: bash
+        run: |
+          if [ -f tests/replay/test_replay_regression.py ] \
+             && [ -n "$(find tests/replay/reference -name '*.mcap' 2>/dev/null | head -n1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no replay test or reference bag yet — skipping replay regression"
+          fi
+
+      # Install the focused ROS runtime this lane needs (the base image has NO ROS distro — see the
+      # container note above). rclpy + std_msgs for the subscriber counter; ros2bag + rosbag2 for
+      # `ros2 bag play`/`info`; the MCAP storage plugin so they can read the .mcap reference bag
+      # (bag format is MCAP, not sqlite3 — plan M7); rsync for the stand-in test's RsyncSshTransport.
+      # This apt-installs ~90 MB from the packages.ros.org source already configured in the image.
+      - if: steps.present.outputs.present == 'true'
+        name: Install the ROS runtime (rclpy + ros2bag + MCAP plugin) and rsync
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            "ros-${ROS_DISTRO}-rclpy" \
+            "ros-${ROS_DISTRO}-std-msgs" \
+            "ros-${ROS_DISTRO}-rosbag2" \
+            "ros-${ROS_DISTRO}-rosbag2-storage-mcap" \
+            rsync
+          rm -rf /var/lib/apt/lists/*
+
+      # Fail-loud ROS-env probe: import rclpy + std_msgs directly so an image-level ROS problem
+      # surfaces clearly here, not as a cryptic "collected 0 items / 1 error" at pytest collection
+      # (PR #16 / F-01: the lane's prior failure was an unresolved rclpy import dressed up as a
+      # pytest collection error — root-caused to the base image carrying no ROS distro, now fixed by
+      # the install step above). If this step regresses, the ROS runtime apt-install above is the
+      # first place to look (a renamed/missing ros-jazzy-* package), before any source/PATH issue.
+      - if: steps.present.outputs.present == 'true'
+        name: Probe the ROS env (rclpy importable)
+        shell: bash
+        run: |
+          source /opt/ros/"${ROS_DISTRO}"/setup.bash
+          python3 -c "import rclpy, std_msgs.msg; print('rclpy OK:', rclpy.__file__)"
+
+      # LFS-pointer tripwire: fail loudly here (not as a confusing test error) if the bag did not
+      # materialize — i.e. the checkout's `lfs: true` silently failed. The reference bag is required.
+      - if: steps.present.outputs.present == 'true'
+        name: Verify the reference bag materialized (LFS)
+        shell: bash
+        run: |
+          bag="$(find tests/replay/reference -name '*.mcap' | head -n1)"
+          size="$(stat -c%s "$bag")"
+          if [ "$size" -lt 1024 ]; then
+            echo "::error::reference bag $bag is $size bytes — an unresolved Git LFS pointer. Checkout needs lfs:true."
+            exit 1
+          fi
+          echo "reference bag OK: $bag ($size bytes)"
+
+      - if: steps.present.outputs.present == 'true'
+        name: Run the replay regression test (LR-5; ≤90 s replay budget)
+        shell: bash
+        run: |
+          source /opt/ros/"${ROS_DISTRO}"/setup.bash
+          # System python3 (carries rclpy/numpy via the ROS env). Plugin autoload off (the ROS
+          # launch_testing/pytest plugins pull deps not needed here and break collection — see the
+          # repo's pytest-ROS-plugin-collision note). `-c replay-lane.ini` uses the checked-in lane
+          # config at the repo root (bypasses the pyproject minversion=9 gate; pytest 7.4 runs these
+          # fine). It MUST be the repo-root file so `rootdir` is the repo and its relative `pythonpath`
+          # entries resolve — a /tmp config sets rootdir=/tmp and breaks them (PR #16 / F-01).
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c replay-lane.ini \
+            tests/replay/test_replay_regression.py -p no:cacheprovider -ra
+
+      # The upload→ingest→manifest chain against a LOCAL stand-in target (OQ-7: no real DGX in CI).
+      # Lightweight (rsync + sqlite, no ROS topics) but rsync + ros2 are on PATH here, so it rides
+      # this lane rather than spinning a separate job.
+      - if: steps.present.outputs.present == 'true'
+        name: Run the upload→ingest→manifest stand-in integration test (LR-3/LR-4)
+        shell: bash
+        run: |
+          source /opt/ros/"${ROS_DISTRO}"/setup.bash
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c replay-lane.ini \
+            tests/integration/test_upload_ingest_standin.py -p no:cacheprovider -ra
