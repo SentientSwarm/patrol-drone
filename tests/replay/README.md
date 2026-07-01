@@ -12,9 +12,29 @@ A later-phase change that drops a recorded topic fails this test in CI before it
 |------|------|
 | `test_replay_regression.py` | The ROS-lane test: play the reference bag → count via rclpy subscribers → evaluate. Runs in CI's `replay-regression` lane (needs a sourced ROS env). |
 | `replay_assertions.py` | The **ROS-free** comparator (presence/count + ±tol rate band) + the `assertions.yaml` loader. Unit-tested in `tests/unit/test_replay_assertions.py` (Layer-A). |
+| `rate_report.py` | The **ROS-free** RTF-robust rate analyzer for the *live-bag* witness (unique-stamp rate + a bag-consistency guard). Reuses `replay_assertions.evaluate`. Unit-tested in `tests/unit/test_rate_report.py`. |
+| `verify_live_bag.py` | The **manual live-bag witness** (`analysis/e2e_check.md` step 4). Run explicitly under system python + sourced ROS — NOT collected by pytest. |
 | `assertions.yaml` | The curated asserted subset + expected rates (measured from the reference bag). |
 | `reference/patrol_reference/` | The checked-in reference bag (MCAP), tracked via **Git LFS** (`.gitattributes`). |
 | `reference/make_reference_bag.py` | The regeneration script (LR-9) — re-run to refresh the baseline. |
+
+## Live-bag witness vs the CI lane
+
+The **CI lane** (`test_replay_regression.py`) plays the checked-in **reference** bag — recorded at
+RTF ≈ 1.0 with a clean, self-consistent MCAP — so `count / bag-info-duration` is the true rate and the
+`assertions.yaml` bands (measured at RTF ≈ 1.0) apply directly. This lane is deliberately fixed and
+must not be loosened for a loaded host.
+
+A **freshly-recorded live** bag is different. On a GUI-loaded host the sim can't hold real-time; the
+record path may double-deliver rendered frames and write an inconsistent MCAP summary, so a raw
+`ros2 bag info` Hz reads ~2x high (measured: camera 30.3 Hz vs a true 15.15 Hz — see
+[ADR-0013](../../docs/decisions/0013-m8-live-bag-rate-witness.md)). The manual witness
+`verify_live_bag.py` handles this: it first **hard-fails** (exit 2) any bag whose `ros2 bag info`
+counts disagree with its message stream or whose frames are duplicated (a "re-record" signal), then
+measures each topic's **true** rate from its own de-duplicated message timestamps (RTF-invariant,
+type-agnostic via `log_time`). So a clean bag on a loaded host still passes and a suspect bag never
+silently passes — without touching the CI lane or widening `assertions.yaml`. Do NOT verify a live
+bag by eyeballing `ros2 bag info` Hz; use `verify_live_bag.py`.
 
 ## Reference bag provenance (LR-9)
 

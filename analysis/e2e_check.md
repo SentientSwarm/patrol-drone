@@ -52,14 +52,26 @@ topic set / metadata (LR-4 / AC-4). The duration + topic counts must match `ros2
 ### 4. Replay — the same bag passes the regression assertions
 
 ```bash
-# Point the replay test at THIS bag (not the checked-in reference) to witness it on the real artifact:
-#   the assertions.yaml subset must be present at rate.
-ros2 bag play "$BAG"   # while the replay counter subscribes — or run the regression lane locally
+# Witness the assertions on THIS live bag (not the checked-in reference). Run under system python
+# with ROS sourced (NOT the uv .venv — the numpy/uv boundary in CLAUDE.md):
+source /opt/ros/jazzy/setup.bash
+/usr/bin/python3 tests/replay/verify_live_bag.py --bag "$BAG"
 ```
 
 Confirm every asserted topic (mission_state, current_waypoint, checkpoint_capture, camera, one
 fmu/out) is present at its expected rate (LR-5 / AC-5). The checked-in reference bag is a trimmed
 slice of exactly this kind of run.
+
+**Why not just eyeball `ros2 bag info` Hz?** On a GUI-loaded host the sim can't hold real-time; the
+record path may double-deliver rendered frames and write an inconsistent MCAP summary, so a raw
+`ros2 bag info` count / duration reads ~2x high (measured: camera 30.3 Hz vs a true 15.15 Hz) and
+would trip the band with a *false* failure ([ADR-0013](../docs/decisions/0013-m8-live-bag-rate-witness.md)).
+`verify_live_bag.py` avoids this two ways: it first runs a **consistency guard** (it hard-fails,
+exit 2, if `ros2 bag info` counts disagree with the actual message stream or a topic's frames are
+duplicated — "re-record once the sim holds real-time"), then measures each topic's **true** rate from
+its own de-duplicated message timestamps (RTF-invariant), not from wall-clock. A clean bag on a
+loaded host still passes; a suspect bag never silently passes. The CI reference-bag lane is
+unaffected — it runs at RTF ≈ 1.0 on a clean bag.
 
 ### 5. Foxglove — the same bag renders
 
@@ -74,7 +86,7 @@ ONE `$BAG` satisfied steps 1–5 with no manual editing of the artifact between 
 - [ ] step 1 — one identified MCAP bag + sidecar produced
 - [ ] step 2 — that bag on the stand-in target ≤ 30 s after mission end
 - [ ] step 3 — that bag returned by `manifest_query` with derived facts
-- [ ] step 4 — that bag passes the replay assertions
+- [ ] step 4 — that bag passes `verify_live_bag.py` (consistency guard OK + RTF-robust rate PASS)
 - [ ] step 5 — that bag renders in Foxglove with all panels populated
 
 Record the witnessed `$BAG` name + date here when run:
