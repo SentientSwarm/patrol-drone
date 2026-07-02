@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sqlite3
 import subprocess
 import time
 from collections import OrderedDict
@@ -65,6 +66,8 @@ _INGEST_FAULTS = (
     TypeError,  # sidecar is valid JSON but not an object → sidecar["mission_id"] can't subscript
     UnicodeDecodeError,  # sidecar is not valid UTF-8 → read_text() fails (a ValueError subclass;
     #                      listed explicitly to keep the set self-documenting)
+    sqlite3.IntegrityError,  # sidecar field present but JSON null (e.g. mission_id: null) → the DB
+    #                          NOT NULL column rejects it at the write (greptile P1)
     subprocess.CalledProcessError,  # `ros2 bag info` failed (non-zero exit)
     ValueError,  # `ros2 bag info` ran (exit 0) but had no parseable Duration line
 )

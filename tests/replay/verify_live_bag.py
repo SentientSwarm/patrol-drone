@@ -61,7 +61,7 @@ def _header_stamp_ns(data: bytes) -> int | None:
     if len(data) < _ENCAPSULATION_BYTES + 8:
         return None
     sec, nsec = struct.unpack_from("<iI", data, _ENCAPSULATION_BYTES)
-    return sec * 1_000_000_000 + nsec
+    return int(sec) * 1_000_000_000 + int(nsec)
 
 
 def _open_reader(bag: Path):

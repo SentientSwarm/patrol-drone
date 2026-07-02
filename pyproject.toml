@@ -92,6 +92,7 @@ module = [
     "patrol_interfaces", "patrol_interfaces.*",
     "apriltag_msgs", "apriltag_msgs.*",       # M6: AprilTagDetectionArray (no stubs on Layer A)
     "rosidl_runtime_py", "rosidl_runtime_py.*",
+    "rosbag2_py", "rosbag2_py.*",             # M8: verify_live_bag's SequentialReader (no stubs on Layer A)
     "ament_index_python", "ament_index_python.*",
     "cv2", "cv2.*",                           # M6: OpenCV PNG encode seam (no PEP 561 stubs on Layer A)
     "cv_bridge", "cv_bridge.*",               # M6: sensor_msgs/Image -> cv2 (no stubs on Layer A)

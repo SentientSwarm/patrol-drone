@@ -12,6 +12,7 @@ notably the `ValueError` `parse_bag_info` raises when `ros2 bag info` runs (exit
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -108,5 +109,21 @@ def test_try_index_skips_non_object_sidecar(tmp_path: Path) -> None:
 # F-03: a non-UTF-8 sidecar (UnicodeDecodeError on read_text) is skipped, not raised.
 def test_try_index_skips_non_utf8_sidecar(tmp_path: Path) -> None:
     service, bag, sidecar = _service_with_bad_sidecar(tmp_path, b"\xff\xfe not utf-8")
+    assert _try_index(service, bag, sidecar) is False
+    assert service._store.query_recent(10) == []
+
+
+# greptile P1: sqlite3.IntegrityError is a member of the documented fault set, so a null required
+# field (which passes every pre-DB guard) is skipped-and-retried, not crash-looping the service.
+def test_null_field_sidecar_fault_is_in_documented_ingest_fault_set() -> None:
+    assert sqlite3.IntegrityError in _INGEST_FAULTS
+
+
+# greptile P1: a sidecar with a required field explicitly JSON null passes json.loads, the key check,
+# and ManifestRow construction, then trips the DB NOT NULL column → IntegrityError. It must be skipped
+# (returns False), not raised, else the watch loop crash-loops on the same bag after every restart.
+def test_try_index_skips_null_required_field_sidecar(tmp_path: Path) -> None:
+    sidecar_bytes = b'{"mission_id": null, "started_utc": "2026-06-29T12:00:00+00:00"}'
+    service, bag, sidecar = _service_with_bad_sidecar(tmp_path, sidecar_bytes)
     assert _try_index(service, bag, sidecar) is False
     assert service._store.query_recent(10) == []
