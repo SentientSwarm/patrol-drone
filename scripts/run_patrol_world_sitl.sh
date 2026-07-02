@@ -71,6 +71,10 @@ KEEP_UP=0
 SKIP_DOCTOR=0
 VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-300}"
 CAMERA_WAIT="${CAMERA_WAIT:-90}"
+# Seconds to wait for the mission launch to exit cleanly (SIGINT -> rosbag2 finalizes metadata.yaml)
+# before force-tearing the rest of the stack down. A ~100 MiB MCAP finalize is I/O-bound, so this is
+# deliberately generous — its job is to give rosbag2 a real flush window, not to police latency.
+FINALIZE_WAIT="${FINALIZE_WAIT:-45}"
 
 AGENT_PID=""
 GZ_PID=""
@@ -84,8 +88,9 @@ log()  { printf '\033[1;34m[patrol-world]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m        %s\n' "$*" >&2; }
 err()  { printf '\033[1;31m[err]\033[0m         %s\n' "$*" >&2; }
 
-# Fail loud on a non-integer operator-supplied numeric env (CAMERA_WAIT / VERIFY_TIMEOUT) before it
-# reaches arithmetic, so a typo gives a clear message instead of a confusing $(( )) failure (F-04).
+# Fail loud on a non-integer operator-supplied numeric env (CAMERA_WAIT / VERIFY_TIMEOUT /
+# FINALIZE_WAIT) before it reaches arithmetic, so a typo gives a clear message instead of a confusing
+# $(( )) failure (F-04).
 require_uint() {  # require_uint NAME VALUE
   [[ "${2}" =~ ^[0-9]+$ ]] || { err "${1} must be a non-negative integer (got '${2}')"; exit 2; }
 }
@@ -122,11 +127,79 @@ parse_args() {
   done
 }
 
+# Wait up to `timeout_s` for `pid` to exit. Returns 0 once it has exited, 1 on timeout. `kill -0`
+# probes liveness without signalling; the 1 s granularity is fine for a several-second finalize. One
+# helper shared by stop_launch_group() (and thus graceful_stop_mission/shutdown) so the poll loop
+# isn't duplicated.
+# shellcheck disable=SC2317,SC2329  # reached from stop_launch_group, not a direct call
+wait_for_pid_exit() {  # wait_for_pid_exit PID TIMEOUT_S
+  local pid="$1" timeout_s="$2"
+  for _ in $(seq 1 "${timeout_s}"); do
+    kill -0 "${pid}" 2>/dev/null || return 0
+    sleep 1
+  done
+  return 1
+}
+
+# Stop the mission launch's whole PROCESS GROUP so the `ros2 bag record` child finalizes, not just the
+# `ros2 launch` parent. The launch is started with `setsid` (own group, PGID == NODE_PID), so a
+# negative-PID `kill` (`kill -SIG -- -PGID`) delivers the signal to every member — the launch AND its
+# recorder grandchild. Without this, `kill -INT NODE_PID` signals only the launch parent and the
+# reparented-to-init recorder never gets its finalize (the orphaning bug this fixes). We SIGINT the
+# group first — that is the clean `ros2 launch` Shutdown record.launch.py's sigterm_timeout is built
+# around — and if the group is still alive after FINALIZE_WAIT, escalate to a group SIGTERM (this host
+# showed the orphaned recorder honoring SIGTERM even when it ignored SIGINT), giving it a second
+# bounded window. Returns 0 if the group exited, 1 if it is still alive after both waits. One helper
+# shared by graceful_stop_mission() and shutdown() so the group-signal + bounded-wait isn't duplicated.
+# shellcheck disable=SC2317,SC2329  # reached from graceful_stop_mission/shutdown, not a direct call
+stop_launch_group() {  # stop_launch_group PGID
+  local pgid="$1"
+  kill -INT -- "-${pgid}" 2>/dev/null || true
+  if wait_for_pid_exit "${pgid}" "${FINALIZE_WAIT}"; then return 0; fi
+  warn "mission launch group still running after ${FINALIZE_WAIT}s (SIGINT) — escalating to SIGTERM"
+  kill -TERM -- "-${pgid}" 2>/dev/null || true
+  wait_for_pid_exit "${pgid}" "${FINALIZE_WAIT}"
+}
+
+# Stop the mission launch CLEANLY so the recorder finalizes its MCAP (writes metadata.yaml) before the
+# stack is torn down. `ros2 launch` under SIGTERM cancels its asyncio task and orphans children (the
+# launch code warns "using SIGTERM can result in orphaned processes"), leaving a non-finalized bag;
+# under SIGINT it emits a clean Shutdown that SIGINTs `ros2 bag record` so rosbag2 flushes the bag —
+# exactly the "the launch system SIGINT-finalizes the MCAP at shutdown" contract record.launch.py
+# documents. We signal the launch's whole GROUP (via stop_launch_group, so the recorder child — not
+# just the launch parent — gets the finalize) and wait HERE, while PX4/gz are still up, so the recorder
+# finalizes against live data sources; then blank NODE_PID so shutdown() doesn't re-signal a reaped group.
+graceful_stop_mission() {
+  [[ -n "${NODE_PID}" ]] || return 0
+  local run_root="$1"
+  log "stopping the mission launch cleanly (SIGINT group) so the recorder finalizes its MCAP..."
+  if stop_launch_group "${NODE_PID}"; then
+    log "mission launch exited cleanly within the finalize window (recorder had its flush window)"
+  else
+    warn "mission launch group still running after the finalize window — the recorder may not have finalized"
+  fi
+  NODE_PID=""  # reaped (or timed out); shutdown() must not re-signal it
+  # A finalized bag has metadata.yaml; its absence means the record path did NOT finalize — surface
+  # that as the real failure here rather than as a confusing "no finalized bag" from assert_bag below.
+  if [[ -z "$(find "${run_root}" -maxdepth 2 -name metadata.yaml -print -quit 2>/dev/null)" ]]; then
+    err "no finalized bag (metadata.yaml) under ${run_root} after clean stop — recorder did not finalize"
+    return 1
+  fi
+  return 0
+}
+
 # shellcheck disable=SC2317,SC2329  # reached via `trap shutdown ...` in main(), not a direct call
 shutdown() {
   trap '' INT TERM
   log "tearing down (logs kept in ${LOG_DIR})"
-  if [[ -n "${NODE_PID}" ]]; then kill -TERM "${NODE_PID}" 2>/dev/null || true; fi
+  # Signal the mission launch's GROUP (SIGINT, escalating to SIGTERM) and WAIT for it to exit before
+  # killing its data sources (px4/gz): a fly-and-verify pass already stopped it via
+  # graceful_stop_mission (NODE_PID blanked), so this covers the interrupt / failed-verify / camera-only
+  # paths, where a clean finalize still matters if a bag was being recorded. The group signal reaches
+  # the `ros2 bag record` child (not just the launch parent) so the recorder actually finalizes here.
+  if [[ -n "${NODE_PID}" ]]; then
+    stop_launch_group "${NODE_PID}" || true
+  fi
   if [[ -n "${BRIDGE_PID}" ]]; then kill -TERM "${BRIDGE_PID}" 2>/dev/null || true; fi
   if [[ -n "${QGC_PID}" ]]; then kill -TERM "${QGC_PID}" 2>/dev/null || true; fi
   if [[ -n "${PX4_PID}" ]]; then kill -TERM -- "-${PX4_PID}" 2>/dev/null || true; fi  # PX4 proc group
@@ -343,12 +416,20 @@ fly_and_verify_patrol() {
   # recorder include is resilient — a missing/over-shadowed patrol_logging still flies the patrol.
   local run_root="${PATROL_OUTPUT_ROOT:-${LOG_DIR}/run}"
   log "flying the M4 patrol over the stage (mission_patrol.launch.py, checkpoints=${CHECKPOINTS_YAML}, record:=true, output_root=${run_root})"
-  ros2 launch patrol_bringup mission_patrol.launch.py record:=true \
+  # setsid: give the launch its OWN process group (PGID == NODE_PID), mirroring start_px4. A clean stop
+  # then signals the whole group (kill -INT -- -NODE_PID), so the `ros2 bag record` grandchild gets the
+  # finalize instead of being orphaned to init when only the launch parent is signalled.
+  setsid ros2 launch patrol_bringup mission_patrol.launch.py record:=true \
     "checkpoints_yaml:=${CHECKPOINTS_YAML}" \
     "output_root:=${run_root}" >"${LOG_DIR}/node.log" 2>&1 &
   NODE_PID=$!
   log "verifying patrol acceptance (timeout ${VERIFY_TIMEOUT}s)..."
   python3 "${SCRIPT_DIR}/verify_patrol.py" --timeout "${VERIFY_TIMEOUT}" || return 1
+  # verify_patrol.py returns the instant the patrol is observably complete (landed/disarmed) — it does
+  # NOT wait for the recorder to flush. Stop the mission launch cleanly HERE (SIGINT the launch, wait
+  # for it to exit + metadata.yaml to appear) so the bag is finalized before we assert its contents,
+  # making assert_bag's "finalized bag exists" precondition true by construction.
+  graceful_stop_mission "${run_root}" || return 1
   # The patrol passed AND it recorded (record:=true) — assert the bag captured imagery, not just
   # that the live topic existed before flight. Skippable for a deliberately recordless run.
   if [[ "${PATROL_ASSERT_BAG:-1}" -ne 0 ]]; then
@@ -384,14 +465,16 @@ assert_bag_has_compressed_imagery() {
 report_keep_up() {
   trap - EXIT INT TERM
   log "stack left running (--keep-up):"
-  log "  PIDs: agent=${AGENT_PID} gz=${GZ_PID} gui=${GZ_GUI_PID:-none} px4=${PX4_PID} qgc=${QGC_PID:-none} bridge=${BRIDGE_PID} node=${NODE_PID:-none}"
-  log "  tear down: kill -- -${PX4_PID}; kill ${AGENT_PID} ${GZ_PID} ${GZ_GUI_PID:-} ${QGC_PID:-} ${BRIDGE_PID} ${NODE_PID:-}"
+  log "  PIDs: agent=${AGENT_PID} gz=${GZ_PID} gui=${GZ_GUI_PID:-none} px4=${PX4_PID} qgc=${QGC_PID:-none} bridge=${BRIDGE_PID} node=${NODE_PID:-none} (px4/node are process groups)"
+  # node is a setsid group too (holds the recorder child): -INT the group so it finalizes cleanly.
+  log "  tear down: kill -INT -- -${NODE_PID:-0}; kill -- -${PX4_PID}; kill ${AGENT_PID} ${GZ_PID} ${GZ_GUI_PID:-} ${QGC_PID:-} ${BRIDGE_PID}"
 }
 
 main() {
   parse_args "$@"
   require_uint CAMERA_WAIT "${CAMERA_WAIT}"        # validate operator env before any arithmetic (F-04)
   require_uint VERIFY_TIMEOUT "${VERIFY_TIMEOUT}"  # (also covers a --timeout override, parsed above)
+  require_uint FINALIZE_WAIT "${FINALIZE_WAIT}"    # bounded wait for the recorder's clean finalize
   if [[ -n "${LOG_DIR}" ]]; then
     mkdir -p "${LOG_DIR}"
   else

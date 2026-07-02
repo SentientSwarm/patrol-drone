@@ -102,3 +102,68 @@ to fix a measurement artifact (poor risk/reward), and the mission node stays wal
   types it is applied to; a new header-bearing rated topic must be added to `_HEADER_LEADING_TYPES`
   in `verify_live_bag.py` (the info≠rows guard is type-agnostic and needs no change). The `1.2`
   dup-factor threshold is a constant next to its rationale in `rate_report.py`.
+
+## Deferred follow-up — RESOLVED (finalize/truncation half)
+
+**Date:** 2026-07-03. The deferred follow-up above had two intertwined symptoms; the
+**non-finalized / truncated** half is now root-caused and fixed. (The **frame-duplication** half
+stays as stated: it is RTF-driven — record at RTF ≈ 1 on an idle GPU for a clean 15 Hz stream — and
+the witness's consistency guard still hard-fails a duplicated bag.)
+
+- **Root cause (finalize/truncation).** The UAT runner
+  [`scripts/run_patrol_world_sitl.sh`](../../scripts/run_patrol_world_sitl.sh) tore the recorder down
+  before rosbag2 finalized. `verify_patrol.py` returns the instant the patrol is observably complete
+  (landed/disarmed) — it does not wait for the recorder to flush — after which the runner's `shutdown`
+  sent `kill -TERM` to the `ros2 launch` process and immediately TERMed PX4/gz. Confirmed in the
+  `launch` source: **SIGTERM** makes `ros2 launch` cancel its asyncio task and orphan its children
+  (`launch_service.py` literally logs *"using SIGTERM can result in orphaned processes"*), so the
+  recorder was killed before writing `metadata.yaml`; only **SIGINT** emits the clean `Shutdown` that
+  SIGINTs `ros2 bag record` so it finalizes the MCAP — the very "the launch system SIGINT-finalizes
+  the MCAP at shutdown" contract [`record.launch.py`](../../ros2_ws/src/patrol_logging/launch/record.launch.py)
+  already documents. Even a correct SIGINT was useless while PX4/gz (the recorder's data sources) were
+  killed in the same breath.
+- **Fix.** The runner now stops the mission launch **cleanly**: a `graceful_stop_mission` step SIGINTs
+  the launch after a passing verify and waits (bounded, `FINALIZE_WAIT`, default 45 s) for it to exit
+  and for `metadata.yaml` to appear — *before* the stack is torn down and before the bag-content
+  assertion runs, so a finalized bag exists by construction. `shutdown` likewise SIGINTs the launch and
+  waits for it before killing PX4/gz on the interrupt / failed-verify / camera-only paths. As
+  caller-independent insurance, the recorder `ExecuteProcess` in `record.launch.py` gets an explicit
+  `sigterm_timeout` (30 s) so rosbag2 gets a real flush window on any clean shutdown (launch's 5 s
+  default is tight for a ~100 MiB MCAP). No change to the ROS-free recorder core, the sidecar, the
+  acceptance oracle (`verify_patrol.py`), or the CI `replay-regression` lane (still byte-unchanged).
+- **Acceptance.** One `run_patrol_world_sitl.sh` run (RTF ≈ 1) now yields **one** finalized bag
+  (`metadata.yaml` present, no reindex), duration matching the full flight, `checkpoint_capture`
+  Count ≥ 4, `ros2 bag info` succeeds, and `verify_live_bag.py --bag <bag>` exits 0 on the complete
+  bag — the single-artifact bag the LR-8 / AC-8 witness (SWM-82) needs.
+
+### Follow-up — process-group signal (the concrete orphaning mechanism)
+
+**Date:** 2026-07-03. A live acceptance run proved the SIGINT-not-SIGTERM fix above was **necessary
+but not sufficient** on the failure/interrupt path — it exposed *the* mechanism behind the earlier,
+vaguer "a non-clean recorder SIGINT finalize under load" hypothesis. This is that root cause, resolved.
+
+- **What the run showed.** The patrol FAILed acceptance (an RTF-driven dwell-flap, still environmental
+  per this ADR), so `verify_patrol.py` returned non-zero and `fly_and_verify_patrol` returned *before*
+  reaching `graceful_stop_mission` (the pass-only step) — execution fell through to `shutdown`.
+  `shutdown` sent its SIGINT and killed PX4/gz, the runner exited reporting teardown — yet **no
+  `metadata.yaml` was written**, `ros2 bag info` failed, and a `ros2 bag record` process was left
+  **orphaned to init** holding a ~250 MiB unfinalized `.mcap`.
+- **Mechanism.** The mission launch was started with a plain `ros2 launch … & NODE_PID=$!` — **no
+  `setsid`**, so it had no dedicated process group. `kill -INT "${NODE_PID}"` signalled only the
+  `ros2 launch` parent; its `ros2 bag record` grandchild was reparented to init and never received the
+  shutdown, so rosbag2 never ran its SIGINT→`sigterm_timeout` finalize. (PX4 was already immune — it
+  is `setsid`-started and torn down with the negative-PID group kill `kill -TERM -- "-${PX4_PID}"`.)
+  A manual probe confirmed the orphaned recorder **ignored SIGINT and finalized only on SIGTERM** on
+  this host.
+- **Fix.** The mission launch is now started with `setsid` (own process group, `PGID == NODE_PID`,
+  mirroring `start_px4`), and both `graceful_stop_mission` and `shutdown` signal the **whole group**
+  via a shared `stop_launch_group` helper: `kill -INT -- "-${NODE_PID}"` first (the clean `ros2 launch`
+  Shutdown that `record.launch.py`'s `sigterm_timeout` is built for), then — if the group outlives
+  `FINALIZE_WAIT` — escalate to `kill -TERM -- "-${NODE_PID}"` (which this host's orphaned recorder
+  honored). PX4/gz/agent are still killed only *after* the recorder group has exited, so the recorder
+  finalizes against live data sources. The diff is limited to the runner; `record.launch.py`, the
+  recorder core, `verify_patrol.py`, and the CI `replay-regression` lane are untouched.
+- **Acceptance (failure path too).** On **both** a passing and a failing/interrupted patrol the run now
+  leaves exactly one finalized bag (`metadata.yaml` present, `ros2 bag info` succeeds without reindex)
+  and **no surviving `ros2 bag record` process** (`pgrep -f 'ros2 bag record'` empty after the runner
+  exits).

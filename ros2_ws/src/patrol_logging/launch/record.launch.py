@@ -44,6 +44,13 @@ from patrol_logging.recorder import (
 _PKG = "patrol_logging"
 _DEFAULT_OUTPUT_DIR = str(Path.home() / "patrol_bags")
 
+# Seconds the launch system waits after SIGINT for `ros2 bag record` to finalize (flush the MCAP +
+# write metadata.yaml) before escalating SIGINT -> SIGTERM. launch's default is only 5 s, tight for a
+# ~100 MiB MCAP finalize under I/O load — too short a window truncates the bag or leaves it
+# non-finalized. Widened here so the recorder gets a real flush window on any clean shutdown, caller
+# independent (the runner's SIGINT, a Ctrl-C, or record:=true on another runner all benefit).
+_RECORDER_SIGTERM_TIMEOUT_S = "30"
+
 
 def _default_topics_yaml() -> str:
     return str(Path(get_package_share_directory(_PKG)) / "config" / "recorded_topics.yaml")
@@ -87,7 +94,15 @@ def _launch_recorder(context: LaunchContext) -> list[ExecuteProcess | RegisterEv
     )
 
     get_logger("patrol_record").info(f"recording bag {basename}/ into {output_dir}")
-    recorder = ExecuteProcess(cmd=argv, name="patrol_bag_record", output="screen")
+    # sigterm_timeout gives `ros2 bag record` a generous window to finalize on SIGINT before launch
+    # escalates to SIGTERM — see _RECORDER_SIGTERM_TIMEOUT_S. This is what makes the docstring's
+    # "the launch system SIGINT-finalizes the MCAP at shutdown" hold for a large bag under load.
+    recorder = ExecuteProcess(
+        cmd=argv,
+        name="patrol_bag_record",
+        output="screen",
+        sigterm_timeout=_RECORDER_SIGTERM_TIMEOUT_S,
+    )
 
     def _write_sidecar_on_exit(event: object, _context: LaunchContext) -> None:
         """OnProcessExit callback: write the JSON sidecar only when a real bag was produced (F-03).
