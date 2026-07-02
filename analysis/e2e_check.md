@@ -32,8 +32,9 @@ Capture the bag path as `$BAG`. (AC-1/AC-2 — already PASS, ADR-0011.)
 ### 2. Upload — the daemon ships it to the stand-in within 30 s
 
 ```bash
-# In a second terminal, before/while the mission ends:
-python -m upload_daemon --watch ~/patrol_bags --target /tmp/dgx_landing/ --transport rsync
+# In a second terminal, before/while the mission ends. upload_daemon lives under analysis/ — put it
+# on PYTHONPATH (run from repo root):
+PYTHONPATH=analysis python -m upload_daemon --watch ~/patrol_bags --target /tmp/dgx_landing/ --transport rsync
 ```
 
 Confirm the bag + sidecar appear under `/tmp/dgx_landing/` within ~30 s of mission end (LR-3 / AC-3).
@@ -41,8 +42,9 @@ Confirm the bag + sidecar appear under `/tmp/dgx_landing/` within ~30 s of missi
 ### 3. Ingest + manifest — index it and query it back
 
 ```bash
-python -m ingest --watch /tmp/dgx_landing --db /tmp/dgx_manifest/bag_manifest.db   # one-shot or daemon
-python -m ingest.manifest_query --recent 1 --db /tmp/dgx_manifest/bag_manifest.db
+# ingest lives under docker/ — put it on PYTHONPATH (run from repo root):
+PYTHONPATH=docker python -m ingest --watch /tmp/dgx_landing --db /tmp/dgx_manifest/bag_manifest.db   # one-shot or daemon
+PYTHONPATH=docker python -m ingest.manifest_query --recent 1 --db /tmp/dgx_manifest/bag_manifest.db
 ```
 
 Confirm the query returns the bag's row with mission / time / **duration derived from the bag** /

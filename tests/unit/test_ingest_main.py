@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 from ingest.__main__ import _INGEST_FAULTS, _try_index
-from ingest.ingest_service import BagFacts, IngestService
+from ingest.ingest_service import BagFacts, BagFactsReader, IngestService
 from ingest.manifest_store import ManifestStore
 
 
@@ -64,3 +64,49 @@ def test_try_index_skips_reader_fault_without_propagating(tmp_path: Path, exc: E
 # parse-failure path is caught structurally (not only via the behavioural test above).
 def test_value_error_is_in_documented_ingest_fault_set() -> None:
     assert ValueError in _INGEST_FAULTS
+
+
+def _fixed_facts_reader() -> BagFactsReader:
+    """A reader returning fixed facts — the F-03 faults under test happen before it's ever reached."""
+
+    def reader(_bag_path: Path) -> BagFacts:
+        return BagFacts(duration_s=1.0, topic_counts={})
+
+    return reader
+
+
+# F-03: the two sidecar-shape faults that escape the loop if the set omits them. These arise in
+# IngestService.index BEFORE the injected reader (at read_text / sidecar["mission_id"]), so they
+# need a real bad sidecar rather than a failing reader.
+def _service_with_bad_sidecar(
+    tmp_path: Path, sidecar_bytes: bytes
+) -> tuple[IngestService, Path, Path]:
+    """A finalized bag dir + a sidecar whose *bytes* are written verbatim (may be non-UTF-8/non-dict)."""
+    bag = tmp_path / "patrol_badsidecar_20260629_120000"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    sidecar = tmp_path / (bag.name + ".meta.json")
+    sidecar.write_bytes(sidecar_bytes)
+    service = IngestService(ManifestStore(tmp_path / "m.db"), bag_facts=_fixed_facts_reader())
+    return service, bag, sidecar
+
+
+# F-03: TypeError (non-object sidecar) and UnicodeDecodeError (non-UTF-8 sidecar) are members of the
+# documented fault set — so the watch loop skips-and-retries them instead of crash-looping.
+@pytest.mark.parametrize("fault", [TypeError, UnicodeDecodeError])
+def test_new_sidecar_faults_are_in_documented_ingest_fault_set(fault: type[BaseException]) -> None:
+    assert fault in _INGEST_FAULTS
+
+
+# F-03: a valid-JSON-but-non-object sidecar (TypeError on sidecar["mission_id"]) is skipped, not raised.
+def test_try_index_skips_non_object_sidecar(tmp_path: Path) -> None:
+    service, bag, sidecar = _service_with_bad_sidecar(tmp_path, b"[1, 2, 3]")
+    assert _try_index(service, bag, sidecar) is False
+    assert service._store.query_recent(10) == []
+
+
+# F-03: a non-UTF-8 sidecar (UnicodeDecodeError on read_text) is skipped, not raised.
+def test_try_index_skips_non_utf8_sidecar(tmp_path: Path) -> None:
+    service, bag, sidecar = _service_with_bad_sidecar(tmp_path, b"\xff\xfe not utf-8")
+    assert _try_index(service, bag, sidecar) is False
+    assert service._store.query_recent(10) == []

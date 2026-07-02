@@ -17,6 +17,7 @@ import json
 import logging
 import subprocess
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from ingest.bag_reader import read_bag_facts
@@ -27,6 +28,33 @@ logger = logging.getLogger("ingest")
 
 _POLL_INTERVAL_S = 5.0
 
+
+class _BoundedSeen:
+    """A membership set with an LRU cap: tracks 'already handled' bags without growing unbounded.
+
+    The watch loops only need 'have I already handled this bag this run?'. An unbounded set grows one
+    entry per bag for the process lifetime (F-09); this caps it at ``maxlen``, evicting the
+    oldest-added key when full. Eviction is safe because both handlers are idempotent (rsync -a /
+    INSERT OR REPLACE) — a re-seen evicted bag is just a cheap redundant re-handle, never data loss.
+    """
+
+    def __init__(self, maxlen: int = 4096) -> None:
+        self._seen: OrderedDict[Path, None] = OrderedDict()
+        self._maxlen = maxlen
+
+    def __contains__(self, bag: Path) -> bool:
+        return bag in self._seen
+
+    def add(self, bag: Path) -> None:
+        self._seen[bag] = None
+        self._seen.move_to_end(bag)
+        while len(self._seen) > self._maxlen:
+            self._seen.popitem(last=False)  # evict the oldest-added
+
+    def __len__(self) -> int:
+        return len(self._seen)
+
+
 # The documented fail-loud set IngestService.index raises on a bad input. The watch loop catches
 # exactly these (not bare Exception) so one bad bag is skipped + retried later instead of crashing
 # the service, while a genuine programming bug still surfaces loudly.
@@ -34,6 +62,9 @@ _INGEST_FAULTS = (
     FileNotFoundError,  # bag missing / not a finalized dir
     json.JSONDecodeError,  # malformed sidecar
     KeyError,  # sidecar missing a required field (e.g. mission_id)
+    TypeError,  # sidecar is valid JSON but not an object → sidecar["mission_id"] can't subscript
+    UnicodeDecodeError,  # sidecar is not valid UTF-8 → read_text() fails (a ValueError subclass;
+    #                      listed explicitly to keep the set self-documenting)
     subprocess.CalledProcessError,  # `ros2 bag info` failed (non-zero exit)
     ValueError,  # `ros2 bag info` ran (exit 0) but had no parseable Duration line
 )
@@ -61,7 +92,7 @@ def _try_index(service: IngestService, bag: Path, sidecar: Path) -> bool:
     return True
 
 
-def _drain_once(service: IngestService, watch_dir: Path, indexed: set[Path]) -> None:
+def _drain_once(service: IngestService, watch_dir: Path, indexed: _BoundedSeen) -> None:
     """One discovery+index pass over ``watch_dir`` (mutates ``indexed`` with the freshly indexed)."""
     for bag in _iter_bag_dirs(watch_dir):
         sidecar = _sidecar_for(bag)
@@ -84,9 +115,10 @@ def _watch_loop(service: IngestService, watch_dir: Path, poll_interval: float) -
 
     Fault-tolerant: a bag that fails to index (missing/corrupt input, malformed sidecar) is logged
     and skipped, never added to ``indexed`` — so it retries on a later poll once corrected and one
-    bad bag can't starve the rest. A clean re-index of the same bag is idempotent (store-keyed).
+    bad bag can't starve the rest. A clean re-index of the same bag is idempotent (store-keyed). The
+    ``indexed`` set is LRU-bounded (F-09) so a long-lived daemon can't grow it without limit.
     """
-    indexed: set[Path] = set()
+    indexed = _BoundedSeen()
     while True:
         _drain_once(service, watch_dir, indexed)
         time.sleep(poll_interval)

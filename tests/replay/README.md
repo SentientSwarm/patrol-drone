@@ -59,7 +59,7 @@ python3 tests/replay/reference/make_reference_bag.py \
     --seconds 20 --camera-every 5 --lead 8
 # then re-measure rates and update assertions.yaml's expected_hz, and re-commit (LFS):
 ros2 bag info tests/replay/reference/patrol_reference
-git add tests/replay/reference/patrol_reference assertions.yaml
+git add tests/replay/reference/patrol_reference tests/replay/assertions.yaml
 git commit -m "M8: refresh replay reference bag + assertion rates"
 ```
 

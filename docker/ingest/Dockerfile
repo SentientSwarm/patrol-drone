@@ -21,11 +21,17 @@
 ARG ROS_DISTRO
 FROM ros:${ROS_DISTRO}-ros-base
 
-# The MCAP storage plugin so `ros2 bag info` can read the .mcap bags the recorder produces
-# (sqlite is legacy; MCAP is the pinned bag format — plan M7 / design §6 constraint).
+# A pre-FROM ARG is only in scope for the FROM line; re-declare it (no default, so a forgotten
+# build arg still fails loudly) to make ROS_DISTRO available to the RUN steps below.
+ARG ROS_DISTRO
+
+# `ros2 bag info` needs the rosbag2 CLI verb (rosbag2) + the MCAP storage plugin to read the .mcap
+# bags the recorder produces (sqlite is legacy; MCAP is the pinned bag format — plan M7 / design §6).
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-rosbag2-storage-mcap" \
+    && apt-get install -y --no-install-recommends \
+        "ros-${ROS_DISTRO}-rosbag2" \
+        "ros-${ROS_DISTRO}-rosbag2-storage-mcap" \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/ingest

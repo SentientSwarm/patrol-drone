@@ -149,6 +149,6 @@ rosbag2_bagfile_information:
         nanoseconds_since_epoch: 1782568861128964863
       duration:
         nanoseconds: 19991536152
-      message_count: 4006
+      message_count: 2003
   custom_data: ~
   ros_distro: jazzy

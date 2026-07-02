@@ -17,7 +17,7 @@ from pathlib import Path
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS bag_manifest (
-    bag_id        TEXT PRIMARY KEY,   -- patrol_<missionId>_<timestamp>.mcap (LR-4 identity)
+    bag_id        TEXT PRIMARY KEY,   -- the bag DIR name patrol_<missionId>_<timestamp> (no .mcap; LR-4 identity)
     mission_id    TEXT NOT NULL,      -- from sidecar (LR-4 "mission")
     recorded_utc  TEXT NOT NULL,      -- start time, from sidecar (LR-4 "time")
     duration_s    REAL NOT NULL,      -- DERIVED from the bag, not the sidecar (§3.4)

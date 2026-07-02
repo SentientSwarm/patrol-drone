@@ -1,0 +1,74 @@
+"""Layer-A unit tests for the upload watch-loop fault tolerance (M8 / F-08, design §4.4.5).
+
+`upload_daemon.__main__._try_upload` wraps `UploadDaemon.on_bag_complete` in `except _UPLOAD_FAULTS`
+so a bag whose transport *raises* (rsync binary absent, SSH failure, the S3 stub's
+NotImplementedError) is skipped + retried instead of crashing the long-running daemon — symmetric
+with the ingest loop's `_try_index`. `__main__.py` is a coverage-omitted I/O shell, but the
+_UPLOAD_FAULTS membership + the skip-not-crash behaviour is load-bearing first-party logic.
+
+The daemon is driven for real (not faked) via a transport whose ``send`` raises — so the actual
+``on_bag_complete`` → ``_send_with_retry`` → ``transport.send`` path is what raises the fault.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from upload_daemon.__main__ import _UPLOAD_FAULTS, _BoundedSeen, _drain_once, _try_upload
+from upload_daemon.upload_daemon import UploadDaemon
+
+
+class _RaisingTransport:
+    """A Transport whose send always raises — models a missing rsync binary / SSH failure / S3 stub."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def send(self, _local_path: Path, _remote_path: str) -> bool:
+        raise self._exc
+
+
+def _daemon_that_raises(exc: BaseException) -> UploadDaemon:
+    return UploadDaemon(transport=_RaisingTransport(exc), target="dgx:/data/bags/")
+
+
+def _make_complete_bag(tmp_path: Path) -> Path:
+    """A finalized bag dir (metadata.yaml) + its sidecar — so is_complete() passes and send is reached."""
+    bag = tmp_path / "patrol_x_20260629_120000"
+    bag.mkdir()
+    (bag / "patrol_x_20260629_120000_0.mcap").write_bytes(b"\x89MCAP0\r\n")
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    (tmp_path / "patrol_x_20260629_120000.meta.json").write_text("{}")
+    return bag
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        FileNotFoundError("rsync: command not found"),  # OSError subclass — missing binary
+        OSError("ssh: connect to host ... : Connection refused"),
+        NotImplementedError("S3Transport is an OQ-8 parity stub"),
+    ],
+)
+def test_try_upload_skips_transport_fault_without_propagating(
+    tmp_path: Path, exc: BaseException
+) -> None:
+    bag = _make_complete_bag(tmp_path)
+    assert _try_upload(_daemon_that_raises(exc), bag) is False  # skipped, did NOT crash
+
+
+def test_transport_faults_are_in_documented_upload_fault_set() -> None:
+    assert OSError in _UPLOAD_FAULTS
+    assert NotImplementedError in _UPLOAD_FAULTS
+
+
+def test_drain_once_leaves_a_faulting_bag_out_of_uploaded_for_retry(tmp_path: Path) -> None:
+    # A complete bag whose upload raises must NOT be marked uploaded (so it retries next poll).
+    _make_complete_bag(tmp_path)
+
+    uploaded = _BoundedSeen()
+    _drain_once(_daemon_that_raises(OSError("boom")), tmp_path, uploaded)
+
+    assert len(uploaded) == 0  # nothing marked done → retried on the next poll

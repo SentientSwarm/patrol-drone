@@ -17,6 +17,7 @@ the guard actually guards — a reference bag missing an asserted topic must FAI
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import time
@@ -26,18 +27,17 @@ import pytest
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rosidl_runtime_py.utilities import get_message
 from std_msgs.msg import Int32, String
 
-# Self-bootstrap the dirs this test imports first-party modules from, so the imports do not depend on
+# Self-bootstrap the dir this test imports first-party modules from, so the imports do not depend on
 # the lane's pytest `pythonpath` — the /tmp-config rootdir bug (PR #16 / F-01) broke exactly that
 # dependence. Mirrors tests/integration/test_upload_ingest_standin.py, which is immune for this reason.
-#   tests/replay (here) → replay_assertions ;  docker → ingest.bag_reader (the bag-info count source)
+#   tests/replay (here) → replay_assertions
 _HERE = Path(__file__).resolve().parent
-for _p in (_HERE, _HERE.parents[1] / "docker"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
-from ingest.bag_reader import parse_bag_info  # noqa: E402  (after the sys.path bootstrap above)
 from replay_assertions import (  # noqa: E402  (after the sys.path bootstrap above)
     AssertionSpec,
     ObservedTopic,
@@ -53,6 +53,9 @@ _ASSERTIONS = Path(__file__).parent / "assertions.yaml"
 # observed rate (count / elapsed) is the true publish rate — NOT inflated by a playback speed-up.
 # The 20 s slice is already well under the 90 s replay budget (OQ-6), so no speed-up is needed.
 _PLAY_RATE = 1.0
+# "Topic: /name | Type: pkg/msg/Name | ..." from `ros2 bag info` — used to resolve a topic's type by
+# name (so non-std types are counted from the stream without a hard-coded import).
+_TOPIC_TYPE_RE = re.compile(r"Topic:\s*(\S+)\s*\|\s*Type:\s*(\S+)")
 
 
 def _require_reference_bag() -> None:
@@ -66,14 +69,20 @@ def _require_reference_bag() -> None:
 
 
 class _CountingNode(Node):
-    """Subscribes to a set of topics and counts every message received during playback."""
+    """Subscribes to a set of topics and counts every message DELIVERED by playback.
 
-    def __init__(self, topics: dict[str, type]) -> None:
+    All asserted topics are counted from the played stream (never from `ros2 bag info`), so a topic
+    dropped in playback is caught (F-04). Non-std types are resolved by name via ``get_message`` and
+    subscribed ``raw=True`` (bytes, no deserialize) so the counter needs no hard-coded imports of
+    ``sensor_msgs`` / ``px4_msgs`` / ``patrol_interfaces``.
+    """
+
+    def __init__(self, topic_types: dict[str, type]) -> None:
         super().__init__("replay_counter")
-        self.counts: dict[str, int] = dict.fromkeys(topics, 0)
+        self.counts: dict[str, int] = dict.fromkeys(topic_types, 0)
         qos = QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT)
-        for topic, msg_type in topics.items():
-            self.create_subscription(msg_type, topic, self._make_cb(topic), qos)
+        for topic, msg_type in topic_types.items():
+            self.create_subscription(msg_type, topic, self._make_cb(topic), qos, raw=True)
 
     def _make_cb(self, topic: str):
         def _cb(_msg: object) -> None:
@@ -82,36 +91,51 @@ class _CountingNode(Node):
         return _cb
 
 
-# std_msgs topics are counted by live subscription; the rest (camera/compressed, fmu pose,
-# checkpoint_capture) are counted from `ros2 bag info` so the gate covers ALL asserted topics
-# without importing their (non-std) message types into the subscriber.
-_SUBSCRIBED = {
+# std_msgs topics whose type we import directly; every other asserted topic's type is resolved by
+# name from `ros2 bag info` (see _resolve_types) so the counter imports no non-std message packages.
+_STD_TYPES = {
     "/patrol/mission_state": String,
     "/patrol/current_waypoint": Int32,
 }
 
 
-def _bag_info_observed(bag: Path, topics: set[str]) -> list[ObservedTopic]:
-    """ObservedTopic for each of ``topics`` from `ros2 bag info` (count over the bag's duration)."""
+def _resolve_types(bag: Path, topics: set[str]) -> dict[str, type]:
+    """Map each asserted topic to its concrete message type, so ALL are counted from the stream.
+
+    std_msgs types come from the direct imports; the rest are resolved by name (from `ros2 bag
+    info`'s reported ``Type:``) via ``get_message`` — no hard-coded non-std imports needed.
+    """
     info = subprocess.run(
         ["ros2", "bag", "info", str(bag)], check=True, capture_output=True, text=True
     )
-    facts = parse_bag_info(info.stdout)
-    return [ObservedTopic(t, facts.topic_counts.get(t, 0), facts.duration_s) for t in topics]
+    types_by_topic = dict(_TOPIC_TYPE_RE.findall(info.stdout))
+    resolved: dict[str, type] = {}
+    for topic in topics:
+        if topic in _STD_TYPES:
+            resolved[topic] = _STD_TYPES[topic]
+        else:
+            resolved[topic] = get_message(types_by_topic[topic])
+    return resolved
 
 
-def _play_and_count(bag: Path, topics: dict[str, type], window_s: float) -> list[ObservedTopic]:
-    """Play ``bag`` and return per-topic ObservedTopic counts over the playback window."""
+def _play_and_count(
+    bag: Path, topic_types: dict[str, type], window_s: float
+) -> list[ObservedTopic]:
+    """Play ``bag`` and return per-topic ObservedTopic counts over the playback window.
+
+    Asserts ``ros2 bag play`` exits 0 — a player that errored out is a failure, not a silent pass.
+    """
     rclpy.init()
-    node = _CountingNode(topics)
+    node = _CountingNode(topic_types)
     player = subprocess.Popen(["ros2", "bag", "play", "--rate", str(_PLAY_RATE), str(bag)])
     try:
         start = time.monotonic()
         while player.poll() is None and time.monotonic() - start < window_s:
             rclpy.spin_once(node, timeout_sec=0.1)
-        player.wait(timeout=10)
+        returncode = player.wait(timeout=10)
         elapsed = time.monotonic() - start
-        return [ObservedTopic(t, node.counts[t], elapsed) for t in topics]
+        assert returncode == 0, f"ros2 bag play exited {returncode}"
+        return [ObservedTopic(t, node.counts[t], elapsed) for t in topic_types]
     finally:
         _terminate(player)
         node.destroy_node()
@@ -127,14 +151,14 @@ def _terminate(player: subprocess.Popen) -> None:
 
 def test_replay_topics_present_and_rated() -> None:
     """TS-18/TS-20: GIVEN the reference bag (LFS-materialized), WHEN replayed, THEN every asserted
-    topic is present at its rate. std_msgs topics are counted live during playback; the rest are
-    counted from `ros2 bag info`. _require_reference_bag covers TS-20 (LFS pointer → hard fail)."""
+    topic is present at its rate — counted from the PLAYED STREAM (not `ros2 bag info`), so a topic
+    dropped in playback fails the gate (F-04). _require_reference_bag covers TS-20 (LFS pointer → hard
+    fail); _play_and_count asserts the player exited 0."""
     _require_reference_bag()
     specs = load_specs(_ASSERTIONS)
-    info_topics = {s.topic for s in specs} - set(_SUBSCRIBED)
+    topic_types = _resolve_types(_REFERENCE_BAG, {s.topic for s in specs})
 
-    observed = _play_and_count(_REFERENCE_BAG, _SUBSCRIBED, window_s=80.0)
-    observed += _bag_info_observed(_REFERENCE_BAG, info_topics)
+    observed = _play_and_count(_REFERENCE_BAG, topic_types, window_s=80.0)
 
     result = evaluate(specs, observed)
     assert result.passed, result.failures

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from upload_daemon.transport import RsyncSshTransport, S3Transport, Transport
@@ -22,6 +23,40 @@ from upload_daemon.upload_daemon import UploadDaemon, is_complete, iter_bag_dirs
 logger = logging.getLogger("upload_daemon")
 
 _POLL_INTERVAL_S = 5.0
+
+# The recoverable transport faults a per-bag upload can raise. The watch loop catches exactly these
+# (not bare Exception) so one bad bag is logged + retried on a later poll instead of crashing the
+# long-running daemon, while a genuine programming bug still surfaces. Mirrors ingest's _INGEST_FAULTS.
+_UPLOAD_FAULTS = (
+    OSError,  # rsync binary absent (FileNotFoundError), SSH/socket failure, etc.
+    NotImplementedError,  # the S3Transport parity stub raises this until Phase-1+ implements it
+)
+
+
+class _BoundedSeen:
+    """A membership set with an LRU cap: tracks 'already handled' bags without growing unbounded.
+
+    The watch loops only need 'have I already handled this bag this run?'. An unbounded set grows one
+    entry per bag for the process lifetime (F-09); this caps it at ``maxlen``, evicting the
+    oldest-added key when full. Eviction is safe because both handlers are idempotent (rsync -a /
+    INSERT OR REPLACE) — a re-seen evicted bag is just a cheap redundant re-handle, never data loss.
+    """
+
+    def __init__(self, maxlen: int = 4096) -> None:
+        self._seen: OrderedDict[Path, None] = OrderedDict()
+        self._maxlen = maxlen
+
+    def __contains__(self, bag: Path) -> bool:
+        return bag in self._seen
+
+    def add(self, bag: Path) -> None:
+        self._seen[bag] = None
+        self._seen.move_to_end(bag)
+        while len(self._seen) > self._maxlen:
+            self._seen.popitem(last=False)  # evict the oldest-added
+
+    def __len__(self) -> int:
+        return len(self._seen)
 
 
 def _make_transport(kind: str) -> Transport:
@@ -42,16 +77,38 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _try_upload(daemon: UploadDaemon, bag: Path) -> bool:
+    """Upload one bag; on a known transport fault log at ERROR and return False (retry next poll)."""
+    try:
+        return daemon.on_bag_complete(bag)
+    except _UPLOAD_FAULTS:
+        logger.exception("skipping un-uploadable bag %s (will retry on a later poll)", bag.name)
+        return False
+
+
+def _drain_once(daemon: UploadDaemon, watch_dir: Path, uploaded: _BoundedSeen) -> None:
+    """One discovery+upload pass over ``watch_dir`` (mutates ``uploaded`` with the freshly uploaded)."""
+    for bag in iter_bag_dirs(watch_dir):
+        if bag in uploaded or not is_complete(bag):
+            continue
+        if _try_upload(daemon, bag):
+            uploaded.add(bag)
+            logger.info("uploaded %s", bag.name)
+
+
 def _watch_loop(daemon: UploadDaemon, watch_dir: Path, poll_interval: float) -> None:
-    """Poll ``watch_dir`` for newly-completed bag dirs and upload each one exactly once."""
-    uploaded: set[Path] = set()
+    """Poll ``watch_dir`` for newly-completed bag dirs and upload each one exactly once.
+
+    Fault-tolerant (mirrors the ingest loop): a bag whose transfer *raises* a known transport fault
+    is logged and skipped, never added to ``uploaded`` — so it retries on a later poll and one bad
+    bag can't crash the daemon. (``on_bag_complete`` returning False already handles a clean
+    retry-exhausted failure; this guards the raising path — a missing rsync binary, an SSH error,
+    the S3 stub's NotImplementedError.) The ``uploaded`` set is LRU-bounded (F-09) so a long-lived
+    daemon can't grow it without limit.
+    """
+    uploaded = _BoundedSeen()
     while True:
-        for bag in iter_bag_dirs(watch_dir):
-            if bag in uploaded or not is_complete(bag):
-                continue
-            if daemon.on_bag_complete(bag):
-                uploaded.add(bag)
-                logger.info("uploaded %s", bag.name)
+        _drain_once(daemon, watch_dir, uploaded)
         time.sleep(poll_interval)
 
 
