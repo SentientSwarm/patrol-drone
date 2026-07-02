@@ -47,7 +47,9 @@ class RsyncSshTransport:
         self._runner = runner
 
     def send(self, local_path: Path, remote_path: str) -> bool:
-        argv = ["rsync", "-a", str(local_path), remote_path]
+        # `--` terminates rsync option parsing so an option-looking path (e.g. one starting with `-`,
+        # or `--rsync-path=…`) is treated as a source file, never a flag (PR #16 / F-04 hardening).
+        argv = ["rsync", "-a", "--", str(local_path), remote_path]
         return self._runner(argv) == 0
 
 

@@ -18,6 +18,10 @@
 #     python -m ingest.manifest_query --recent 10 --db /data/manifest/bag_manifest.db
 # ============================================================================
 
+# NOTE (PR #16 / F-05): base tag `ros:${ROS_DISTRO}-ros-base` is mutable (not digest-pinned) and the
+# apt packages below are unversioned, so both drift with upstream. Knowingly accepted for Phase 1
+# (sim-only, "software not flight time" — CLAUDE.md); revisit with a digest pin + apt snapshot at the
+# pre-hardware hardening pass. The workflow *container* is already digest-pinned; this base is not.
 ARG ROS_DISTRO
 FROM ros:${ROS_DISTRO}-ros-base
 

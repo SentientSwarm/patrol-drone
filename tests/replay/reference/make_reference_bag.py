@@ -23,18 +23,25 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import rosbag2_py
 
-_ASSERTED_TOPICS = {
-    "/patrol/mission_state",
-    "/patrol/current_waypoint",
-    "/patrol/checkpoint_capture",
-    "/drone/camera/image_raw/compressed",
-    "/fmu/out/vehicle_local_position_v1",
-    "/tf",
+# Reuse the replay lane's canonical assertion loader (one dir up) so the asserted-topic set has a
+# single source of truth — tests/replay/assertions.yaml — instead of a hand-maintained duplicate
+# (PR #16 / F-06). load_specs is ROS-free (stdlib + PyYAML, which the ROS env this script runs in
+# provides); this import pulls no ROS. `/tf` is the one generator-only extra (Foxglove pose), not an
+# asserted topic, so it stays an explicit union member.
+_REPLAY_DIR = Path(__file__).resolve().parent.parent
+if str(_REPLAY_DIR) not in sys.path:
+    sys.path.insert(0, str(_REPLAY_DIR))
+from replay_assertions import load_specs  # noqa: E402  (after the sys.path bootstrap above)
+
+_TF_TOPIC = "/tf"  # generator-only extra: kept for Foxglove pose, not an asserted topic
+_ASSERTED_TOPICS = {spec.topic for spec in load_specs(_REPLAY_DIR / "assertions.yaml")} | {
+    _TF_TOPIC
 }
 _CAMERA_TOPIC = "/drone/camera/image_raw/compressed"
 _ANCHOR_TOPIC = (

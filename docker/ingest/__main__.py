@@ -18,42 +18,16 @@ import logging
 import sqlite3
 import subprocess
 import time
-from collections import OrderedDict
 from pathlib import Path
 
 from ingest.bag_reader import read_bag_facts
+from ingest.bounded_seen import _BoundedSeen
 from ingest.ingest_service import IngestService
 from ingest.manifest_store import ManifestStore
 
 logger = logging.getLogger("ingest")
 
 _POLL_INTERVAL_S = 5.0
-
-
-class _BoundedSeen:
-    """A membership set with an LRU cap: tracks 'already handled' bags without growing unbounded.
-
-    The watch loops only need 'have I already handled this bag this run?'. An unbounded set grows one
-    entry per bag for the process lifetime (F-09); this caps it at ``maxlen``, evicting the
-    oldest-added key when full. Eviction is safe because both handlers are idempotent (rsync -a /
-    INSERT OR REPLACE) — a re-seen evicted bag is just a cheap redundant re-handle, never data loss.
-    """
-
-    def __init__(self, maxlen: int = 4096) -> None:
-        self._seen: OrderedDict[Path, None] = OrderedDict()
-        self._maxlen = maxlen
-
-    def __contains__(self, bag: Path) -> bool:
-        return bag in self._seen
-
-    def add(self, bag: Path) -> None:
-        self._seen[bag] = None
-        self._seen.move_to_end(bag)
-        while len(self._seen) > self._maxlen:
-            self._seen.popitem(last=False)  # evict the oldest-added
-
-    def __len__(self) -> int:
-        return len(self._seen)
 
 
 # The documented fail-loud set IngestService.index raises on a bad input. The watch loop catches
@@ -69,7 +43,9 @@ _INGEST_FAULTS = (
     sqlite3.IntegrityError,  # sidecar field present but JSON null (e.g. mission_id: null) → the DB
     #                          NOT NULL column rejects it at the write (greptile P1)
     subprocess.CalledProcessError,  # `ros2 bag info` failed (non-zero exit)
-    ValueError,  # `ros2 bag info` ran (exit 0) but had no parseable Duration line
+    subprocess.TimeoutExpired,  # `ros2 bag info` hung past its timeout (F-03) → skip + retry, don't
+    #                             wedge the serial loop on one bad/pathological bag
+    ValueError,  # `ros2 bag info` ran (exit 0) but had no parseable Duration line, or zero topics (F-02)
 )
 
 

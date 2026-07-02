@@ -55,3 +55,11 @@ def test_parse_captures_all_topics() -> None:
 def test_parse_raises_when_duration_absent() -> None:
     with pytest.raises(ValueError, match="Duration"):
         parse_bag_info("Files: x.mcap\nStorage id: mcap\n")
+
+
+# F-02: a parseable Duration but a topic section the regex never matches must fail loud, not
+# silently write an empty topic set to the manifest (the ValueError slots into _INGEST_FAULTS).
+def test_parse_raises_when_no_topics_parsed() -> None:
+    text = "Duration:          1.0s\nTopic information: (unparseable topic section)\n"
+    with pytest.raises(ValueError, match="no parseable topics"):
+        parse_bag_info(text)

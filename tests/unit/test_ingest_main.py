@@ -13,6 +13,7 @@ notably the `ValueError` `parse_bag_info` raises when `ros2 bag info` runs (exit
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,9 @@ def _service_with_failing_reader(
     [
         ValueError("could not parse Duration from ros2 bag info output"),  # the F-01 gap
         FileNotFoundError("bag vanished mid-index"),
+        # F-03: a hung `ros2 bag info` (TimeoutExpired from the reader) is skipped, not propagated —
+        # so one stuck CLI can't wedge the serial ingest loop.
+        subprocess.TimeoutExpired(cmd=["ros2", "bag", "info"], timeout=120.0),
     ],
 )
 def test_try_index_skips_reader_fault_without_propagating(tmp_path: Path, exc: Exception) -> None:
@@ -59,12 +63,6 @@ def test_try_index_skips_reader_fault_without_propagating(tmp_path: Path, exc: E
 
     assert _try_index(service, bag, sidecar) is False  # skipped, did NOT propagate / crash
     assert service._store.query_recent(10) == []  # nothing half-indexed
-
-
-# F-01 regression contract: ValueError is explicitly a member of the documented fault set, so the
-# parse-failure path is caught structurally (not only via the behavioural test above).
-def test_value_error_is_in_documented_ingest_fault_set() -> None:
-    assert ValueError in _INGEST_FAULTS
 
 
 def _fixed_facts_reader() -> BagFactsReader:
@@ -92,10 +90,25 @@ def _service_with_bad_sidecar(
     return service, bag, sidecar
 
 
-# F-03: TypeError (non-object sidecar) and UnicodeDecodeError (non-UTF-8 sidecar) are members of the
-# documented fault set — so the watch loop skips-and-retries them instead of crash-looping.
-@pytest.mark.parametrize("fault", [TypeError, UnicodeDecodeError])
-def test_new_sidecar_faults_are_in_documented_ingest_fault_set(fault: type[BaseException]) -> None:
+# The documented fault set's membership is load-bearing: a fault it omits crash-loops the service.
+# One parametrized guard pins every member the watch loop relies on (folded from what were separate
+# per-fault tests, so adding a member is one row, not a new copied block — CodeScene duplication):
+#   * ValueError — parse failure: no Duration line, or F-02's zero-topics guard (bag_reader.py).
+#   * subprocess.CalledProcessError / TimeoutExpired — `ros2 bag info` exited non-zero / hung (F-03).
+#   * TypeError / UnicodeDecodeError — non-object / non-UTF-8 sidecar (arise before the reader).
+#   * sqlite3.IntegrityError — a required sidecar field is JSON null → DB NOT NULL reject (greptile P1).
+@pytest.mark.parametrize(
+    "fault",
+    [
+        ValueError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        TypeError,
+        UnicodeDecodeError,
+        sqlite3.IntegrityError,
+    ],
+)
+def test_documented_ingest_fault_set_members(fault: type[BaseException]) -> None:
     assert fault in _INGEST_FAULTS
 
 
@@ -111,12 +124,6 @@ def test_try_index_skips_non_utf8_sidecar(tmp_path: Path) -> None:
     service, bag, sidecar = _service_with_bad_sidecar(tmp_path, b"\xff\xfe not utf-8")
     assert _try_index(service, bag, sidecar) is False
     assert service._store.query_recent(10) == []
-
-
-# greptile P1: sqlite3.IntegrityError is a member of the documented fault set, so a null required
-# field (which passes every pre-DB guard) is skipped-and-retried, not crash-looping the service.
-def test_null_field_sidecar_fault_is_in_documented_ingest_fault_set() -> None:
-    assert sqlite3.IntegrityError in _INGEST_FAULTS
 
 
 # greptile P1: a sidecar with a required field explicitly JSON null passes json.loads, the key check,

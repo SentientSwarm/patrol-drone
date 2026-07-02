@@ -49,6 +49,19 @@ def test_rsync_send_returns_true_on_success() -> None:
     assert "dgx:/data/bags/" in argv
 
 
+# F-04: the rsync argv includes a `--` option terminator immediately before the source path, so an
+# option-looking path (e.g. "--rsync-path=sh") is treated as a file, not an rsync flag.
+def test_rsync_send_inserts_option_terminator() -> None:
+    runner = _RecordingRunner(returncode=0)
+    transport = RsyncSshTransport(runner=runner)
+
+    transport.send(Path("--rsync-path=sh"), "dgx:/data/bags/")
+
+    argv = runner.calls[0]
+    assert "--" in argv
+    assert argv.index("--") == argv.index("--rsync-path=sh") - 1
+
+
 # TS-1: the rsync argv is resumable/archive (rsync -a) — the design's "resumable, dependency-light".
 def test_rsync_send_uses_archive_flag() -> None:
     runner = _RecordingRunner(returncode=0)

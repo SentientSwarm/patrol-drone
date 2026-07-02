@@ -50,26 +50,35 @@ jobs:
           persist-credentials: false
           lfs: true # materialize the reference bag (LFS) — without this the replay test hard-fails
 
-      # Bootstrap guard: the reference bag + replay test only exist once M8 lands them. Skip cleanly
-      # on a repo state without them so the check is GREEN until the artifacts arrive, then activates.
-      - id: present
+      # Presence tripwire (design §4.4.5: "reference bag is required, not optional" → HARD CI failure,
+      # not a skip). M8 lands tests/replay/test_replay_regression.py + a reference *.mcap on this branch;
+      # once merged they exist on every ref, so their absence on a PR/push means someone deleted or
+      # renamed the required replay gate — which must fail the job, never silently skip it green. (The
+      # earlier bootstrap-skip that let absence pass green was PR #16 / F-01: a required check that can
+      # be turned into a green no-op is worse than no check.)
+      - name: Assert the replay gate artifacts are present (must not be silently removed)
         shell: bash
         run: |
-          if [ -f tests/replay/test_replay_regression.py ] \
-             && [ -n "$(find tests/replay/reference -name '*.mcap' 2>/dev/null | head -n1)" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no replay test or reference bag yet — skipping replay regression"
+          missing=0
+          if [ ! -f tests/replay/test_replay_regression.py ]; then
+            echo "::error::tests/replay/test_replay_regression.py is missing — the required replay gate cannot be silently removed"
+            missing=1
           fi
+          if [ -z "$(find tests/replay/reference -name '*.mcap' 2>/dev/null | head -n1)" ]; then
+            echo "::error::no reference *.mcap under tests/replay/reference — the required replay gate needs its bag"
+            missing=1
+          fi
+          [ "$missing" -eq 0 ] || exit 1
 
       # Install the focused ROS runtime this lane needs (the base image has NO ROS distro — see the
       # container note above). rclpy + std_msgs for the subscriber counter; ros2bag + rosbag2 for
       # `ros2 bag play`/`info`; the MCAP storage plugin so they can read the .mcap reference bag
       # (bag format is MCAP, not sqlite3 — plan M7); rsync for the stand-in test's RsyncSshTransport.
       # This apt-installs ~90 MB from the packages.ros.org source already configured in the image.
-      - if: steps.present.outputs.present == 'true'
-        name: Install the ROS runtime (rclpy + ros2bag + MCAP plugin) and rsync
+      # NOTE (PR #16 / F-05): these ros-${ROS_DISTRO}-* / rsync apt packages are unversioned and drift
+      # with packages.ros.org. Knowingly accepted for Phase 1 (sim-only); revisit with an apt snapshot
+      # at hardening. actions/* and the job container are already digest-pinned above.
+      - name: Install the ROS runtime (rclpy + ros2bag + MCAP plugin) and rsync
         shell: bash
         run: |
           apt-get update
@@ -87,8 +96,7 @@ jobs:
       # pytest collection error — root-caused to the base image carrying no ROS distro, now fixed by
       # the install step above). If this step regresses, the ROS runtime apt-install above is the
       # first place to look (a renamed/missing ros-jazzy-* package), before any source/PATH issue.
-      - if: steps.present.outputs.present == 'true'
-        name: Probe the ROS env (rclpy importable)
+      - name: Probe the ROS env (rclpy importable)
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
@@ -96,8 +104,7 @@ jobs:
 
       # LFS-pointer tripwire: fail loudly here (not as a confusing test error) if the bag did not
       # materialize — i.e. the checkout's `lfs: true` silently failed. The reference bag is required.
-      - if: steps.present.outputs.present == 'true'
-        name: Verify the reference bag materialized (LFS)
+      - name: Verify the reference bag materialized (LFS)
         shell: bash
         run: |
           bag="$(find tests/replay/reference -name '*.mcap' | head -n1)"
@@ -108,8 +115,7 @@ jobs:
           fi
           echo "reference bag OK: $bag ($size bytes)"
 
-      - if: steps.present.outputs.present == 'true'
-        name: Run the replay regression test (LR-5; ≤90 s replay budget)
+      - name: Run the replay regression test (LR-5; ≤90 s replay budget)
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
@@ -125,8 +131,7 @@ jobs:
       # The upload→ingest→manifest chain against a LOCAL stand-in target (OQ-7: no real DGX in CI).
       # Lightweight (rsync + sqlite, no ROS topics) but rsync + ros2 are on PATH here, so it rides
       # this lane rather than spinning a separate job.
-      - if: steps.present.outputs.present == 'true'
-        name: Run the upload→ingest→manifest stand-in integration test (LR-3/LR-4)
+      - name: Run the upload→ingest→manifest stand-in integration test (LR-3/LR-4)
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
