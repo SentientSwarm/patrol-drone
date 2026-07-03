@@ -38,7 +38,9 @@ from patrol_logging.recorder import (
     build_record_argv,
     build_sidecar,
     recorder_finished_cleanly,
+    sidecar_inputs_path,
     write_sidecar,
+    write_sidecar_inputs,
 )
 
 _PKG = "patrol_logging"
@@ -49,7 +51,12 @@ _DEFAULT_OUTPUT_DIR = str(Path.home() / "patrol_bags")
 # ~100 MiB MCAP finalize under I/O load — too short a window truncates the bag or leaves it
 # non-finalized. Widened here so the recorder gets a real flush window on any clean shutdown, caller
 # independent (the runner's SIGINT, a Ctrl-C, or record:=true on another runner all benefit).
-_RECORDER_SIGTERM_TIMEOUT_S = "30"
+# Coordinated with scripts/run_patrol_world_sitl.sh's FINALIZE_WAIT (90 s): the runner waits STRICTLY
+# LONGER than this so the launch's clean SIGINT-mediated shutdown (recorder flush -> OnProcessExit
+# sidecar) completes before the runner ever escalates to a group SIGTERM. Raised 30 -> 60 after a
+# real RTF≈1 patrol showed the recorder needing >45 s to flush, blowing the old budget and forcing
+# the SIGTERM escalation that lost the sidecar. Keep the two literals in step if either changes.
+_RECORDER_SIGTERM_TIMEOUT_S = "60"
 
 
 def _default_topics_yaml() -> str:
@@ -94,6 +101,11 @@ def _launch_recorder(context: LaunchContext) -> list[ExecuteProcess | RegisterEv
     )
 
     get_logger("patrol_record").info(f"recording bag {basename}/ into {output_dir}")
+    # Stage the record-START sidecar facts NOW, while this launch is unquestionably alive, so the
+    # runner can finalize <bag>.meta.json even if a group-SIGTERM kills `ros2 launch` before the
+    # OnProcessExit handler below runs (the missing-sidecar bug). The happy SIGINT path still writes
+    # the sidecar in the handler and clears this crumb; the runner's finalize is the fallback.
+    write_sidecar_inputs(sidecar_inputs_path(output_dir / basename), run, topics + regexes)
     # sigterm_timeout gives `ros2 bag record` a generous window to finalize on SIGINT before launch
     # escalates to SIGTERM — see _RECORDER_SIGTERM_TIMEOUT_S. This is what makes the docstring's
     # "the launch system SIGINT-finalizes the MCAP at shutdown" hold for a large bag under load.
@@ -120,6 +132,9 @@ def _launch_recorder(context: LaunchContext) -> list[ExecuteProcess | RegisterEv
         sidecar = build_sidecar(run, datetime.now(UTC), topics + regexes)
         sidecar_path = output_dir / f"{basename}.meta.json"
         write_sidecar(sidecar_path, sidecar)
+        # Clear the staging crumb so the runner's fallback finalize no-ops (missing_ok: the runner
+        # may have consumed it already if this handler ran late).
+        sidecar_inputs_path(output_dir / basename).unlink(missing_ok=True)
         get_logger("patrol_record").info(f"wrote bag sidecar {sidecar_path}")
 
     return [

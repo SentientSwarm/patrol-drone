@@ -74,7 +74,12 @@ CAMERA_WAIT="${CAMERA_WAIT:-90}"
 # Seconds to wait for the mission launch to exit cleanly (SIGINT -> rosbag2 finalizes metadata.yaml)
 # before force-tearing the rest of the stack down. A ~100 MiB MCAP finalize is I/O-bound, so this is
 # deliberately generous — its job is to give rosbag2 a real flush window, not to police latency.
-FINALIZE_WAIT="${FINALIZE_WAIT:-45}"
+# Coordinated with record.launch.py's _RECORDER_SIGTERM_TIMEOUT_S (60 s): this MUST be strictly
+# larger so the launch's clean SIGINT-mediated shutdown (recorder flush -> OnProcessExit sidecar)
+# finishes before stop_launch_group escalates to a group SIGTERM. Raised 45 -> 90 after a real RTF≈1
+# patrol showed the recorder needing >45 s to flush — the old 45 s forced the SIGTERM escalation that
+# killed `ros2 launch` before its sidecar handler ran (the missing-.meta.json bug). Keep in step.
+FINALIZE_WAIT="${FINALIZE_WAIT:-90}"
 
 AGENT_PID=""
 GZ_PID=""
@@ -161,6 +166,29 @@ stop_launch_group() {  # stop_launch_group PGID
   wait_for_pid_exit "${pgid}" "${FINALIZE_WAIT}"
 }
 
+# Write <bag>.meta.json for every finalized bag under run_root, from the record-start staging file the
+# launch dropped (<bag>.sidecar-inputs.json) — CALLER-INDEPENDENT of how the launch died. The launch's
+# OnProcessExit sidecar handler only runs if `ros2 launch`'s asyncio loop survives shutdown, which a
+# group SIGTERM tears down before the handler fires (metadata.yaml survives via rosbag2's own signal
+# handler, but the sidecar was lost — the missing-.meta.json bug). Finalizing here, after the launch is
+# gone, makes the sidecar independent of that fragile exit-event timing. finalize_sidecar_from_staging
+# is idempotent: a no-op when the handler already wrote the sidecar (happy SIGINT path), or when there
+# is no finalized bag / no staging crumb. Runs in the ROS-sourced env so patrol_logging is importable.
+# shellcheck disable=SC2317,SC2329  # reached from graceful_stop_mission, not a direct call
+finalize_bag_sidecars() {  # finalize_bag_sidecars RUN_ROOT
+  local run_root="$1" bag_dir
+  while IFS= read -r bag_dir; do
+    [[ -n "${bag_dir}" ]] || continue
+    python3 -c '
+import sys
+from pathlib import Path
+from patrol_logging.recorder import finalize_sidecar_from_staging
+written = finalize_sidecar_from_staging(Path(sys.argv[1]))
+print(f"wrote bag sidecar {written}" if written else "sidecar already present (or nothing to finalize)")
+' "${bag_dir}" || warn "sidecar finalize failed for ${bag_dir} (patrol_logging importable?)"
+  done < <(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null)
+}
+
 # Stop the mission launch CLEANLY so the recorder finalizes its MCAP (writes metadata.yaml) before the
 # stack is torn down. `ros2 launch` under SIGTERM cancels its asyncio task and orphans children (the
 # launch code warns "using SIGTERM can result in orphaned processes"), leaving a non-finalized bag;
@@ -185,6 +213,10 @@ graceful_stop_mission() {
     err "no finalized bag (metadata.yaml) under ${run_root} after clean stop — recorder did not finalize"
     return 1
   fi
+  # Finalize the JSON sidecar from the launch's staging file now that the launch is gone (no-op if its
+  # OnProcessExit handler already wrote it on the clean SIGINT path). This is what makes the bag
+  # ingestable (upload_daemon.is_complete() requires <bag>.meta.json) regardless of how launch exited.
+  finalize_bag_sidecars "${run_root}"
   return 0
 }
 
@@ -447,6 +479,13 @@ assert_bag_has_compressed_imagery() {
   bag_dir="$(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null | head -n1)"
   if [[ -z "${bag_dir}" ]]; then
     err "no finalized bag (metadata.yaml) found under ${run_root} — recorder produced no ingestable bag"
+    return 1
+  fi
+  # A bag is only INGESTABLE with its JSON sidecar (upload_daemon.is_complete() requires <bag>.meta.json).
+  # graceful_stop_mission just finalized it from the staging file, so its absence is a real regression —
+  # fail loudly here rather than ship a silently non-ingestable bag (the bug this fix closes).
+  if [[ ! -f "${bag_dir}.meta.json" ]]; then
+    err "bag ${bag_dir} has no sidecar (${bag_dir}.meta.json) — bag is not ingestable (upload_daemon skips it)"
     return 1
   fi
   local info count

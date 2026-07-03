@@ -25,7 +25,11 @@ from patrol_logging.recorder import (
     bag_name,
     build_record_argv,
     build_sidecar,
+    finalize_sidecar_from_staging,
+    read_sidecar_inputs,
+    sidecar_inputs_path,
     write_sidecar,
+    write_sidecar_inputs,
 )
 
 # A fixed instant so every name/timestamp assertion is deterministic (no wall-clock).
@@ -141,14 +145,17 @@ def test_argv_requires_at_least_one_topic_or_regex(tmp_path) -> None:
 # --- sidecar (DoD AC-2 / design §4.2.2 / OQ-10 JSON) -----------------------------------------
 
 
-def _sample_sidecar() -> BagSidecar:
-    run = RecordingRun(
+def _sample_run() -> RecordingRun:
+    return RecordingRun(
         mission_id="alpha",
         bag_uri=f"patrol_alpha_{_TS}",  # bag DIRECTORY (rosbag2 -o URI), no .mcap extension
         started=_STARTED,
         mission_config_ref="/abs/patrol_mission.yaml",
     )
-    return build_sidecar(run, _ENDED, _NAMED_TOPICS + _REGEXES)
+
+
+def _sample_sidecar() -> BagSidecar:
+    return build_sidecar(_sample_run(), _ENDED, _NAMED_TOPICS + _REGEXES)
 
 
 @pytest.mark.parametrize(
@@ -187,3 +194,81 @@ def test_write_sidecar_round_trips_as_json(tmp_path) -> None:
     assert loaded["started_utc"] == "2026-06-26T14:05:09+00:00"
     assert loaded["recorded_topics"] == _NAMED_TOPICS + _REGEXES
     assert loaded["mission_config_ref"] == "/abs/patrol_mission.yaml"
+
+
+# --- staging file + caller-independent finalize (the missing-sidecar fix) ---------------------
+
+
+def test_sidecar_inputs_round_trip(tmp_path) -> None:
+    # write -> read reconstructs the run identity + requested topic set (the record-START facts).
+    path = sidecar_inputs_path(tmp_path / f"patrol_alpha_{_TS}")
+    write_sidecar_inputs(path, _sample_run(), _NAMED_TOPICS + _REGEXES)
+
+    run, recorded_topics = read_sidecar_inputs(path)
+
+    assert run == _sample_run()  # dataclass equality: every identity field survives the round-trip
+    assert recorded_topics == _NAMED_TOPICS + _REGEXES
+
+
+@pytest.fixture
+def staged_bag_dir(tmp_path):
+    """A finalized bag dir (metadata.yaml present) with its record-start staging file beside it."""
+    bag_dir = tmp_path / f"patrol_alpha_{_TS}"
+    bag_dir.mkdir()
+    (bag_dir / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    write_sidecar_inputs(sidecar_inputs_path(bag_dir), _sample_run(), _NAMED_TOPICS + _REGEXES)
+    return bag_dir
+
+
+def test_finalize_writes_sidecar_from_staging(staged_bag_dir) -> None:
+    sidecar_path = finalize_sidecar_from_staging(staged_bag_dir)
+
+    assert sidecar_path == staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json")
+    loaded = json.loads(sidecar_path.read_text())
+    assert loaded["mission_id"] == "alpha"
+    assert loaded["bag_uri"] == f"patrol_alpha_{_TS}"
+    assert loaded["started_utc"] == "2026-06-26T14:05:09+00:00"  # the STAGED start, not "now"
+    assert loaded["recorded_topics"] == _NAMED_TOPICS + _REGEXES
+    assert loaded["mission_config_ref"] == "/abs/patrol_mission.yaml"
+
+
+def test_finalize_removes_the_staging_crumb(staged_bag_dir) -> None:
+    finalize_sidecar_from_staging(staged_bag_dir)
+    assert not sidecar_inputs_path(staged_bag_dir).exists()
+
+
+def test_finalize_is_idempotent(staged_bag_dir) -> None:
+    # First call writes it; a second (e.g. runner after the OnProcessExit handler already wrote it)
+    # must be a no-op that neither errors nor rewrites — returns None.
+    first = finalize_sidecar_from_staging(staged_bag_dir)
+    assert first is not None
+    assert finalize_sidecar_from_staging(staged_bag_dir) is None
+
+
+def test_finalize_no_ops_when_sidecar_already_present(staged_bag_dir) -> None:
+    # The happy SIGINT path already wrote the sidecar; the runner must not clobber it, but should
+    # still clear the staging crumb.
+    sidecar_path = staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json")
+    write_sidecar(sidecar_path, _sample_sidecar())
+
+    assert finalize_sidecar_from_staging(staged_bag_dir) is None
+    assert not sidecar_inputs_path(staged_bag_dir).exists()  # crumb cleared
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "metadata.yaml",  # no finalized bag -> a failed recording must not get a blessing sidecar
+        "staging",  # no staging crumb (recorder ran without our launch write) -> nothing to finalize
+    ],
+)
+def test_finalize_no_ops_and_writes_nothing_when_a_precondition_is_missing(
+    staged_bag_dir, missing: str
+) -> None:
+    if missing == "metadata.yaml":
+        (staged_bag_dir / "metadata.yaml").unlink()
+    else:
+        sidecar_inputs_path(staged_bag_dir).unlink()
+
+    assert finalize_sidecar_from_staging(staged_bag_dir) is None
+    assert not staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json").exists()

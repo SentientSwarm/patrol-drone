@@ -16,6 +16,11 @@ live on the per-PR pure-Python tier (CLAUDE.md London-TDD; ADR-0002 fast lane):
     Per the dumb-producer invariant (design §3.4) the sidecar is identity/correlation metadata
     only; duration and per-topic message counts are re-derived from the bag at ingest time (M8),
     never trusted from here.
+  * ``write_sidecar_inputs`` / ``read_sidecar_inputs`` / ``finalize_sidecar_from_staging`` — the
+    caller-independent sidecar path. The launch stages the record-start facts to
+    ``<bag>.sidecar-inputs.json`` while it is alive; the runner finalizes ``<bag>.meta.json`` from
+    that staging file after the bag finalizes, so a group-SIGTERM that kills ``ros2 launch`` before
+    its OnProcessExit handler runs no longer loses the sidecar (M8 ingestability, dumb producer).
 
 The thin launch/subprocess layer that actually spawns ``ros2 bag record`` and SIGINT-finalizes the
 MCAP lives in ``launch/record.launch.py`` (a launch file), verified by colcon build + the nightly
@@ -27,7 +32,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Characters allowed verbatim in the mission-id segment of a bag name. Everything else collapses to
@@ -174,6 +179,70 @@ def build_sidecar(run: RecordingRun, ended: datetime, recorded_topics: list[str]
 def write_sidecar(path: Path, sidecar: BagSidecar) -> None:
     """Write ``sidecar`` to ``path`` as pretty-printed JSON (stdlib ``json``, no YAML dep)."""
     path.write_text(json.dumps(asdict(sidecar), indent=2, sort_keys=True) + "\n")
+
+
+# Suffix of the record-start staging file that lets the sidecar survive a launch death (F-03++).
+# The launch writes ``<bag>.sidecar-inputs.json`` while it is unquestionably alive; the runner reads
+# it back and writes the real ``<bag>.meta.json`` after the bag finalizes, so a group-SIGTERM that
+# kills ``ros2 launch`` before its OnProcessExit handler runs no longer loses the sidecar.
+_SIDECAR_INPUTS_SUFFIX = ".sidecar-inputs.json"
+
+
+def sidecar_inputs_path(bag_dir: Path) -> Path:
+    """Return the staging-file path for a bag directory (``<bag>.sidecar-inputs.json``)."""
+    return bag_dir.with_name(bag_dir.name + _SIDECAR_INPUTS_SUFFIX)
+
+
+def write_sidecar_inputs(path: Path, run: RecordingRun, recorded_topics: list[str]) -> None:
+    """Persist the record-START sidecar facts (everything ``build_sidecar`` needs except ``ended``).
+
+    Written by the launch the instant recording starts, while the launch is guaranteed alive — so
+    the runner can finalize the sidecar later regardless of how the launch shut down. ``started`` is
+    stored as ISO-8601 so the finalized ``started_utc`` matches the OnProcessExit path byte-for-byte.
+    """
+    payload = {
+        "mission_id": run.mission_id,
+        "bag_uri": run.bag_uri,
+        "started_utc": run.started.isoformat(),
+        "mission_config_ref": run.mission_config_ref,
+        "recorded_topics": list(recorded_topics),
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def read_sidecar_inputs(path: Path) -> tuple[RecordingRun, list[str]]:
+    """Inverse of :func:`write_sidecar_inputs`: reconstruct the run identity + requested topic set."""
+    payload = json.loads(path.read_text())
+    run = RecordingRun(
+        mission_id=payload["mission_id"],
+        bag_uri=payload["bag_uri"],
+        started=datetime.fromisoformat(payload["started_utc"]),
+        mission_config_ref=payload["mission_config_ref"],
+    )
+    return run, list(payload["recorded_topics"])
+
+
+def finalize_sidecar_from_staging(bag_dir: Path) -> Path | None:
+    """Write ``<bag>.meta.json`` from the staging file once the bag has finalized (caller-independent).
+
+    Idempotent and safe to call from the runner after *any* shutdown: returns ``None`` (a no-op) when
+    there is nothing to finalize — no finalized bag (``metadata.yaml`` absent), no staging file, or a
+    sidecar already present (the OnProcessExit happy path beat us to it). On success it writes the
+    sidecar (``ended`` stamped now), removes the staging file, and returns the sidecar path.
+    """
+    if not (bag_dir / "metadata.yaml").exists():
+        return None
+    inputs = sidecar_inputs_path(bag_dir)
+    if not inputs.exists():
+        return None
+    sidecar_path = bag_dir.with_name(bag_dir.name + ".meta.json")
+    if sidecar_path.exists():
+        inputs.unlink()  # the handler already finalized; just clear the staging crumb
+        return None
+    run, recorded_topics = read_sidecar_inputs(inputs)
+    write_sidecar(sidecar_path, build_sidecar(run, datetime.now(UTC), recorded_topics))
+    inputs.unlink()
+    return sidecar_path
 
 
 def resolve_run_id(configured: str, now: datetime) -> str:
