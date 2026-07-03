@@ -223,6 +223,7 @@ def staged_bag_dir(tmp_path):
 def test_finalize_writes_sidecar_from_staging(staged_bag_dir) -> None:
     sidecar_path = finalize_sidecar_from_staging(staged_bag_dir)
 
+    assert sidecar_path is not None
     assert sidecar_path == staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json")
     loaded = json.loads(sidecar_path.read_text())
     assert loaded["mission_id"] == "alpha"

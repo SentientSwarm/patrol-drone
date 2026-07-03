@@ -139,6 +139,7 @@ def test_staged_finalize_produces_the_same_identity_as_the_handler_path(tmp_path
 
     sidecar_path = finalize_sidecar_from_staging(bag_dir)  # runner, after the launch is gone
 
+    assert sidecar_path is not None
     handler_sidecar = build_sidecar(run, _ENDED, topics)  # the OnProcessExit path, same run
     loaded = json.loads(sidecar_path.read_text())
     for field in ("mission_id", "bag_uri", "started_utc", "recorded_topics", "mission_config_ref"):
