@@ -38,13 +38,19 @@ def _make_bag_dir(tmp_path: Path, name: str = "patrol_patrol_20260626_080740") -
     return bag
 
 
-def _write_sidecar(path: Path, *, mission_id: str = "patrol") -> Path:
-    """Write a sidecar in the CURRENT recorder schema (bag_uri/started_utc — Research F4)."""
+def _write_sidecar(
+    path: Path, *, mission_id: str = "patrol", bag_uri: str = "patrol_patrol_20260626_080740"
+) -> Path:
+    """Write a sidecar in the CURRENT recorder schema (bag_uri/started_utc — Research F4).
+
+    ``bag_uri`` defaults to the ``_make_bag_dir`` default name so the identity guard (F-04) is
+    satisfied by matched pairs; pass a different value to build the mismatched-sidecar negative case.
+    """
     path.write_text(
         json.dumps(
             {
                 "mission_id": mission_id,
-                "bag_uri": "patrol_patrol_20260626_080740",
+                "bag_uri": bag_uri,
                 "started_utc": "2026-06-26T08:07:40.635796+00:00",
                 "ended_utc": "2026-06-26T08:10:03.410167+00:00",
                 "recorded_topics": ["/patrol/mission_state", "/fmu/out/.*"],
@@ -142,6 +148,20 @@ def test_index_raises_on_missing_bag(tmp_path: Path) -> None:
     store = ManifestStore(tmp_path / "m.db")
 
     with pytest.raises(FileNotFoundError):
+        IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
+
+    assert store.query_recent(10) == []  # nothing indexed
+
+
+# F-04: a sidecar whose bag_uri names a DIFFERENT bag must fail loudly and index nothing — a
+# swapped/stale sidecar can no longer silently mis-label the manifest (Hermes Medium #2). ValueError is
+# a member of _INGEST_FAULTS, so the watch loop skips (not crashes) the mismatched pair.
+def test_index_raises_on_sidecar_bag_uri_mismatch(tmp_path: Path) -> None:
+    bag = _make_bag_dir(tmp_path)
+    sidecar = _write_sidecar(tmp_path / (bag.name + ".meta.json"), bag_uri="patrol_some_other_bag")
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(ValueError, match="does not match bag dir"):
         IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
 
     assert store.query_recent(10) == []  # nothing indexed

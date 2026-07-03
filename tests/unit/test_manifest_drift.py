@@ -223,15 +223,39 @@ def _write_ros_ci(root: Path, distro_line: str) -> None:
     (wf / "ros-ci.yml").write_text(f"jobs:\n  build:\n    with:\n      {distro_line}\n")
 
 
+def _write_replay_lane(root: Path, distro_line: str) -> None:
+    """The required replay-regression lane pins its own ROS_DISTRO (F-06); the drift check enforces it."""
+    wf = root / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "replay-regression.yml").write_text(f"jobs:\n  replay:\n    env:\n      {distro_line}\n")
+
+
 def test_workflow_distro_clean_when_matching(tmp_path):
+    # BOTH ROS-distro-pinning lanes must be present + matching, else the check flags a missing lane.
     _write_ros_ci(tmp_path, "target-ros2-distro: jazzy")
+    _write_replay_lane(tmp_path, "ROS_DISTRO: jazzy")
     assert drift.check_workflow_distro(tmp_path, _DISTRO_MANIFEST) == []
 
 
 def test_workflow_distro_flags_mismatch(tmp_path):
+    # ros-ci off the manifest distro (replay lane matches) → exactly the ros-ci mismatch is flagged.
     _write_ros_ci(tmp_path, "target-ros2-distro: humble")
+    _write_replay_lane(tmp_path, "ROS_DISTRO: jazzy")
     problems = drift.check_workflow_distro(tmp_path, _DISTRO_MANIFEST)
     assert len(problems) == 1
+    assert "ros-ci.yml" in problems[0]
+    assert "humble" in problems[0]
+    assert "jazzy" in problems[0]
+
+
+# F-06: the replay-regression lane's ROS_DISTRO is now enforced too — a lane pinned off the manifest
+# distro (ros-ci still matching) is flagged, so a future distro bump can't silently strand it.
+def test_workflow_distro_flags_replay_lane_mismatch(tmp_path):
+    _write_ros_ci(tmp_path, "target-ros2-distro: jazzy")
+    _write_replay_lane(tmp_path, "ROS_DISTRO: humble")
+    problems = drift.check_workflow_distro(tmp_path, _DISTRO_MANIFEST)
+    assert len(problems) == 1
+    assert "replay-regression.yml" in problems[0]
     assert "humble" in problems[0]
     assert "jazzy" in problems[0]
 

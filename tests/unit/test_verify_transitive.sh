@@ -45,10 +45,8 @@ XRCE_LIB_ONLY=1 source "${REPO_ROOT}/scripts/build_xrce_agent.sh"
 # --- Case 1: two independent top-level checkouts, BOTH at the pin -> pass (all verified). -----------
 src="${tmp}/case_ok"
 mkdir -p "${src}/build/a" "${src}/build/b"
-h1="$(make_checkout "${src}/build/a/fastcdr" one)"
-git -C "${src}/build/a/fastcdr" reset -q --hard "${h1}"
-h2="$(cd "${src}/build/a/fastcdr" && git rev-parse HEAD)"
-# Second checkout: reset it to the SAME sha by cloning the first (same tree/commit).
+make_checkout "${src}/build/a/fastcdr" one >/dev/null
+# Second checkout: clone the first so both sit at the SAME sha (same tree/commit).
 git clone -q "${src}/build/a/fastcdr" "${src}/build/b/fastcdr"
 git -C "${src}/build/b/fastcdr" remote set-url origin "${_URL}"
 # Both HEADs equal; use that shared sha as the expected pin.

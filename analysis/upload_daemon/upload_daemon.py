@@ -54,6 +54,21 @@ def is_complete(bag_path: Path) -> bool:
     return is_finalized_bag_dir(bag_path) and sidecar_path_for(bag_path).is_file()
 
 
+def upload_marker_for(bag_path: Path) -> Path:
+    """The LOCAL marker written beside a bag once its transfer is confirmed (``<bag>.uploaded``)."""
+    return bag_path.with_name(bag_path.name + ".uploaded")
+
+
+def is_already_uploaded(bag_path: Path) -> bool:
+    """True iff a confirmed-upload marker exists for ``bag_path`` (the watch loop's durable skip).
+
+    Survives the in-memory LRU's eviction (F-05), so an old bag with its marker is skipped forever
+    rather than re-rsynced every poll. The marker is written only on a CONFIRMED transfer, so a
+    failed/partial upload leaves none and correctly retries.
+    """
+    return upload_marker_for(bag_path).is_file()
+
+
 class UploadDaemon:
     """Transfers completed bags to the target; dumb watch-and-send only (LR-3)."""
 
@@ -80,7 +95,12 @@ class UploadDaemon:
         if not is_complete(bag_path):
             return False
 
-        return all(self._send_with_retry(path) for path in (bag_path, sidecar_path_for(bag_path)))
+        if not all(self._send_with_retry(path) for path in (bag_path, sidecar_path_for(bag_path))):
+            return False
+        upload_marker_for(
+            bag_path
+        ).touch()  # LOCAL-only durable 'uploaded' signal (F-05); not shipped
+        return True
 
     def _send_with_retry(self, path: Path) -> bool:
         """Send ``path`` to the target, retrying up to ``max_retries`` times with backoff."""

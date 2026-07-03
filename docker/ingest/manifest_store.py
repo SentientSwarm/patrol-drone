@@ -110,6 +110,12 @@ class ManifestStore:
             )
             return [self._to_row(r) for r in cursor.fetchall()]
 
+    def contains(self, bag_id: str) -> bool:
+        """True iff a row for ``bag_id`` is already in the manifest (the ingest loop's durable skip)."""
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT 1 FROM bag_manifest WHERE bag_id = ? LIMIT 1", (bag_id,))
+            return cursor.fetchone() is not None
+
     @staticmethod
     def _to_row(record: sqlite3.Row) -> ManifestRow:
         return ManifestRow(**{col: record[col] for col in _COLUMNS})

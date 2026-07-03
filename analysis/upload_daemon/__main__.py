@@ -5,8 +5,9 @@ core (which holds the tested logic). This module is the I/O shell — argparse +
 watched directory — analogous to a ROS launch file: it carries no first-party logic worth a Layer-A
 unit test, and is exercised by the stand-in integration test instead.
 
-Usage:
-    python -m upload_daemon --watch ~/patrol_bags --target dgx:/data/bags/ [--transport rsync|s3]
+Usage (from the repo root — ``upload_daemon`` lives under ``analysis/``, so put it on the path):
+    PYTHONPATH=analysis python -m upload_daemon \
+        --watch ~/patrol_bags --target dgx:/data/bags/ [--transport rsync|s3]
 """
 
 from __future__ import annotations
@@ -18,7 +19,12 @@ from pathlib import Path
 
 from _shared.bounded_seen import _BoundedSeen
 from upload_daemon.transport import RsyncSshTransport, S3Transport, Transport
-from upload_daemon.upload_daemon import UploadDaemon, is_complete, iter_bag_dirs
+from upload_daemon.upload_daemon import (
+    UploadDaemon,
+    is_already_uploaded,
+    is_complete,
+    iter_bag_dirs,
+)
 
 logger = logging.getLogger("upload_daemon")
 
@@ -66,9 +72,20 @@ def _try_upload(daemon: UploadDaemon, bag: Path) -> bool:
 
 
 def _drain_once(daemon: UploadDaemon, watch_dir: Path, uploaded: _BoundedSeen) -> None:
-    """One discovery+upload pass over ``watch_dir`` (mutates ``uploaded`` with the freshly uploaded)."""
+    """One discovery+upload pass over ``watch_dir`` (mutates ``uploaded`` with the freshly uploaded).
+
+    'Already handled' is durable via a per-bag ``<bag>.uploaded`` marker (F-05): a bag with one is
+    skipped even after the in-memory LRU has evicted it, so a long retention window never re-rsyncs
+    old bags each poll. ``uploaded`` stays a within-run fast path that avoids a stat() per already-seen
+    bag. A bag whose transfer failed has no marker, so it correctly retries on a later poll.
+    """
     for bag in iter_bag_dirs(watch_dir):
         if bag in uploaded or not is_complete(bag):
+            continue
+        if is_already_uploaded(bag):
+            uploaded.add(
+                bag
+            )  # durable skip: remember it this run, don't re-stat the marker each poll
             continue
         if _try_upload(daemon, bag):
             uploaded.add(bag)

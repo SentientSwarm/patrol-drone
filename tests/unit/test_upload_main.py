@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from upload_daemon.__main__ import _UPLOAD_FAULTS, _BoundedSeen, _drain_once, _try_upload
-from upload_daemon.upload_daemon import UploadDaemon
+from upload_daemon.upload_daemon import UploadDaemon, upload_marker_for
 
 
 class _RaisingTransport:
@@ -72,3 +72,18 @@ def test_drain_once_leaves_a_faulting_bag_out_of_uploaded_for_retry(tmp_path: Pa
     _drain_once(_daemon_that_raises(OSError("boom")), tmp_path, uploaded)
 
     assert len(uploaded) == 0  # nothing marked done → retried on the next poll
+
+
+# F-05: a complete bag that ALREADY has a <bag>.uploaded marker is skipped by _drain_once — the
+# transport is never touched (a raising daemon would blow up if it were), so retention-scale bags
+# aren't re-rsynced each poll even after the in-memory seen-set evicts them.
+def test_drain_once_skips_bag_with_upload_marker(tmp_path: Path) -> None:
+    bag = _make_complete_bag(tmp_path)
+    upload_marker_for(
+        bag
+    ).touch()  # durable 'already uploaded' signal from a prior confirmed transfer
+
+    uploaded = _BoundedSeen()
+    _drain_once(_daemon_that_raises(OSError("must not be called")), tmp_path, uploaded)  # no raise
+
+    assert bag in uploaded  # recorded as handled this run, without re-uploading

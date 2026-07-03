@@ -314,26 +314,43 @@ def check_ingest_pins(repo_root: Path, manifest: dict) -> list[str]:
     return problems
 
 
-def check_workflow_distro(repo_root: Path, manifest: dict) -> list[str]:
-    """ROS CI's `target-ros2-distro` must equal the manifest ROS distro (Hermes round-3 Medium #1).
+# Each required workflow that pins the ROS distro, and the regex capturing its pinned value. Both must
+# equal manifest middleware.ros_distro — a distro bump must flow to EVERY lane or its `ros-<distro>-*`
+# apt installs break as "unable to locate package" (Hermes round-3 ros-ci + round-4 replay lane).
+_DISTRO_WORKFLOWS = (
+    ("ros-ci.yml", r"^\s*target-ros2-distro:\s*(\S+)"),
+    ("replay-regression.yml", r"^\s*ROS_DISTRO:\s*(\S+)"),
+)
 
-    The required ROS CI is a manifest consumer like the setup script and Dockerfiles: a distro bump
-    in stack-manifest.toml must flow here too, or CI would keep building the old distro while the
-    rest of the toolchain moved.
-    """
-    path = repo_root / ".github" / "workflows" / "ros-ci.yml"
+
+def _check_one_workflow_distro(
+    repo_root: Path, expected: str, name: str, pattern: str
+) -> list[str]:
+    """Validate one workflow's ROS-distro pin (captured by ``pattern``) against ``expected``."""
+    path = repo_root / ".github" / "workflows" / name
     if not path.exists():
-        return [".github/workflows/ros-ci.yml is missing"]
-    expected = manifest["middleware"]["ros_distro"]
-    match = re.search(r"^\s*target-ros2-distro:\s*(\S+)", path.read_text(), re.MULTILINE)
+        return [f".github/workflows/{name} is missing"]
+    match = re.search(pattern, path.read_text(), re.MULTILINE)
     if not match:
-        return ["ros-ci.yml has no target-ros2-distro to validate against the manifest"]
+        return [f"{name} has no {pattern!r} distro pin to validate against the manifest"]
     actual = match.group(1).strip("\"'")
     if actual != expected:
-        return [
-            f"ros-ci.yml target-ros2-distro={actual!r} != manifest middleware.ros_distro={expected!r}"
-        ]
+        return [f"{name} distro={actual!r} != manifest middleware.ros_distro={expected!r}"]
     return []
+
+
+def check_workflow_distro(repo_root: Path, manifest: dict) -> list[str]:
+    """Every ROS-distro-pinning workflow must equal the manifest ROS distro (ros-ci + replay lane).
+
+    Each required workflow is a manifest consumer like the setup script and Dockerfiles: a distro bump
+    in stack-manifest.toml must flow to all of them, or a lane would keep installing the old distro
+    while the rest of the toolchain moved.
+    """
+    expected = manifest["middleware"]["ros_distro"]
+    problems: list[str] = []
+    for name, pattern in _DISTRO_WORKFLOWS:
+        problems += _check_one_workflow_distro(repo_root, expected, name, pattern)
+    return problems
 
 
 def _stale_px4_tokens(text: str, release_line: str) -> list[str]:

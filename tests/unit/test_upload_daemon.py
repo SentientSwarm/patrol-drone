@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from upload_daemon.upload_daemon import UploadDaemon, iter_bag_dirs
+from upload_daemon.upload_daemon import UploadDaemon, iter_bag_dirs, upload_marker_for
 
 
 class _FakeTransport:
@@ -142,3 +142,22 @@ def test_persistent_failure_reports_false_and_keeps_bag(tmp_path: Path) -> None:
 
     assert uploaded is False
     assert bag.exists()  # never deleted before a confirmed transfer (§4.4.5)
+
+
+# F-05: a CONFIRMED transfer drops a local <bag>.uploaded marker — the durable 'already handled'
+# signal that survives the in-memory LRU's eviction (so old bags aren't re-rsynced at retention scale).
+def test_confirmed_transfer_writes_upload_marker(tmp_path: Path) -> None:
+    transport = _FakeTransport()  # every send succeeds
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    assert _daemon(transport).on_bag_complete(bag) is True
+    assert upload_marker_for(bag).is_file()
+
+
+# F-05: a FAILED transfer leaves NO marker, so the bag correctly retries on a later poll.
+def test_failed_transfer_writes_no_upload_marker(tmp_path: Path) -> None:
+    transport = _FakeTransport(results=[False, False, False, False])
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    assert _daemon(transport, max_retries=3, backoff_s=0).on_bag_complete(bag) is False
+    assert not upload_marker_for(bag).exists()

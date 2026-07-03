@@ -111,3 +111,14 @@ def test_query_by_mission_filters(tmp_path: Path) -> None:
 
     assert len(rows) == 1
     assert rows[0].mission_id == "survey"
+
+
+# F-05: contains() is the ingest loop's durable 'already handled' signal — True for an indexed bag_id,
+# False for an absent one — so an already-indexed bag is skipped even after the in-memory seen-set has
+# evicted it (no re-derivation of old bags at retention scale).
+def test_contains_reflects_indexed_membership(tmp_path: Path) -> None:
+    store = ManifestStore(tmp_path / "manifest.db")
+    store.upsert(_row("patrol_a_20260626_080740"))
+
+    assert store.contains("patrol_a_20260626_080740") is True
+    assert store.contains("patrol_never_indexed") is False

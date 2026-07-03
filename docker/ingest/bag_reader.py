@@ -44,6 +44,25 @@ def parse_bag_info(text: str) -> BagFacts:
     return BagFacts(duration_s=float(duration_match.group(1)), topic_counts=topic_counts)
 
 
+def _require_bag_information(text: str) -> dict:
+    """Load metadata.yaml ``text`` and return the ``rosbag2_bagfile_information`` mapping, or raise."""
+    info = (yaml.safe_load(text) or {}).get("rosbag2_bagfile_information")
+    if not isinstance(info, dict):
+        raise ValueError("metadata.yaml missing rosbag2_bagfile_information")
+    return info
+
+
+def _metadata_topic_counts(info: dict) -> dict[str, int]:
+    """Per-topic message counts from a ``rosbag2_bagfile_information`` mapping (raise if empty)."""
+    topic_counts = {
+        entry["topic_metadata"]["name"]: int(entry["message_count"])
+        for entry in info.get("topics_with_message_count", [])
+    }
+    if not topic_counts:
+        raise ValueError("metadata.yaml produced no parseable topics (empty topic set)")
+    return topic_counts
+
+
 def parse_bag_metadata(text: str) -> BagFacts:
     """Parse a rosbag2 ``metadata.yaml`` document into derived :class:`BagFacts`.
 
@@ -52,18 +71,11 @@ def parse_bag_metadata(text: str) -> BagFacts:
     human ``ros2 bag info`` display format, so it is the primary source; :func:`parse_bag_info`
     remains the fallback for a bag that has no readable ``metadata.yaml``.
     """
-    info = (yaml.safe_load(text) or {}).get("rosbag2_bagfile_information")
-    if not isinstance(info, dict):
-        raise ValueError("metadata.yaml missing rosbag2_bagfile_information")
+    info = _require_bag_information(text)
     duration_ns = info.get("duration", {}).get("nanoseconds")
     if duration_ns is None:
         raise ValueError("metadata.yaml missing duration.nanoseconds")
-    topic_counts = {
-        entry["topic_metadata"]["name"]: int(entry["message_count"])
-        for entry in info.get("topics_with_message_count", [])
-    }
-    if not topic_counts:
-        raise ValueError("metadata.yaml produced no parseable topics (empty topic set)")
+    topic_counts = _metadata_topic_counts(info)
     return BagFacts(duration_s=float(duration_ns) / 1e9, topic_counts=topic_counts)
 
 

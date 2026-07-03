@@ -38,6 +38,9 @@ jobs:
       # git-lfs is NOT in the ROS toolchain image, so `checkout` with `lfs: true` would fail to
       # locate the git-lfs executable. Install it FIRST so the checkout's LFS smudge can materialize
       # the reference bag.
+      # NOTE (PR #16 / F-08): this git-lfs apt package is unversioned and drifts with the apt source —
+      # knowingly accepted for Phase 1 (sim-only CI); revisit with an apt snapshot at hardening, same
+      # as the ros-${ROS_DISTRO}-* / rsync installs below. actions/* + the job container are pinned.
       - name: Install git-lfs
         shell: bash
         run: |

@@ -17,9 +17,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from ingest.__main__ import _INGEST_FAULTS, _try_index
+import yaml
+from ingest.__main__ import _INGEST_FAULTS, _drain_once, _try_index
+from ingest.bag_reader import read_bag_facts
+from ingest.bounded_seen import _BoundedSeen
 from ingest.ingest_service import BagFacts, BagFactsReader, IngestService
-from ingest.manifest_store import ManifestStore
+from ingest.manifest_store import ManifestRow, ManifestStore
 
 
 def _service_with_failing_reader(
@@ -106,6 +109,7 @@ def _service_with_bad_sidecar(
         TypeError,
         UnicodeDecodeError,
         sqlite3.IntegrityError,
+        yaml.YAMLError,  # F-03/greptile P1: a malformed metadata.yaml (yaml.safe_load raises)
     ],
 )
 def test_documented_ingest_fault_set_members(fault: type[BaseException]) -> None:
@@ -134,3 +138,60 @@ def test_try_index_skips_null_required_field_sidecar(tmp_path: Path) -> None:
     service, bag, sidecar = _service_with_bad_sidecar(tmp_path, sidecar_bytes)
     assert _try_index(service, bag, sidecar) is False
     assert service._store.query_recent(10) == []
+
+
+# F-03 (the live greptile P1): a bag whose metadata.yaml exists but is MALFORMED makes the REAL
+# read_bag_facts reader's yaml.safe_load raise yaml.YAMLError. Unlike the sidecar-shape faults above,
+# this arises inside the injected reader — so the service is built with bag_facts=read_bag_facts (not a
+# stub). It must be skipped (False, nothing indexed), else the loop crash-loops on the corrupt bag.
+def test_try_index_skips_malformed_metadata_yaml(tmp_path: Path) -> None:
+    bag = tmp_path / "patrol_corruptmeta_20260629_120000"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text(":\n  - [unterminated")  # invalid YAML → yaml.YAMLError
+    sidecar = tmp_path / (bag.name + ".meta.json")
+    sidecar.write_text(
+        f'{{"mission_id": "standin", "bag_uri": "{bag.name}", '
+        '"started_utc": "2026-06-29T12:00:00+00:00"}'
+    )
+    service = IngestService(ManifestStore(tmp_path / "m.db"), bag_facts=read_bag_facts)
+
+    assert _try_index(service, bag, sidecar) is False  # skipped, did NOT propagate / crash
+    assert service._store.query_recent(10) == []  # nothing half-indexed
+
+
+def _raise_if_read(_bag_path: Path) -> BagFacts:
+    """A bag-fact reader that fails if ever called — proves _drain_once skipped the read entirely."""
+    raise AssertionError("read_bag_facts must NOT be called for a bag already in the manifest")
+
+
+# F-05: a bag whose bag_id is ALREADY in the manifest is skipped by _drain_once — the reader is never
+# re-invoked and no duplicate row is written — even with a fresh in-memory seen-set (the durable skip
+# survives eviction). This is the retention-scale reprocessing regression the fix closes.
+def test_drain_once_skips_bag_already_in_manifest(tmp_path: Path) -> None:
+    watch_dir = tmp_path / "bags"
+    watch_dir.mkdir()
+    name = "patrol_already_20260629_120000"
+    bag = watch_dir / name
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    (watch_dir / (name + ".meta.json")).write_text(
+        f'{{"mission_id": "standin", "bag_uri": "{name}", '
+        '"started_utc": "2026-06-29T12:00:00+00:00"}'
+    )
+    store = ManifestStore(tmp_path / "m.db")
+    store.upsert(
+        ManifestRow(
+            bag_id=name,
+            mission_id="standin",
+            recorded_utc="2026-06-29T12:00:00+00:00",
+            duration_s=1.0,
+            topics_json="{}",
+            metadata_json="{}",
+            ingested_utc="2026-06-29T12:05:00+00:00",
+        )
+    )
+    service = IngestService(store, bag_facts=_raise_if_read)
+
+    _drain_once(service, watch_dir, _BoundedSeen())  # must not raise (reader never called)
+
+    assert len(store.query_recent(10)) == 1  # still exactly one row, not re-upserted

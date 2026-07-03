@@ -52,6 +52,15 @@ class IngestService:
         if not (bag_path / "metadata.yaml").is_file():
             raise FileNotFoundError(f"not a finalized bag dir (no metadata.yaml): {bag_path}")
         sidecar = json.loads(sidecar_path.read_text())
+        if not isinstance(sidecar, dict):
+            raise TypeError(
+                f"sidecar is not a JSON object: {sidecar_path}"
+            )  # caught by _INGEST_FAULTS
+        if sidecar.get("bag_uri") != bag_path.name:
+            raise ValueError(
+                f"sidecar bag_uri {sidecar.get('bag_uri')!r} does not match bag dir "
+                f"{bag_path.name!r} — refusing to index a mismatched sidecar/bag pair"
+            )
 
         facts = self._bag_facts(bag_path)  # DERIVED from the bag — the trusted topic/duration truth
 
@@ -66,3 +75,12 @@ class IngestService:
                 ingested_utc=datetime.now(UTC).isoformat(),
             )
         )
+
+    def already_indexed(self, bag_path: Path) -> bool:
+        """True iff ``bag_path`` already has a manifest row (the watch loop's durable skip, F-05).
+
+        Backed by the manifest itself, so an already-indexed bag is skipped even after the loop's
+        in-memory seen-set has evicted it — a long retention window never re-derives old bags each
+        poll. Kept here (not reaching into the store from ``__main__``) so the service owns its store.
+        """
+        return self._store.contains(bag_path.name)

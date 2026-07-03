@@ -20,6 +20,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import yaml
+
 from ingest.bag_reader import read_bag_facts
 from ingest.bounded_seen import _BoundedSeen
 from ingest.ingest_service import IngestService
@@ -46,6 +48,8 @@ _INGEST_FAULTS = (
     subprocess.TimeoutExpired,  # `ros2 bag info` hung past its timeout (F-03) → skip + retry, don't
     #                             wedge the serial loop on one bad/pathological bag
     ValueError,  # `ros2 bag info` ran (exit 0) but had no parseable Duration line, or zero topics (F-02)
+    yaml.YAMLError,  # metadata.yaml exists but is malformed (truncated/partially overwritten mid-write)
+    #                  → parse_bag_metadata's yaml.safe_load raises → skip + retry, don't crash-loop
 )
 
 
@@ -72,10 +76,21 @@ def _try_index(service: IngestService, bag: Path, sidecar: Path) -> bool:
 
 
 def _drain_once(service: IngestService, watch_dir: Path, indexed: _BoundedSeen) -> None:
-    """One discovery+index pass over ``watch_dir`` (mutates ``indexed`` with the freshly indexed)."""
+    """One discovery+index pass over ``watch_dir`` (mutates ``indexed`` with the freshly indexed).
+
+    'Already handled' is durable (F-05): a bag already in the manifest is skipped even after the
+    in-memory ``indexed`` set has evicted it, so a long retention window never re-derives (``ros2 bag
+    info``) old bags each poll. ``indexed`` stays a within-run fast path that avoids a manifest query
+    per already-seen bag. A bag that FAILED to index is in neither the manifest nor ``indexed``, so it
+    still retries on a later poll. (Trade-off: a same-named bag is not auto-re-indexed by the loop —
+    fine, since bag names are timestamped; a deliberate re-index can still call ``index`` directly.)
+    """
     for bag in _iter_bag_dirs(watch_dir):
         sidecar = _sidecar_for(bag)
         if bag in indexed or not sidecar.is_file():
+            continue
+        if service.already_indexed(bag):
+            indexed.add(bag)  # remember it this run so we don't re-query the manifest every poll
             continue
         if _try_index(service, bag, sidecar):
             indexed.add(bag)
