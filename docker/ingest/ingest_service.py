@@ -7,7 +7,9 @@ metadata blob from the sidecar, and upserts one manifest row. Re-indexing the sa
 idempotent (the store is keyed on ``bag_id``).
 
 The bag-fact reader is injected (``bag_facts``) so the core is ROS-free and unit-testable; the
-default reader shells out to ``ros2 bag info`` and is exercised by the stand-in integration test.
+default reader prefers the bag's structured ``metadata.yaml`` and falls back to shelling out to
+``ros2 bag info`` (both derive facts from the bag), and is exercised by the stand-in integration
+test.
 """
 
 from __future__ import annotations

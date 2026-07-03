@@ -1,39 +1,14 @@
-"""The watch-loops' bounded 'already-seen' membership set (M8 / F-09, PR #16 / F-07).
+"""Re-export of the shared ``_BoundedSeen`` for the ingest container (M8 / F-09, PR #16 / F-03).
 
-Canonical home for the LRU-capped membership set both watch loops use to track handled bags. It
-lived duplicated in ``docker/ingest/__main__.py`` and ``analysis/upload_daemon/__main__.py`` (byte
-identical); F-07 consolidated it here. This module is homed inside ``docker/ingest/`` so the ingest
-Dockerfile's ``COPY docker/ingest/ /opt/ingest/ingest/`` ships it in the container unchanged; the
-dev-host upload daemon reaches it via a ``sys.path`` bootstrap (see its ``__main__``).
+The canonical implementation now lives in the neutral top-level ``_shared.bounded_seen`` module
+(F-03 moved it there so the upload daemon imports it without a cross-tree ``sys.path`` hop). This
+thin re-export keeps ``ingest.bounded_seen`` importable inside the ingest container — the Dockerfile
+``COPY``s both ``docker/ingest/`` and ``analysis/_shared/`` onto ``/opt/ingest`` so this ``from
+_shared.bounded_seen import …`` resolves there without ``analysis/`` on the image path.
 """
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from pathlib import Path
+from _shared.bounded_seen import _BoundedSeen
 
-
-class _BoundedSeen:
-    """A membership set with an LRU cap: tracks 'already handled' bags without growing unbounded.
-
-    The watch loops only need 'have I already handled this bag this run?'. An unbounded set grows one
-    entry per bag for the process lifetime (F-09); this caps it at ``maxlen``, evicting the
-    oldest-added key when full. Eviction is safe because both handlers are idempotent (rsync -a /
-    INSERT OR REPLACE) — a re-seen evicted bag is just a cheap redundant re-handle, never data loss.
-    """
-
-    def __init__(self, maxlen: int = 4096) -> None:
-        self._seen: OrderedDict[Path, None] = OrderedDict()
-        self._maxlen = maxlen
-
-    def __contains__(self, bag: Path) -> bool:
-        return bag in self._seen
-
-    def add(self, bag: Path) -> None:
-        self._seen[bag] = None
-        self._seen.move_to_end(bag)
-        while len(self._seen) > self._maxlen:
-            self._seen.popitem(last=False)  # evict the oldest-added
-
-    def __len__(self) -> int:
-        return len(self._seen)
+__all__ = ["_BoundedSeen"]

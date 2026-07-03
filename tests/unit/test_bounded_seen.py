@@ -5,8 +5,9 @@ entry per bag for the process lifetime; _BoundedSeen caps it with LRU eviction. 
 because both handlers are idempotent (rsync -a / INSERT OR REPLACE), so a re-seen evicted bag is a
 cheap redundant re-handle. This pins membership + the cap + re-add-after-eviction.
 
-The class now lives once in the shared ``ingest.bounded_seen`` module (PR #16 / F-07 consolidated
-the former byte-identical copies); this exercises it via the ``upload_daemon.__main__`` re-export.
+The class now lives once in the neutral top-level ``_shared.bounded_seen`` module (PR #16 / F-07
+consolidated the former byte-identical copies; F-03 moved the canonical home there); this exercises
+it via the ``upload_daemon.__main__`` re-export.
 """
 
 from __future__ import annotations

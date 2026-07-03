@@ -11,6 +11,7 @@ CLAUDE.md). This guard enforces that contract in CI:
   4. README "Stack at a glance" carries no stale PX4 pin    (Hermes Low #1)
   5. CLAUDE.md summary table agrees with the manifest       (ADR-0004)
   6. Dockerfile command bodies carry no hardcoded version/distro literals (round-3 Medium #1)
+  7. docker/ingest/Dockerfile's base-digest + rosbag2 apt pins derive from [ingest] (PR #16 F-01)
 
 Exit 0 = clean; exit 1 = drift, with one line per problem.
 """
@@ -281,6 +282,38 @@ def check_vendor_provenance(repo_root: Path, manifest: dict) -> list[str]:
     return problems
 
 
+# The ingest image's manifest-injected ARGs (F-01). Its base is a DIFFERENT image from the sim/dev
+# [container] base, so it has its own [ingest] section; these ARGs must be declared (no default,
+# injected from the manifest via `gen_build_args.py --section ingest`) in docker/ingest/Dockerfile.
+_INGEST_ARGS = ("ROS_BASE_DIGEST", "ROSBAG2_APT_VERSION", "ROSBAG2_MCAP_APT_VERSION")
+_INGEST_MANIFEST_KEYS = ("ros_base_digest", "rosbag2_apt_version", "rosbag2_mcap_apt_version")
+
+
+def check_ingest_pins(repo_root: Path, manifest: dict) -> list[str]:
+    """The ingest Dockerfile's base digest + apt pins come from [ingest], never inlined (F-01).
+
+    Mirrors the sim/dev ARG-default guard for the ingest image (whose base differs, so it has its own
+    manifest section): each pin ARG must be declared with no default, so the value is injected from
+    the manifest and a bump can't silently reintroduce a duplicated literal. Also asserts the
+    [ingest] keys exist so `gen_build_args.py --section ingest` can resolve them.
+    """
+    problems = [
+        f"stack-manifest.toml [ingest] missing key {k!r}"
+        for k in _INGEST_MANIFEST_KEYS
+        if k not in manifest.get("ingest", {})
+    ]
+    path = repo_root / "docker" / "ingest" / "Dockerfile"
+    if not path.exists():
+        return [*problems, "docker/ingest/Dockerfile is missing"]
+    text = path.read_text()
+    for arg in _INGEST_ARGS:
+        if re.search(rf"^ARG {arg}=", text, re.MULTILINE):
+            problems.append(f"docker/ingest/Dockerfile pins ARG {arg} with a default; inject it")
+        elif not re.search(rf"^ARG {arg}\b", text, re.MULTILINE):
+            problems.append(f"docker/ingest/Dockerfile does not declare manifest ARG {arg}")
+    return problems
+
+
 def check_workflow_distro(repo_root: Path, manifest: dict) -> list[str]:
     """ROS CI's `target-ros2-distro` must equal the manifest ROS distro (Hermes round-3 Medium #1).
 
@@ -341,6 +374,7 @@ def run_checks(repo_root: Path) -> list[str]:
     problems += check_dockerfile_no_defaults(repo_root)
     problems += check_dockerfile_no_literals(repo_root, manifest)
     problems += check_dockerfile_hardcoded_alternatives(repo_root)
+    problems += check_ingest_pins(repo_root, manifest)
     problems += check_vendor_provenance(repo_root, manifest)
     problems += check_workflow_distro(repo_root, manifest)
     problems += check_readme(repo_root, manifest)

@@ -70,7 +70,8 @@ The reference bag is binary and tracked via Git LFS. **One-time setup on a fresh
 ```bash
 sudo apt-get install -y git-lfs   # apt candidate 3.4.x (noble-updates/universe)
 git lfs install                   # registers the LFS filters in this repo's git config
-# .gitattributes already declares tests/replay/reference/*.mcap as LFS-tracked.
+# .gitattributes already declares tests/replay/reference/**/*.mcap as LFS-tracked
+# (the `**` matches the nested patrol_reference/<bag>_0.mcap layout rosbag2 writes).
 git add tests/replay/reference/patrol_reference/*.mcap   # stored as an LFS pointer
 ```
 

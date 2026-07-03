@@ -13,25 +13,18 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import time
 from pathlib import Path
 
+from _shared.bounded_seen import _BoundedSeen
 from upload_daemon.transport import RsyncSshTransport, S3Transport, Transport
 from upload_daemon.upload_daemon import UploadDaemon, is_complete, iter_bag_dirs
 
-# _BoundedSeen is homed in docker/ingest/ (its canonical home ships in the ingest container via that
-# dir's COPY). The dev-host daemon has no `docker/` on its path at runtime, so add the repo's docker/
-# dir before importing — a guarded, CWD-independent bootstrap mirroring the pattern in the replay +
-# stand-in tests (PR #16 / F-07). Re-exported below so `from upload_daemon.__main__ import _BoundedSeen`
-# still resolves for the existing unit test.
-_DOCKER_DIR = Path(__file__).resolve().parents[2] / "docker"
-if str(_DOCKER_DIR) not in sys.path:
-    sys.path.insert(0, str(_DOCKER_DIR))
-from ingest.bounded_seen import _BoundedSeen  # noqa: E402  (after the sys.path bootstrap above)
-
 logger = logging.getLogger("upload_daemon")
 
+# _BoundedSeen now lives in the neutral top-level `_shared.bounded_seen` module (PR #16 / F-03), so
+# the daemon imports it normally — no cross-tree `sys.path` hop into `docker/ingest/`. Re-exported so
+# `from upload_daemon.__main__ import _BoundedSeen` still resolves for the existing unit test.
 __all__ = ["_BoundedSeen", "main"]
 
 _POLL_INTERVAL_S = 5.0

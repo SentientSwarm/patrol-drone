@@ -20,6 +20,83 @@
 #   skipped (gate degrades gracefully). The caller (setup_phase1.sh / Dockerfile) supplies them.
 set -eo pipefail
 
+# ── Testable functions (defined before the imperative body so the unit test can source them) ────────
+# The commit a git SUBMODULE checkout is pinned to by its superproject (empty if not a submodule).
+# A dep like Fast-CDR can appear TWICE in the fetched tree: once as the agent superbuild's own
+# ExternalProject checkout (pinned to the manifest commit) and once as a git submodule VENDORED by
+# another fetched dep — Fast-DDS pins its own `thirdparty/fastcdr` submodule to a DIFFERENT, valid
+# Fast-CDR (v2.2.6 for Fast-DDS v3.1.3, vs the agent's v2.2.4). That vendored copy is authoritative to
+# its superproject, not the manifest — so verify it against the commit the superproject RECORDS for it
+# (deterministic for the pinned Fast-DDS tag), not the manifest pin. Walks up to the nearest ancestor
+# git repo and reads that path's `git submodule status` gitlink; empty when `dir` is a top-level
+# checkout (no submodule ancestor records it), so the caller falls back to the manifest pin.
+submodule_pinned_commit() {
+  local dir="$1" parent rel status
+  parent="$(git -C "${dir}/.." rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -z "${parent}" || "${parent}" == "$(git -C "${dir}" rev-parse --show-toplevel 2>/dev/null)" ]] && return 0
+  rel="$(realpath --relative-to="${parent}" "${dir}" 2>/dev/null || true)"
+  [[ -z "${rel}" ]] && return 0
+  # `git submodule status <path>` prints " <sha> <path> (<describe>)"; take the recorded gitlink sha.
+  status="$(git -C "${parent}" submodule status "${rel}" 2>/dev/null || true)"
+  [[ -z "${status}" ]] && return 0
+  printf '%s\n' "${status}" | awk '{gsub(/^[-+U ]/, "", $1); print $1}'
+}
+
+# POST-BUILD re-check of the superbuild's TRANSITIVE deps before installing them (Hermes Medium #1;
+# PR #16 / F-05). Belt-and-suspenders with the pre-build gate: this closes the TOCTOU window (the ref
+# could move between ls-remote and the superbuild's actual fetch) and catches the superbuild fetching a
+# different ref than we pre-verified — by comparing each ACTUALLY checked-out HEAD to its authoritative
+# pin. The cmake superbuild fetches Fast-CDR/Fast-DDS/foonathan_memory/spdlog by upstream ref (all four
+# pinned to immutable tags) and installs their .so into /usr/local; a retagged ref could change
+# installed code without tripping manifest drift.
+#
+# F-05: a dep can appear in MORE THAN ONE checkout (Fast-DDS vendors its own Fast-CDR submodule). The
+# old first-match `break` made the guard order-dependent — a correctly-pinned sibling could satisfy it
+# while an unpinned copy sat elsewhere (or the nested copy tripped a spurious MISMATCH). We now iterate
+# EVERY URL-matching checkout and verify each against ITS authoritative commit: the manifest pin for a
+# top-level checkout, or the superproject-recorded gitlink for a vendored submodule (so Fast-DDS's own
+# v2.2.6 Fast-CDR is verified against Fast-DDS's pin, not forced to the agent's v2.2.4). It reads
+# ${src}/build (set by the imperative body below). Each EXPECT_<dep>_COMMIT is the manifest pin
+# (stack-manifest.toml [bridge]); empty = not pinned -> skipped. A dep satisfied by a system package is
+# not fetched (no checkout) and is skipped with a note. Fail CLOSED on a mismatch — built, refuse install.
+verify_transitive() {
+  local url="$1" expected="$2" name="$3" actual want origin
+  [[ -z "${expected}" ]] && return 0
+  local -a dirs=()
+  while IFS= read -r gitdir; do
+    local d url_actual
+    d="$(dirname "${gitdir}")"
+    url_actual="$(git -C "${d}" config --get remote.origin.url 2>/dev/null || true)"
+    [[ "${url_actual%.git}" == "${url%.git}" ]] && dirs+=("${d}")
+  done < <(find "${src}/build" -name .git 2>/dev/null)
+  if [[ ${#dirs[@]} -eq 0 ]]; then
+    echo "[xrce] NOTE: ${name} not fetched by the superbuild (system-satisfied?) — skipping pin check" >&2
+    return 0
+  fi
+  for dir in "${dirs[@]}"; do
+    actual="$(git -C "${dir}" rev-parse HEAD)"
+    # Authoritative commit for THIS checkout: a vendored submodule answers to its superproject's
+    # recorded gitlink; a top-level superbuild checkout answers to the manifest pin.
+    want="$(submodule_pinned_commit "${dir}")"
+    origin="its superproject's submodule pin"
+    if [[ -z "${want}" ]]; then want="${expected}"; origin="the manifest pin"; fi
+    if [[ "${actual}" != "${want}" ]]; then
+      echo "[xrce] ERROR: ${name} transitive pin MISMATCH — checkout ${dir} at ${actual}," >&2
+      echo "[xrce]   ${origin} expects ${want}. An upstream ref moved/was tampered, or a nested" >&2
+      echo "[xrce]   vendored copy drifted. Re-resolve (git ls-remote <repo> <ref>), bump the" >&2
+      echo "[xrce]   manifest if needed, then rebuild. Refusing to install." >&2
+      return 1
+    fi
+  done
+  echo "[xrce] OK: all ${#dirs[@]} ${name} checkout(s) verified against their authoritative pins." >&2
+}
+
+# Sourced in lib-only mode (the unit test wants just the functions above): stop before the imperative
+# clone/build/install body. `return` works because the test `source`s this file; a direct run leaves
+# XRCE_LIB_ONLY unset and proceeds. Must sit AFTER the function defs and BEFORE the arg parsing.
+[[ "${XRCE_LIB_ONLY:-}" == "1" ]] && return 0
+# ────────────────────────────────────────────────────────────────────────────────────────────────────
+
 SOURCE="${1:?source url required}"
 VERSION="${2:?version tag required}"
 COMMIT="${3:?expected commit required}"
@@ -105,40 +182,6 @@ cmake -S "${src}" -B "${src}/build" \
     -DUAGENT_BUILD_EXECUTABLE=ON -DUAGENT_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build "${src}/build" -j"$(nproc)"
 
-# POST-BUILD re-check of the superbuild's TRANSITIVE deps before installing them (Hermes Medium #1).
-# Belt-and-suspenders with the pre-build gate above: this closes the TOCTOU window (the ref could move
-# between ls-remote and the superbuild's actual fetch) and catches the superbuild fetching a different
-# ref than we pre-verified — by comparing the ACTUALLY checked-out HEAD to the manifest pin. The cmake
-# superbuild fetches Fast-CDR/Fast-DDS/foonathan_memory/spdlog by upstream ref (all four now pinned to
-# immutable tags) and installs their .so into /usr/local; a retagged ref could change installed code
-# without tripping manifest drift. Each EXPECT_<dep>_COMMIT is the manifest pin (stack-manifest.toml
-# [bridge]); empty = not pinned -> skipped. A dep satisfied by a system package is not fetched (no
-# checkout) and is skipped with a note. Fail CLOSED on a mismatch — we've built but refuse to install.
-verify_transitive() {
-  local url="$1" expected="$2" name="$3" dir actual
-  [[ -z "${expected}" ]] && return 0
-  # Find this dep's checkout among the superbuild's fetched repos by matching the clone URL
-  # (robust to the ExternalProject prefix layout, which varies across superbuild versions).
-  dir=""
-  while IFS= read -r gitdir; do
-    local d url_actual
-    d="$(dirname "${gitdir}")"
-    url_actual="$(git -C "${d}" config --get remote.origin.url 2>/dev/null || true)"
-    if [[ "${url_actual%.git}" == "${url%.git}" ]]; then dir="${d}"; break; fi
-  done < <(find "${src}/build" -name .git 2>/dev/null)
-  if [[ -z "${dir}" ]]; then
-    echo "[xrce] NOTE: ${name} not fetched by the superbuild (system-satisfied?) — skipping pin check" >&2
-    return 0
-  fi
-  actual="$(git -C "${dir}" rev-parse HEAD)"
-  if [[ "${actual}" != "${expected}" ]]; then
-    echo "[xrce] ERROR: ${name} transitive pin MISMATCH — fetched ${actual}, manifest pins ${expected}." >&2
-    echo "[xrce]   The upstream ref moved or was tampered. Re-resolve and bump stack-manifest.toml" >&2
-    echo "[xrce]   [bridge] (git ls-remote <repo> <ref>), then rebuild. Refusing to install." >&2
-    return 1
-  fi
-  echo "[xrce] OK: ${name} @ ${actual} matches the manifest pin." >&2
-}
 verify_transitive "https://github.com/eProsima/Fast-CDR.git" "${EXPECT_FASTCDR_COMMIT:-}"   "Fast-CDR"
 verify_transitive "https://github.com/eProsima/Fast-DDS.git" "${EXPECT_FASTDDS_COMMIT:-}"   "Fast-DDS"
 verify_transitive "https://github.com/foonathan/memory.git"  "${EXPECT_FOONATHAN_COMMIT:-}" "foonathan_memory"

@@ -1,18 +1,20 @@
-"""Layer-A unit tests for the bag-fact parser (docset 05-logging-replay, M8 / T8.4, SWM-76).
+"""Layer-A unit tests for the bag-fact parsers (docset 05-logging-replay, M8 / T8.4, SWM-76).
 
-Covers `ingest.bag_reader.parse_bag_info` — the pure-text parser that turns ``ros2 bag info``
-output into the :class:`~ingest.ingest_service.BagFacts` the IngestService trusts (design §3.4,
-§4.2.4). Parsing is separated from the subprocess call so it is ROS-free and unit-testable; the
-``ros2 bag info`` invocation itself is the integration boundary.
+Covers `ingest.bag_reader.parse_bag_metadata` (the structured ``metadata.yaml`` primary path) and
+`parse_bag_info` (the ``ros2 bag info`` text fallback) — both turn a bag into the
+:class:`~ingest.ingest_service.BagFacts` the IngestService trusts (design §3.4, §4.2.4). Parsing is
+separated from the subprocess/file call so it is ROS-free and unit-testable; the ``ros2 bag info``
+invocation itself is the integration boundary.
 
-Sample input is a trimmed real ``ros2 bag info`` capture (the M7 reference bag) so the parser is
-tested against the actual v1.17 format (``Duration: <float>s``; ``Topic: <name> | ... | Count: N``).
+Sample inputs are trimmed real captures of the M7 reference bag so each parser is tested against the
+actual format (``Duration: <float>s`` / ``Topic: … | Count: N``; and the ``metadata.yaml``
+``rosbag2_bagfile_information`` schema rosbag2 v9 writes).
 """
 
 from __future__ import annotations
 
 import pytest
-from ingest.bag_reader import parse_bag_info
+from ingest.bag_reader import parse_bag_info, parse_bag_metadata
 
 _SAMPLE = """
 Files:             patrol_patrol_20260626_080740_0.mcap
@@ -63,3 +65,61 @@ def test_parse_raises_when_no_topics_parsed() -> None:
     text = "Duration:          1.0s\nTopic information: (unparseable topic section)\n"
     with pytest.raises(ValueError, match="no parseable topics"):
         parse_bag_info(text)
+
+
+# A trimmed real reference metadata.yaml (rosbag2 v9 `rosbag2_bagfile_information` schema): two
+# topics, duration in nanoseconds. Full schema (QoS blocks, hashes) omitted — the parser only
+# reads duration.nanoseconds + each topics_with_message_count entry's name/message_count.
+_METADATA_SAMPLE = """
+rosbag2_bagfile_information:
+  version: 9
+  storage_identifier: mcap
+  duration:
+    nanoseconds: 19991536152
+  message_count: 503
+  topics_with_message_count:
+    - topic_metadata:
+        name: /patrol/mission_state
+        type: std_msgs/msg/String
+      message_count: 200
+    - topic_metadata:
+        name: /drone/camera/image_raw/compressed
+        type: sensor_msgs/msg/CompressedImage
+      message_count: 303
+"""
+
+
+# TS-9 (metadata half): duration.nanoseconds is converted to seconds.
+def test_parse_metadata_duration_seconds() -> None:
+    facts = parse_bag_metadata(_METADATA_SAMPLE)
+    assert abs(facts.duration_s - 19.991536152) < 1e-6
+
+
+# TS-9 (metadata half): per-topic counts come from each topics_with_message_count entry.
+def test_parse_metadata_topic_counts() -> None:
+    facts = parse_bag_metadata(_METADATA_SAMPLE)
+    assert facts.topic_counts == {
+        "/patrol/mission_state": 200,
+        "/drone/camera/image_raw/compressed": 303,
+    }
+
+
+# F-02 fail-loud guards: each malformed metadata.yaml raises ValueError (→ _INGEST_FAULTS → skip +
+# retry) rather than writing a wrong/empty manifest. Parametrized to avoid duplicate `raises` blocks.
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ("some_other_root: {}\n", "rosbag2_bagfile_information"),
+        ("rosbag2_bagfile_information:\n  message_count: 1\n", "duration.nanoseconds"),
+        (
+            "rosbag2_bagfile_information:\n"
+            "  duration:\n    nanoseconds: 1000\n"
+            "  topics_with_message_count: []\n",
+            "no parseable topics",
+        ),
+    ],
+    ids=["missing-root", "missing-duration", "empty-topics"],
+)
+def test_parse_metadata_raises_on_malformed(text: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        parse_bag_metadata(text)

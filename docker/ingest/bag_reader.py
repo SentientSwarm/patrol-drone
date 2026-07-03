@@ -1,13 +1,15 @@
-"""Derive bag facts from ``ros2 bag info`` (design §3.4, §4.2.4 / SWM-76 / T8.4).
+"""Derive bag facts from the bag itself (design §3.4, §4.2.4 / SWM-76 / T8.4).
 
 The IngestService trusts duration + per-topic counts derived from the bag, never from the sidecar.
-This module provides that derivation in two halves so the logic stays testable:
+This module provides that derivation so the logic stays testable:
 
+  * :func:`parse_bag_metadata` — a pure-text parser over the bag's structured ``metadata.yaml``
+    (ROS-free; the stable finalized-bag contract, so it is the primary source).
   * :func:`parse_bag_info` — a pure-text parser over ``ros2 bag info`` output (ROS-free, unit-tested
-    against a real v1.17 capture).
-  * :func:`read_bag_facts` — the default :data:`~ingest.ingest_service.BagFactsReader`: shells out
-    to ``ros2 bag info`` and feeds the parser. This is the integration boundary (needs a sourced
-    ROS env), exercised by the stand-in integration test.
+    against a real v1.17 capture); the fallback for a bag with no readable ``metadata.yaml``.
+  * :func:`read_bag_facts` — the default :data:`~ingest.ingest_service.BagFactsReader`: prefers the
+    bag's ``metadata.yaml`` and falls back to shelling out to ``ros2 bag info`` (needs a sourced ROS
+    env). This is the integration boundary, exercised by the stand-in integration test.
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+
+import yaml
 
 from ingest.ingest_service import BagFacts
 
@@ -40,12 +44,40 @@ def parse_bag_info(text: str) -> BagFacts:
     return BagFacts(duration_s=float(duration_match.group(1)), topic_counts=topic_counts)
 
 
-def read_bag_facts(bag_path: Path, timeout_s: float = _BAG_INFO_TIMEOUT_S) -> BagFacts:
-    """Default reader: run ``ros2 bag info <bag>`` and parse it (needs a sourced ROS env).
+def parse_bag_metadata(text: str) -> BagFacts:
+    """Parse a rosbag2 ``metadata.yaml`` document into derived :class:`BagFacts`.
 
-    ``timeout_s`` bounds the CLI call so a stuck ``ros2`` can't block the serial ingest loop; on
-    expiry ``subprocess.TimeoutExpired`` propagates and the watch loop skips-and-retries the bag.
+    The finalized-bag structured contract (``rosbag2_bagfile_information``): ``duration.nanoseconds``
+    and one ``topics_with_message_count`` entry per topic. More stable across ROS releases than the
+    human ``ros2 bag info`` display format, so it is the primary source; :func:`parse_bag_info`
+    remains the fallback for a bag that has no readable ``metadata.yaml``.
     """
+    info = (yaml.safe_load(text) or {}).get("rosbag2_bagfile_information")
+    if not isinstance(info, dict):
+        raise ValueError("metadata.yaml missing rosbag2_bagfile_information")
+    duration_ns = info.get("duration", {}).get("nanoseconds")
+    if duration_ns is None:
+        raise ValueError("metadata.yaml missing duration.nanoseconds")
+    topic_counts = {
+        entry["topic_metadata"]["name"]: int(entry["message_count"])
+        for entry in info.get("topics_with_message_count", [])
+    }
+    if not topic_counts:
+        raise ValueError("metadata.yaml produced no parseable topics (empty topic set)")
+    return BagFacts(duration_s=float(duration_ns) / 1e9, topic_counts=topic_counts)
+
+
+def read_bag_facts(bag_path: Path, timeout_s: float = _BAG_INFO_TIMEOUT_S) -> BagFacts:
+    """Default reader: prefer the bag's structured ``metadata.yaml``; fall back to ``ros2 bag info``.
+
+    ``metadata.yaml`` is a stable structured contract that needs no ROS env; the ``ros2 bag info``
+    parse (which needs a sourced ROS env and is ``timeout_s``-bounded so a stuck ``ros2`` can't block
+    the serial ingest loop) is the fallback for a bag missing/with an unreadable metadata file. Both
+    paths derive facts *from the bag* — never the sidecar (the dumb-producer invariant, design §3.4).
+    """
+    metadata = bag_path / "metadata.yaml"
+    if metadata.is_file():
+        return parse_bag_metadata(metadata.read_text())
     completed = subprocess.run(
         ["ros2", "bag", "info", str(bag_path)],
         check=True,

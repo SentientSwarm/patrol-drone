@@ -51,6 +51,26 @@ def build_args(manifest: dict) -> dict[str, str]:
     }
 
 
+def ingest_build_args(manifest: dict) -> dict[str, str]:
+    """Map [ingest] manifest values to the ARGs docker/ingest/Dockerfile consumes (F-01).
+
+    Kept separate from :func:`build_args` because the ingest image uses a DIFFERENT, smaller base
+    (`ros:jazzy-ros-base`, its own digest) — so its ARGs must NOT leak into the sim/dev
+    ``--build-arg`` set. ``ROS_DISTRO`` comes from [middleware] (shared); the base digest and the two
+    rosbag2 apt pins come from [ingest].
+    """
+    ingest = manifest["ingest"]
+    return {
+        "ROS_DISTRO": manifest["middleware"]["ros_distro"],
+        "ROS_BASE_DIGEST": ingest["ros_base_digest"],
+        "ROSBAG2_APT_VERSION": ingest["rosbag2_apt_version"],
+        "ROSBAG2_MCAP_APT_VERSION": ingest["rosbag2_mcap_apt_version"],
+    }
+
+
+_SECTIONS = {"default": build_args, "ingest": ingest_build_args}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -59,11 +79,17 @@ def main(argv: list[str] | None = None) -> int:
         help="emit KEY=VALUE lines (for .env.build) instead of --build-arg flags",
     )
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
+    parser.add_argument(
+        "--section",
+        choices=sorted(_SECTIONS),
+        default="default",
+        help="which image's ARGs to emit: 'default' (sim/dev) or 'ingest' (docker/ingest)",
+    )
     args = parser.parse_args(argv)
 
     with args.manifest.open("rb") as fh:
         manifest = tomllib.load(fh)
-    pairs = build_args(manifest)
+    pairs = _SECTIONS[args.section](manifest)
 
     if args.env:
         print("\n".join(f"{key}={value}" for key, value in pairs.items()))
