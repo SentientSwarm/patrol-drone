@@ -88,6 +88,8 @@ PX4_PID=""
 QGC_PID=""
 BRIDGE_PID=""
 NODE_PID=""
+RUN_ROOT=""  # active patrol run root (set once recording starts), so shutdown() can finalize the
+             # staged sidecar on the interrupt / failed-verify paths, not just the happy path (F-02)
 
 log()  { printf '\033[1;34m[patrol-world]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m        %s\n' "$*" >&2; }
@@ -132,15 +134,18 @@ parse_args() {
   done
 }
 
-# Wait up to `timeout_s` for `pid` to exit. Returns 0 once it has exited, 1 on timeout. `kill -0`
-# probes liveness without signalling; the 1 s granularity is fine for a several-second finalize. One
-# helper shared by stop_launch_group() (and thus graceful_stop_mission/shutdown) so the poll loop
-# isn't duplicated.
+# Wait up to `timeout_s` for every member of process group `pgid` to exit. Returns 0 once the group
+# is empty, 1 on timeout. Probes the GROUP with `pgrep -g` (liveness only, no signal) rather than the
+# positive leader PID: `ros2 launch` (the group leader) can exit while its `ros2 bag record`
+# grandchild is still flushing a large MCAP, so a leader-only `kill -0 PGID` probe would report "gone"
+# and return early — recreating the finalization race this runner exists to close (Hermes High, F-01).
+# `pgrep` is in procps-ng (present on the dev host + CI ROS images). One helper shared by
+# stop_launch_group() (and thus graceful_stop_mission/shutdown) so the poll loop isn't duplicated.
 # shellcheck disable=SC2317,SC2329  # reached from stop_launch_group, not a direct call
-wait_for_pid_exit() {  # wait_for_pid_exit PID TIMEOUT_S
-  local pid="$1" timeout_s="$2"
+wait_for_pgroup_exit() {  # wait_for_pgroup_exit PGID TIMEOUT_S
+  local pgid="$1" timeout_s="$2"
   for _ in $(seq 1 "${timeout_s}"); do
-    kill -0 "${pid}" 2>/dev/null || return 0
+    pgrep -g "${pgid}" >/dev/null 2>&1 || return 0
     sleep 1
   done
   return 1
@@ -160,10 +165,10 @@ wait_for_pid_exit() {  # wait_for_pid_exit PID TIMEOUT_S
 stop_launch_group() {  # stop_launch_group PGID
   local pgid="$1"
   kill -INT -- "-${pgid}" 2>/dev/null || true
-  if wait_for_pid_exit "${pgid}" "${FINALIZE_WAIT}"; then return 0; fi
+  if wait_for_pgroup_exit "${pgid}" "${FINALIZE_WAIT}"; then return 0; fi
   warn "mission launch group still running after ${FINALIZE_WAIT}s (SIGINT) — escalating to SIGTERM"
   kill -TERM -- "-${pgid}" 2>/dev/null || true
-  wait_for_pid_exit "${pgid}" "${FINALIZE_WAIT}"
+  wait_for_pgroup_exit "${pgid}" "${FINALIZE_WAIT}"
 }
 
 # Write <bag>.meta.json for every finalized bag under run_root, from the record-start staging file the
@@ -231,6 +236,13 @@ shutdown() {
   # the `ros2 bag record` child (not just the launch parent) so the recorder actually finalizes here.
   if [[ -n "${NODE_PID}" ]]; then
     stop_launch_group "${NODE_PID}" || true
+  fi
+  # Fallback sidecar finalize for the interrupt / failed-verify paths: graceful_stop_mission only
+  # runs on a passing verify, so on those paths <bag>.meta.json would otherwise never be written and
+  # the bag is silently non-ingestable (upload_daemon.is_complete() requires the sidecar). Idempotent:
+  # a no-op if the OnProcessExit handler already wrote it, or if no bag/staging crumb exists (F-02).
+  if [[ -n "${RUN_ROOT}" ]]; then
+    finalize_bag_sidecars "${RUN_ROOT}" || warn "shutdown sidecar finalize failed for ${RUN_ROOT}"
   fi
   if [[ -n "${BRIDGE_PID}" ]]; then kill -TERM "${BRIDGE_PID}" 2>/dev/null || true; fi
   if [[ -n "${QGC_PID}" ]]; then kill -TERM "${QGC_PID}" 2>/dev/null || true; fi
@@ -447,6 +459,7 @@ fly_and_verify_patrol() {
   # shared run_id tags both 04's captures and the bag, co-located under output_root (OQ-4). The
   # recorder include is resilient — a missing/over-shadowed patrol_logging still flies the patrol.
   local run_root="${PATROL_OUTPUT_ROOT:-${LOG_DIR}/run}"
+  RUN_ROOT="${run_root}"  # publish for shutdown()'s fallback sidecar finalize (F-02)
   log "flying the M4 patrol over the stage (mission_patrol.launch.py, checkpoints=${CHECKPOINTS_YAML}, record:=true, output_root=${run_root})"
   # setsid: give the launch its OWN process group (PGID == NODE_PID), mirroring start_px4. A clean stop
   # then signals the whole group (kill -INT -- -NODE_PID), so the `ros2 bag record` grandchild gets the
@@ -551,4 +564,9 @@ main() {
   exit "${verdict}"
 }
 
-main "$@"
+# Run main only when executed directly, not when sourced (the shell unit test sources this file to
+# drive stop_launch_group / wait_for_pgroup_exit in isolation). Mirrors env_doctor.sh, which this
+# runner already sources side-effect-free (L43) relying on the same guard.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

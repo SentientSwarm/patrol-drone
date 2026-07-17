@@ -18,6 +18,12 @@ htmlcov/
 build/
 install/
 log/
+# ...including local backups of those trees renamed out of the way during
+# isolated-vs-merged install testing (see ADR-0012); the .bak suffix dodges the
+# bare build/ install/ rules above, so match any suffix on the same names.
+build.*/
+install.*/
+log.*/
 .colcon_install_layout
 .colcon_workspace
 

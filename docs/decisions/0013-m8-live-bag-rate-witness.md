@@ -123,12 +123,12 @@ the witness's consistency guard still hard-fails a duplicated bag.)
   already documents. Even a correct SIGINT was useless while PX4/gz (the recorder's data sources) were
   killed in the same breath.
 - **Fix.** The runner now stops the mission launch **cleanly**: a `graceful_stop_mission` step SIGINTs
-  the launch after a passing verify and waits (bounded, `FINALIZE_WAIT`, default 45 s) for it to exit
+  the launch after a passing verify and waits (bounded, `FINALIZE_WAIT`, default 90 s) for it to exit
   and for `metadata.yaml` to appear — *before* the stack is torn down and before the bag-content
   assertion runs, so a finalized bag exists by construction. `shutdown` likewise SIGINTs the launch and
   waits for it before killing PX4/gz on the interrupt / failed-verify / camera-only paths. As
   caller-independent insurance, the recorder `ExecuteProcess` in `record.launch.py` gets an explicit
-  `sigterm_timeout` (30 s) so rosbag2 gets a real flush window on any clean shutdown (launch's 5 s
+  `sigterm_timeout` (60 s) so rosbag2 gets a real flush window on any clean shutdown (launch's 5 s
   default is tight for a ~100 MiB MCAP). No change to the ROS-free recorder core, the sidecar, the
   acceptance oracle (`verify_patrol.py`), or the CI `replay-regression` lane (still byte-unchanged).
 - **Acceptance.** One `run_patrol_world_sitl.sh` run (RTF ≈ 1) now yields **one** finalized bag
