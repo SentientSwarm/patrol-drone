@@ -106,6 +106,10 @@ def test_parse_metadata_topic_counts() -> None:
 
 # F-02 fail-loud guards: each malformed metadata.yaml raises ValueError (→ _INGEST_FAULTS → skip +
 # retry) rather than writing a wrong/empty manifest. Parametrized to avoid duplicate `raises` blocks.
+# The valid-YAML/schema-invalid rows (list root, scalar duration, non-list/non-dict topics) are the
+# F-02 core: before the fix, list-root and scalar-duration raised an UNCAUGHT AttributeError that
+# crashed the ingest watcher; scalar-topics / non-dict-entry raised TypeError. All now normalize to
+# ValueError so the contract is uniform: any structurally-invalid metadata → skip + retry.
 @pytest.mark.parametrize(
     ("text", "match"),
     [
@@ -117,8 +121,35 @@ def test_parse_metadata_topic_counts() -> None:
             "  topics_with_message_count: []\n",
             "no parseable topics",
         ),
+        ("- a\n- b\n", "root has unexpected shape"),
+        ("5\n", "root has unexpected shape"),
+        (
+            "rosbag2_bagfile_information:\n  duration: 5\n  topics_with_message_count: []\n",
+            "duration has unexpected shape",
+        ),
+        (
+            "rosbag2_bagfile_information:\n"
+            "  duration:\n    nanoseconds: 5\n"
+            "  topics_with_message_count: 7\n",
+            "topics_with_message_count has unexpected shape",
+        ),
+        (
+            "rosbag2_bagfile_information:\n"
+            "  duration:\n    nanoseconds: 5\n"
+            "  topics_with_message_count:\n    - 7\n",
+            "topics_with_message_count entry has unexpected shape",
+        ),
     ],
-    ids=["missing-root", "missing-duration", "empty-topics"],
+    ids=[
+        "missing-root",
+        "missing-duration",
+        "empty-topics",
+        "list-root",
+        "scalar-root",
+        "scalar-duration",
+        "scalar-topics",
+        "nondict-topic-entry",
+    ],
 )
 def test_parse_metadata_raises_on_malformed(text: str, match: str) -> None:
     with pytest.raises(ValueError, match=match):

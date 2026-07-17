@@ -30,6 +30,7 @@ SITL bag-producing check rather than measured here.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -176,9 +177,35 @@ def build_sidecar(run: RecordingRun, ended: datetime, recorded_topics: list[str]
     )
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Publish ``text`` to ``path`` atomically: write a same-dir temp file, fsync, then os.replace.
+
+    The upload daemon keys "bag complete" on ``<bag>.meta.json`` merely existing and, once it ships
+    the file, writes a durable ``<bag>.uploaded`` marker that suppresses every later re-send. A
+    truncate-then-stream write (``Path.write_text``) exposes a window where a poll can observe — and
+    rsync — a partial/empty file, then mark the bag uploaded forever (F-01). ``os.replace`` swaps the
+    fully-written temp file onto the final path in a single atomic rename (POSIX + Windows), so an
+    observer only ever sees the old file or the complete new one, never a torn intermediate. The temp
+    file is a same-directory sibling (``os.replace`` is atomic only within one filesystem; the sidecar
+    and its temp are always siblings of the bag dir, so this holds). ``fsync`` before the rename makes
+    the bytes durable so a crash can't leave the renamed-in file empty. On any failure the temp file
+    is removed so a ``.<pid>.tmp`` crumb never masquerades as a real artifact.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:  # clean the temp on any interrupt, then re-raise
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def write_sidecar(path: Path, sidecar: BagSidecar) -> None:
-    """Write ``sidecar`` to ``path`` as pretty-printed JSON (stdlib ``json``, no YAML dep)."""
-    path.write_text(json.dumps(asdict(sidecar), indent=2, sort_keys=True) + "\n")
+    """Write ``sidecar`` to ``path`` as pretty-printed JSON, published atomically (F-01)."""
+    _atomic_write_text(path, json.dumps(asdict(sidecar), indent=2, sort_keys=True) + "\n")
 
 
 # Suffix of the record-start staging file that lets the sidecar survive a launch death (F-03++).
@@ -207,7 +234,7 @@ def write_sidecar_inputs(path: Path, run: RecordingRun, recorded_topics: list[st
         "mission_config_ref": run.mission_config_ref,
         "recorded_topics": list(recorded_topics),
     }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def read_sidecar_inputs(path: Path) -> tuple[RecordingRun, list[str]]:

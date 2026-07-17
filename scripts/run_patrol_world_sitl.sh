@@ -102,6 +102,40 @@ require_uint() {  # require_uint NAME VALUE
   [[ "${2}" =~ ^[0-9]+$ ]] || { err "${1} must be a non-negative integer (got '${2}')"; exit 2; }
 }
 
+# Path to the recorder launch, whose _RECORDER_SIGTERM_TIMEOUT_S is the SINGLE SOURCE OF TRUTH for the
+# recorder's clean-shutdown budget. FINALIZE_WAIT must exceed it (see the coupling comment above L82).
+RECORD_LAUNCH="${REPO_ROOT}/ros2_ws/src/patrol_logging/launch/record.launch.py"
+
+# Read _RECORDER_SIGTERM_TIMEOUT_S out of record.launch.py by its stable constant name — a pure text
+# scrape (no ROS env needed, runs before source_ros), so the runner's lower bound tracks the launch
+# constant and a future bump to the recorder timeout can't silently invalidate this guard. Fails loud
+# if the constant can't be found (renamed?) so the coupling can never be validated against a stale 0.
+# shellcheck disable=SC2317,SC2329  # also driven directly by the unit test, not just from main
+recorder_sigterm_timeout() {
+  local val
+  val="$(grep -oE '_RECORDER_SIGTERM_TIMEOUT_S[[:space:]]*=[[:space:]]*"[0-9]+"' "${RECORD_LAUNCH}" \
+        | grep -oE '[0-9]+' | head -n1)"
+  [[ -n "${val}" ]] || { err "could not read _RECORDER_SIGTERM_TIMEOUT_S from ${RECORD_LAUNCH}"; exit 2; }
+  printf '%s\n' "${val}"
+}
+
+# FINALIZE_WAIT must be a non-negative integer (require_uint) AND strictly greater than the recorder's
+# SIGTERM timeout, or stop_launch_group escalates to a group SIGTERM before the launch's clean
+# SIGINT-mediated finalize completes and the <bag>.meta.json sidecar is lost (F-03 / the missing-
+# sidecar race). 0 is explicitly unsafe here: it makes wait_for_pgroup_exit's `seq 1 0` loop never run
+# and forces an immediate SIGTERM escalation — so the rejection message says WHY, not just "too small".
+# shellcheck disable=SC2317,SC2329  # also driven directly by the unit test, not just from main
+require_finalize_wait() {  # require_finalize_wait VALUE
+  require_uint FINALIZE_WAIT "${1}"
+  local min; min="$(recorder_sigterm_timeout)"
+  if (( ${1} <= min )); then
+    err "FINALIZE_WAIT (${1}s) must be strictly greater than the recorder SIGTERM timeout (${min}s):"
+    err "  a value <= ${min}s (or 0) forces stop_launch_group to escalate to a group SIGTERM before"
+    err "  the launch finalizes the bag, losing <bag>.meta.json. Raise it above ${min}s (default 90)."
+    exit 2
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage: scripts/run_patrol_world_sitl.sh [options]
@@ -526,7 +560,7 @@ main() {
   parse_args "$@"
   require_uint CAMERA_WAIT "${CAMERA_WAIT}"        # validate operator env before any arithmetic (F-04)
   require_uint VERIFY_TIMEOUT "${VERIFY_TIMEOUT}"  # (also covers a --timeout override, parsed above)
-  require_uint FINALIZE_WAIT "${FINALIZE_WAIT}"    # bounded wait for the recorder's clean finalize
+  require_finalize_wait "${FINALIZE_WAIT}"         # bounded wait must exceed the recorder finalize budget
   if [[ -n "${LOG_DIR}" ]]; then
     mkdir -p "${LOG_DIR}"
   else

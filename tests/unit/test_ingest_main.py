@@ -116,6 +116,15 @@ def test_documented_ingest_fault_set_members(fault: type[BaseException]) -> None
     assert fault in _INGEST_FAULTS
 
 
+# F-02 crash-normalization contract: AttributeError must NOT be caught here. Widening the set to catch
+# it would silence the very exception that signals a genuine programming bug; instead bag_reader
+# validates metadata shape and raises the caught ValueError, so a malformed bag is skipped + retried
+# while a real defect still surfaces loudly. Kept separate from the membership param list above so the
+# assertion body stays a single `not in` (no inverted-branch CodeScene shape).
+def test_attribute_error_is_not_swallowed_by_the_ingest_fault_set() -> None:
+    assert AttributeError not in _INGEST_FAULTS
+
+
 # F-03: a valid-JSON-but-non-object sidecar (TypeError on sidecar["mission_id"]) is skipped, not raised.
 def test_try_index_skips_non_object_sidecar(tmp_path: Path) -> None:
     service, bag, sidecar = _service_with_bad_sidecar(tmp_path, b"[1, 2, 3]")

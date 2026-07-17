@@ -44,20 +44,61 @@ def parse_bag_info(text: str) -> BagFacts:
     return BagFacts(duration_s=float(duration_match.group(1)), topic_counts=topic_counts)
 
 
+def _require_mapping(value: object, what: str) -> dict:
+    """Return ``value`` as a mapping or raise ValueError — the single shape-guard before any ``.get``.
+
+    Normalizes 'valid YAML, wrong shape' (a list root, a scalar ``duration``) to ``ValueError`` so it
+    lands in the ingest watch loop's caught ``_INGEST_FAULTS`` set (skip + retry) instead of raising an
+    uncaught ``AttributeError`` that terminates the whole ingest service on one malformed bag (F-02).
+    """
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"metadata.yaml {what} has unexpected shape "
+            f"(expected mapping, got {type(value).__name__})"
+        )
+    return value
+
+
 def _require_bag_information(text: str) -> dict:
     """Load metadata.yaml ``text`` and return the ``rosbag2_bagfile_information`` mapping, or raise."""
-    info = (yaml.safe_load(text) or {}).get("rosbag2_bagfile_information")
-    if not isinstance(info, dict):
+    root = _require_mapping(yaml.safe_load(text) or {}, "root")
+    info = root.get("rosbag2_bagfile_information")
+    if info is None:
         raise ValueError("metadata.yaml missing rosbag2_bagfile_information")
-    return info
+    return _require_mapping(info, "rosbag2_bagfile_information")
+
+
+def _metadata_duration_ns(info: dict) -> int:
+    """Read ``duration.nanoseconds`` with an explicit mapping guard (raise ValueError on wrong shape)."""
+    duration = _require_mapping(info.get("duration", {}), "duration")
+    duration_ns = duration.get("nanoseconds")
+    if duration_ns is None:
+        raise ValueError("metadata.yaml missing duration.nanoseconds")
+    # Coerce (rather than return the untyped YAML value) so a non-numeric scalar normalizes to the
+    # caught ValueError instead of leaking through — same fail-loud contract as the topic counts.
+    return int(duration_ns)
+
+
+def _topic_count_entry(entry: object) -> tuple[str, int]:
+    """One (name, count) pair from a ``topics_with_message_count`` entry (raise ValueError on shape)."""
+    mapping = _require_mapping(entry, "topics_with_message_count entry")
+    metadata = _require_mapping(mapping.get("topic_metadata", {}), "topic_metadata")
+    name = metadata.get("name")
+    count = mapping.get("message_count")
+    if name is None or count is None:
+        raise ValueError("metadata.yaml topic entry missing name or message_count")
+    return str(name), int(count)
 
 
 def _metadata_topic_counts(info: dict) -> dict[str, int]:
-    """Per-topic message counts from a ``rosbag2_bagfile_information`` mapping (raise if empty)."""
-    topic_counts = {
-        entry["topic_metadata"]["name"]: int(entry["message_count"])
-        for entry in info.get("topics_with_message_count", [])
-    }
+    """Per-topic message counts from a ``rosbag2_bagfile_information`` mapping (raise if empty/shape)."""
+    entries = info.get("topics_with_message_count", [])
+    if not isinstance(entries, list):
+        raise ValueError(
+            f"metadata.yaml topics_with_message_count has unexpected shape "
+            f"(expected list, got {type(entries).__name__})"
+        )
+    topic_counts = dict(_topic_count_entry(entry) for entry in entries)
     if not topic_counts:
         raise ValueError("metadata.yaml produced no parseable topics (empty topic set)")
     return topic_counts
@@ -70,11 +111,14 @@ def parse_bag_metadata(text: str) -> BagFacts:
     and one ``topics_with_message_count`` entry per topic. More stable across ROS releases than the
     human ``ros2 bag info`` display format, so it is the primary source; :func:`parse_bag_info`
     remains the fallback for a bag that has no readable ``metadata.yaml``.
+
+    Every container access is shape-guarded (:func:`_require_mapping`) so a valid-YAML/wrong-shape
+    document (list root, scalar ``duration``, non-list ``topics_with_message_count``) raises
+    ``ValueError`` — the caught ``_INGEST_FAULTS`` fault — rather than an uncaught ``AttributeError``
+    that would crash the whole ingest watcher on a single malformed bag (F-02).
     """
     info = _require_bag_information(text)
-    duration_ns = info.get("duration", {}).get("nanoseconds")
-    if duration_ns is None:
-        raise ValueError("metadata.yaml missing duration.nanoseconds")
+    duration_ns = _metadata_duration_ns(info)
     topic_counts = _metadata_topic_counts(info)
     return BagFacts(duration_s=float(duration_ns) / 1e9, topic_counts=topic_counts)
 

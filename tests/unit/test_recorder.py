@@ -16,7 +16,10 @@ thin ROS layer, verified by colcon build + the nightly SITL bag-producing check 
 from __future__ import annotations
 
 import json
+import os
+from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from patrol_logging.recorder import (
@@ -194,6 +197,87 @@ def test_write_sidecar_round_trips_as_json(tmp_path) -> None:
     assert loaded["started_utc"] == "2026-06-26T14:05:09+00:00"
     assert loaded["recorded_topics"] == _NAMED_TOPICS + _REGEXES
     assert loaded["mission_config_ref"] == "/abs/patrol_mission.yaml"
+
+
+def test_write_sidecar_bytes_are_stable_pretty_json(tmp_path) -> None:
+    # Byte-parity guard (F-01): the atomic write must leave the FINAL file byte-identical to the
+    # pre-atomic form (indent=2, sort_keys=True, trailing newline). The OnProcessExit path and the
+    # staging-finalize path both go through write_sidecar, so this pins the serialized bytes so a
+    # future refactor can't silently drift the format the two paths must agree on byte-for-byte.
+
+    sidecar = _sample_sidecar()
+    path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
+
+    write_sidecar(path, sidecar)
+
+    assert path.read_text() == json.dumps(asdict(sidecar), indent=2, sort_keys=True) + "\n"
+
+
+# --- atomic publish (F-01): the uploader keys "bag complete" on <bag>.meta.json merely existing, so
+# an observer must never see a truncated/partial file. The write is synchronous + single-threaded, so
+# these tests assert the invariant the atomic publish guarantees — the bytes that LAND are always a
+# whole sidecar, never a prefix — by wrapping os.replace; they are not a live-concurrency race test.
+
+
+def test_write_sidecar_only_ever_lands_whole_json(tmp_path, monkeypatch) -> None:
+    # Wrap os.replace to assert that at the instant of every rename, the temp source is already a
+    # COMPLETE, parseable sidecar (never a truncated prefix). Writing twice to the same path exercises
+    # the overwrite case too. This proves the temp is finished before it becomes visible at `path`.
+    path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
+    real_replace = os.replace
+    landed: list[dict] = []
+
+    def _checked_replace(src, dst):
+        # The source temp must be a whole sidecar before it is atomically swapped into place.
+        landed.append(json.loads(Path(src).read_text()))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("patrol_logging.recorder.os.replace", _checked_replace)
+
+    write_sidecar(path, _sample_sidecar())
+    write_sidecar(path, build_sidecar(_sample_run(), _ENDED, ["/only/one"]))
+
+    assert len(landed) == 2  # both writes went through the atomic rename
+    assert landed[0]["recorded_topics"] == _NAMED_TOPICS + _REGEXES
+    assert landed[1]["recorded_topics"] == ["/only/one"]
+    assert json.loads(path.read_text())["recorded_topics"] == ["/only/one"]  # last write wins
+
+
+def test_write_sidecar_cleans_up_temp_on_success(tmp_path) -> None:
+    path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
+    write_sidecar(path, _sample_sidecar())
+    # The temp sibling was renamed away, not left behind, so no *.tmp crumb masquerades as an artifact.
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert path.is_file()
+
+
+def test_write_sidecar_removes_temp_and_leaves_dest_untouched_on_failure(
+    tmp_path, monkeypatch
+) -> None:
+    # Force the inner write to fail after the temp is opened; write_sidecar must re-raise, remove the
+    # temp crumb, and leave any pre-existing destination untouched (never a torn final file).
+    path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
+    write_sidecar(path, _sample_sidecar())  # a valid prior sidecar that must survive the failure
+    original = path.read_text()
+
+    def _boom(_fd) -> None:
+        raise OSError("simulated fsync failure")
+
+    monkeypatch.setattr("patrol_logging.recorder.os.fsync", _boom)
+
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        write_sidecar(path, build_sidecar(_sample_run(), _ENDED, ["/never/written"]))
+
+    assert list(tmp_path.glob("*.tmp")) == []  # crumb cleaned up
+    assert path.read_text() == original  # destination untouched (the atomic swap never happened)
+
+
+def test_write_sidecar_inputs_cleans_up_temp_on_success(tmp_path) -> None:
+    # The staging file goes through the same atomic helper (consistency, F-01) — lock its cleanup too.
+    path = sidecar_inputs_path(tmp_path / f"patrol_alpha_{_TS}")
+    write_sidecar_inputs(path, _sample_run(), _NAMED_TOPICS + _REGEXES)
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert path.is_file()
 
 
 # --- staging file + caller-independent finalize (the missing-sidecar fix) ---------------------
