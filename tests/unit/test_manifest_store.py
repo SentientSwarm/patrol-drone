@@ -17,8 +17,10 @@ stdlib). Fact *derivation* (duration/topics from the bag) is IngestService's job
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pytest
 from ingest.manifest_store import ManifestRow, ManifestStore
 
 
@@ -122,3 +124,27 @@ def test_contains_reflects_indexed_membership(tmp_path: Path) -> None:
 
     assert store.contains("patrol_a_20260626_080740") is True
     assert store.contains("patrol_never_indexed") is False
+
+
+# F-02: _connect must pass a non-zero busy `timeout` so a transient lock (a concurrent reader/writer,
+# e.g. a manifest_query CLI reading while the daemon writes) is retried by SQLite before it raises
+# OperationalError — the budget must not silently regress to 0. Capture the kwargs sqlite3.connect
+# receives so the contract is pinned. The store's own __init__ opens a connection, so a plain
+# construction already exercises _connect.
+def test_connect_passes_a_nonzero_busy_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[float] = []
+    real_connect = sqlite3.connect
+
+    def _tracking_connect(database: str | Path, timeout: float = 0.0) -> sqlite3.Connection:
+        seen.append(timeout)
+        return real_connect(database, timeout=timeout)
+
+    monkeypatch.setattr("ingest.manifest_store.sqlite3.connect", _tracking_connect)
+
+    ManifestStore(tmp_path / "manifest.db")  # __init__ opens a connection via _connect
+
+    assert seen, "sqlite3.connect was never called"
+    assert all(t >= ManifestStore._BUSY_TIMEOUT_S for t in seen)
+    assert ManifestStore._BUSY_TIMEOUT_S > 0.0  # the busy budget must not regress to 0

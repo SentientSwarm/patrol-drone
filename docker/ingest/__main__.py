@@ -50,6 +50,14 @@ _INGEST_FAULTS = (
     ValueError,  # `ros2 bag info` ran (exit 0) but had no parseable Duration line, or zero topics (F-02)
     yaml.YAMLError,  # metadata.yaml exists but is malformed (truncated/partially overwritten mid-write)
     #                  → parse_bag_metadata's yaml.safe_load raises → skip + retry, don't crash-loop
+    sqlite3.OperationalError,  # transient locked/busy manifest (a concurrent reader/writer) → skip +
+    #                            retry, don't crash the daemon; NOT IntegrityError (that stays fatal,
+    #                            it signals corruption/constraint violation, not transient contention)
+    PermissionError,  # metadata.yaml / sidecar present but unreadable (chmod 000, owned by another user
+    #                   mid-sync) → skip + retry, don't kill the daemon on one bag (Mira F-04)
+    OSError,  # other intended file-read failure reading metadata/sidecar (transient I/O, stale NFS
+    #           handle). Kept AFTER the more specific subclasses above so the log still attributes the
+    #           specific class; a genuine bug is not an OSError, so it still surfaces (Mira F-04)
 )
 
 
@@ -89,11 +97,31 @@ def _drain_once(service: IngestService, watch_dir: Path, indexed: _BoundedSeen) 
         sidecar = _sidecar_for(bag)
         if bag in indexed or not sidecar.is_file():
             continue
-        if service.already_indexed(bag):
+        seen = _already_indexed_safe(service, bag)
+        if seen is None:  # dedup check hit a caught fault → skip this poll, retry later
+            continue
+        if seen:
             indexed.add(bag)  # remember it this run so we don't re-query the manifest every poll
             continue
         if _try_index(service, bag, sidecar):
             indexed.add(bag)
+
+
+def _already_indexed_safe(service: IngestService, bag: Path) -> bool | None:
+    """``already_indexed`` under the same fault boundary as indexing; None if a caught fault fired.
+
+    ``already_indexed`` hits the manifest (SQLite), so a transient ``OperationalError`` (a locked DB
+    from a concurrent reader/writer) must be caught HERE too — not just around ``index`` — or it
+    escapes ``_drain_once`` and terminates the watch loop (Mira F-02). A ``None`` return tells the
+    caller to skip this bag for now; it is retried on a later poll.
+    """
+    try:
+        return service.already_indexed(bag)
+    except _INGEST_FAULTS:
+        logger.exception(
+            "manifest dedup check failed for %s (will retry on a later poll)", bag.name
+        )
+        return None
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:

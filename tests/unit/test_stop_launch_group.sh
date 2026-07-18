@@ -77,4 +77,29 @@ rc=$?
 [[ ${rc} -eq 0 ]] \
   || fail "wait_for_pgroup_exit must return 0 once the whole group has exited (got ${rc})"
 
+# --- Case 3: a group that IGNORES SIGINT+SIGTERM makes stop_launch_group return non-zero, and a
+# SIGKILL reap then clears it (PR #16 / F-01, Mira High). This is the double-timeout branch:
+# graceful_stop_mission must NOT blank NODE_PID here (stop_launch_group returned non-zero → group
+# still live), so shutdown()'s SIGKILL rung reaps it instead of skipping a live `ros2 launch` +
+# `ros2 bag record` group while PX4/gz are torn down. Override FINALIZE_WAIT so stop_launch_group's
+# two bounded waits are ~1s each — the default 90s would hang this test ~180s; stop_launch_group
+# re-reads FINALIZE_WAIT as a global and does NOT re-validate the >60s bound (that guard lives in
+# require_finalize_wait / main only, neither of which runs when the script is sourced for its defs).
+FINALIZE_WAIT=1
+setsid bash -c "trap '' INT TERM; sleep 30" &  # group leader that traps-ignores BOTH signals
+ig_pid=$!
+sleep 1
+ig_pgid="${ig_pid}"
+_pgids+=("${ig_pgid}")
+pgrep -g "${ig_pgid}" >/dev/null 2>&1 \
+  || fail "test setup: ignore-signals group ${ig_pgid} should be alive before stop_launch_group"
+stop_launch_group "${ig_pgid}"
+rc=$?
+[[ ${rc} -ne 0 ]] \
+  || fail "stop_launch_group must return non-zero when the group survives SIGINT+SIGTERM (got ${rc})"
+# The shutdown() SIGKILL rung: a group that ignored SIGINT+SIGTERM must still be reapable by SIGKILL.
+kill -KILL -- "-${ig_pgid}" 2>/dev/null || true
+wait_for_pgroup_exit "${ig_pgid}" 5 \
+  || fail "SIGKILL reap must clear a group that ignored SIGINT+SIGTERM"
+
 echo "PASS: wait_for_pgroup_exit waits on the process GROUP, not just the leader PID"

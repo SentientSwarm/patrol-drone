@@ -242,10 +242,15 @@ graceful_stop_mission() {
   log "stopping the mission launch cleanly (SIGINT group) so the recorder finalizes its MCAP..."
   if stop_launch_group "${NODE_PID}"; then
     log "mission launch exited cleanly within the finalize window (recorder had its flush window)"
+    NODE_PID=""  # confirmed group exit — shutdown() must not re-signal a reaped group
   else
-    warn "mission launch group still running after the finalize window — the recorder may not have finalized"
+    # Group still alive after BOTH the SIGINT and escalated-SIGTERM waits. Do NOT blank NODE_PID:
+    # leaving it set lets shutdown()'s existing branch perform the final SIGKILL reap, instead of
+    # silently skipping a live `ros2 launch` + `ros2 bag record` group while PX4/gz are torn down
+    # around it (Mira High, F-01). The bag may not have finalized either way, but the group must
+    # not survive teardown.
+    warn "mission launch group still running after the finalize window — leaving it for shutdown() to reap"
   fi
-  NODE_PID=""  # reaped (or timed out); shutdown() must not re-signal it
   # A finalized bag has metadata.yaml; its absence means the record path did NOT finalize — surface
   # that as the real failure here rather than as a confusing "no finalized bag" from assert_bag below.
   if [[ -z "$(find "${run_root}" -maxdepth 2 -name metadata.yaml -print -quit 2>/dev/null)" ]]; then
@@ -269,7 +274,15 @@ shutdown() {
   # paths, where a clean finalize still matters if a bag was being recorded. The group signal reaches
   # the `ros2 bag record` child (not just the launch parent) so the recorder actually finalizes here.
   if [[ -n "${NODE_PID}" ]]; then
-    stop_launch_group "${NODE_PID}" || true
+    if ! stop_launch_group "${NODE_PID}"; then
+      # Survived SIGINT + SIGTERM (F-01): last-resort SIGKILL the whole group and reap, so no live
+      # `ros2 launch`/`ros2 bag record` group is left running as we kill its data sources below.
+      warn "mission launch group still alive after SIGINT+SIGTERM — SIGKILL reaping group ${NODE_PID}"
+      kill -KILL -- "-${NODE_PID}" 2>/dev/null || true
+      wait_for_pgroup_exit "${NODE_PID}" 5 \
+        || warn "mission launch group ${NODE_PID} still present after SIGKILL"
+    fi
+    NODE_PID=""
   fi
   # Fallback sidecar finalize for the interrupt / failed-verify paths: graceful_stop_mission only
   # runs on a passing verify, so on those paths <bag>.meta.json would otherwise never be written and

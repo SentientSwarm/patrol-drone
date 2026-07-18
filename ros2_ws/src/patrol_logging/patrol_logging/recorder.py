@@ -177,6 +177,28 @@ def build_sidecar(run: RecordingRun, ended: datetime, recorded_topics: list[str]
     )
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Best-effort fsync of ``directory`` so a rename into it is durable across a crash.
+
+    ``os.replace`` makes the swap atomic, but the new directory ENTRY is only persisted once the
+    parent directory itself is fsynced. Without this, a crash right after the rename can lose the
+    ``<bag>.meta.json`` entry — the uploader then never sees the sidecar and skips the finalized bag
+    forever (F-03). Directory fsync is unsupported on some platforms/filesystems (Windows has no
+    directory fd; a few filesystems reject it), so a raised ``OSError`` is swallowed: the durability
+    UPGRADE must never turn into a new failure path for the write it is hardening.
+    """
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     """Publish ``text`` to ``path`` atomically: write a same-dir temp file, fsync, then os.replace.
 
@@ -198,6 +220,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     except BaseException:  # clean the temp on any interrupt, then re-raise
         tmp.unlink(missing_ok=True)
         raise

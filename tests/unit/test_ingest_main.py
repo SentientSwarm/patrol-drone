@@ -59,6 +59,11 @@ def _service_with_failing_reader(
         # F-03: a hung `ros2 bag info` (TimeoutExpired from the reader) is skipped, not propagated —
         # so one stuck CLI can't wedge the serial ingest loop.
         subprocess.TimeoutExpired(cmd=["ros2", "bag", "info"], timeout=120.0),
+        # F-04: a present-but-unreadable metadata file (chmod 000 / owned by another user mid-sync)
+        # makes the reader raise PermissionError; a transient/stale-mount read makes it raise a
+        # generic OSError. Both are recoverable — skip + retry, never crash the daemon on one bag.
+        PermissionError("metadata.yaml: permission denied"),
+        OSError("stale NFS file handle reading metadata.yaml"),
     ],
 )
 def test_try_index_skips_reader_fault_without_propagating(tmp_path: Path, exc: Exception) -> None:
@@ -100,6 +105,8 @@ def _service_with_bad_sidecar(
 #   * subprocess.CalledProcessError / TimeoutExpired — `ros2 bag info` exited non-zero / hung (F-03).
 #   * TypeError / UnicodeDecodeError — non-object / non-UTF-8 sidecar (arise before the reader).
 #   * sqlite3.IntegrityError — a required sidecar field is JSON null → DB NOT NULL reject (greptile P1).
+#   * sqlite3.OperationalError — a transient locked/busy manifest (concurrent reader/writer) (F-02).
+#   * PermissionError / OSError — a present-but-unreadable metadata/sidecar file (F-04).
 @pytest.mark.parametrize(
     "fault",
     [
@@ -110,6 +117,9 @@ def _service_with_bad_sidecar(
         UnicodeDecodeError,
         sqlite3.IntegrityError,
         yaml.YAMLError,  # F-03/greptile P1: a malformed metadata.yaml (yaml.safe_load raises)
+        sqlite3.OperationalError,  # F-02: a locked/busy manifest → skip + retry, don't crash the loop
+        PermissionError,  # F-04: metadata/sidecar present but unreadable (chmod 000 / cross-owner)
+        OSError,  # F-04: other intended file-read failure (transient I/O, stale NFS handle)
     ],
 )
 def test_documented_ingest_fault_set_members(fault: type[BaseException]) -> None:
@@ -204,3 +214,57 @@ def test_drain_once_skips_bag_already_in_manifest(tmp_path: Path) -> None:
     _drain_once(service, watch_dir, _BoundedSeen())  # must not raise (reader never called)
 
     assert len(store.query_recent(10)) == 1  # still exactly one row, not re-upserted
+
+
+# F-04: a sidecar file that is PRESENT but unreadable (its read_text raises PermissionError) is
+# skipped, not raised — one chmod-000 bag can't kill the daemon. Exercised through the real index
+# path so the PermissionError originates at the sidecar read (ingest_service.index), inside _try_index.
+def test_try_index_skips_unreadable_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bag = tmp_path / "patrol_unreadable_20260629_120000"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    sidecar = tmp_path / (bag.name + ".meta.json")
+    sidecar.write_text('{"mission_id": "standin", "bag_uri": "x", "started_utc": "x"}')
+    service = IngestService(ManifestStore(tmp_path / "m.db"), bag_facts=_fixed_facts_reader())
+
+    real_read_text = Path.read_text
+
+    def _refuse_sidecar(self: Path, *args: object, **kwargs: object) -> str:
+        if self == sidecar:
+            raise PermissionError(f"permission denied reading {self}")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", _refuse_sidecar)
+
+    assert _try_index(service, bag, sidecar) is False  # skipped, did NOT propagate / crash
+    assert service._store.query_recent(10) == []  # nothing half-indexed
+
+
+# F-02: a transient locked manifest during the PRE-index dedup check (already_indexed → SQLite) must
+# be caught too — not just around index — or it escapes _drain_once and terminates the watch loop. A
+# skipped bag stays out of the manifest AND out of `indexed`, so it is retried on a later poll.
+def test_drain_once_skips_bag_when_dedup_check_locks(tmp_path: Path) -> None:
+    watch_dir = tmp_path / "bags"
+    watch_dir.mkdir()
+    name = "patrol_lockeddb_20260629_120000"
+    bag = watch_dir / name
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    (watch_dir / (name + ".meta.json")).write_text(
+        f'{{"mission_id": "standin", "bag_uri": "{name}", '
+        '"started_utc": "2026-06-29T12:00:00+00:00"}'
+    )
+
+    class _LockingService(IngestService):
+        def already_indexed(self, _bag_path: Path) -> bool:
+            raise sqlite3.OperationalError("database is locked")
+
+    service = _LockingService(ManifestStore(tmp_path / "m.db"), bag_facts=_raise_if_read)
+    indexed = _BoundedSeen()
+
+    _drain_once(service, watch_dir, indexed)  # must NOT raise — the locked dedup check is caught
+
+    assert service._store.query_recent(10) == []  # nothing indexed
+    assert bag not in indexed  # left out of `indexed` so it retries on a later poll

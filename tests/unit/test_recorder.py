@@ -243,6 +243,57 @@ def test_write_sidecar_only_ever_lands_whole_json(tmp_path, monkeypatch) -> None
     assert json.loads(path.read_text())["recorded_topics"] == ["/only/one"]  # last write wins
 
 
+def test_write_sidecar_fsyncs_parent_dir_after_replace(tmp_path, monkeypatch) -> None:
+    # Durability upgrade (F-03): os.replace makes the swap atomic, but the new directory ENTRY is only
+    # persisted once the PARENT dir is fsynced. Assert the parent dir is opened and fsynced *after* the
+    # rename — a dir fd distinct from the file fd — so a crash right after the replace can't lose the
+    # <bag>.meta.json entry (which would make the uploader skip the finalized bag forever).
+    path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
+    events: list[str] = []
+    real_replace = os.replace
+    real_fsync = os.fsync
+
+    def _tracked_replace(src, dst):
+        events.append("replace")
+        return real_replace(src, dst)
+
+    def _tracked_fsync(fd) -> None:
+        # A dir fd opened on tmp_path is the parent-dir sync; anything else is the file-content sync.
+        events.append(
+            "fsync_dir" if os.path.samestat(os.fstat(fd), os.stat(tmp_path)) else "fsync_file"
+        )
+        return real_fsync(fd)
+
+    monkeypatch.setattr("patrol_logging.recorder.os.replace", _tracked_replace)
+    monkeypatch.setattr("patrol_logging.recorder.os.fsync", _tracked_fsync)
+
+    write_sidecar(path, _sample_sidecar())
+
+    assert "fsync_dir" in events, "parent directory must be fsynced for the rename to be durable"
+    # The parent-dir fsync must come AFTER the atomic rename (a pre-rename dir sync would be pointless).
+    assert events.index("fsync_dir") > events.index("replace")
+    assert path.is_file()
+
+
+def test_write_sidecar_survives_dir_fsync_unsupported(tmp_path, monkeypatch) -> None:
+    # The durability upgrade must never become a NEW failure mode: on a platform/filesystem where the
+    # directory fd can't be opened/fsynced (Windows has no dir fd; some filesystems reject it), the
+    # write still succeeds and the sidecar still lands. Simulate by making the dir open raise OSError.
+    path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
+    real_open = os.open
+
+    def _open_refusing_dirs(target, flags, *args, **kwargs):
+        if os.path.isdir(target):
+            raise OSError("simulated: directory fd unsupported")
+        return real_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr("patrol_logging.recorder.os.open", _open_refusing_dirs)
+
+    write_sidecar(path, _sample_sidecar())  # must NOT raise
+
+    assert json.loads(path.read_text())["mission_id"] == "alpha"  # write still landed intact
+
+
 def test_write_sidecar_cleans_up_temp_on_success(tmp_path) -> None:
     path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
     write_sidecar(path, _sample_sidecar())

@@ -54,13 +54,18 @@ class ManifestRow:
 class ManifestStore:
     """Persist + serve the bag manifest. SQLite-backed; store-agnostic interface."""
 
+    # SQLite waits up to this long for a competing writer's lock before raising OperationalError
+    # ("database is locked"). A manifest_query CLI reading while the daemon writes is exactly this
+    # transient contention; a bounded wait lets it clear instead of surfacing as a fault (Mira F-02).
+    _BUSY_TIMEOUT_S = 5.0
+
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=self._BUSY_TIMEOUT_S)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -76,7 +81,13 @@ class ManifestStore:
             )
 
     def query_recent(self, limit: int) -> list[ManifestRow]:
-        """Return the ``limit`` most-recently-*ingested* bags, newest first (rebuild-order-stable)."""
+        """Return the ``limit`` most-recently-*ingested* bags, newest first (rebuild-order-stable).
+
+        Ordered by ``ingested_utc`` DELIBERATELY — this is the "what did the daemon index last" view,
+        stable across a manifest rebuild. For the "recently *flown*" (record-time) view, use
+        :meth:`query_recently_recorded`, which orders by ``recorded_utc``. The two orderings are
+        intentionally distinct methods; ``query_recent`` is not meant to track record time.
+        """
         return self._query_ordered("ingested_utc DESC", limit)
 
     def query_recently_recorded(self, limit: int) -> list[ManifestRow]:
