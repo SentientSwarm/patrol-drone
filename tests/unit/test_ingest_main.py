@@ -149,9 +149,10 @@ def test_try_index_skips_non_utf8_sidecar(tmp_path: Path) -> None:
     assert service._store.query_recent(10) == []
 
 
-# greptile P1: a sidecar with a required field explicitly JSON null passes json.loads, the key check,
-# and ManifestRow construction, then trips the DB NOT NULL column → IntegrityError. It must be skipped
-# (returns False), not raised, else the watch loop crash-loops on the same bag after every restart.
+# greptile P1 (now caught earlier by F-02's schema validation): a required field explicitly JSON
+# null used to travel all the way to the DB NOT NULL column (IntegrityError); the boundary validator
+# now rejects it as a TypeError before any store call. Either way it must be skipped (returns
+# False), not raised — IntegrityError stays in _INGEST_FAULTS as belt-and-suspenders.
 def test_try_index_skips_null_required_field_sidecar(tmp_path: Path) -> None:
     sidecar_bytes = b'{"mission_id": null, "started_utc": "2026-06-29T12:00:00+00:00"}'
     service, bag, sidecar = _service_with_bad_sidecar(tmp_path, sidecar_bytes)
@@ -181,6 +182,81 @@ def test_try_index_skips_malformed_metadata_yaml(tmp_path: Path) -> None:
 def _raise_if_read(_bag_path: Path) -> BagFacts:
     """A bag-fact reader that fails if ever called — proves _drain_once skipped the read entirely."""
     raise AssertionError("read_bag_facts must NOT be called for a bag already in the manifest")
+
+
+def _put_watched_bag(watch_dir: Path, name: str, sidecar_json: str) -> Path:
+    """A finalized bag dir + sibling sidecar under ``watch_dir`` (the drain-loop input shape)."""
+    bag = watch_dir / name
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    (watch_dir / (name + ".meta.json")).write_text(sidecar_json)
+    return bag
+
+
+# F-02 isolation proof (Mira High, review 4728294643): ONE malformed bag (list-valued mission_id —
+# the exact daemon-killer shape) must not stop a valid sibling from indexing in the same drain
+# pass. The malformed bag is skipped (schema validation raises a caught TypeError) and stays out of
+# `indexed` so it retries once corrected; the valid bag lands in the manifest. Sorted discovery
+# processes the malformed bag FIRST, so this proves the loop continues past the fault.
+def test_drain_once_indexes_valid_bag_despite_malformed_sibling(tmp_path: Path) -> None:
+    watch_dir = tmp_path / "bags"
+    watch_dir.mkdir()
+    bad = _put_watched_bag(
+        watch_dir,
+        "patrol_badfield_20260629_120000",
+        '{"mission_id": ["a"], "bag_uri": "patrol_badfield_20260629_120000", '
+        '"started_utc": "2026-06-29T12:00:00+00:00"}',
+    )
+    good_name = "patrol_good_20260629_130000"
+    _put_watched_bag(
+        watch_dir,
+        good_name,
+        f'{{"mission_id": "standin", "bag_uri": "{good_name}", '
+        '"started_utc": "2026-06-29T13:00:00+00:00"}',
+    )
+    store = ManifestStore(tmp_path / "m.db")
+    service = IngestService(store, bag_facts=_fixed_facts_reader())
+    indexed = _BoundedSeen()
+
+    _drain_once(service, watch_dir, indexed)  # must NOT raise — the malformed bag is skipped
+
+    assert [r.bag_id for r in store.query_recent(10)] == [good_name]  # exactly the valid bag
+    assert bad not in indexed  # malformed bag retries on a later poll once corrected
+
+
+# Mira Medium (review 4728294643), mirror of the upload side: the ingest loop refuses symlinked
+# entries in its landing dir — a symlinked bag dir and a bag whose sidecar is a symlink are each
+# skipped (nothing indexed, no raise), since a planted symlink would redirect the metadata/sidecar
+# reads outside the DGX landing tree, whose writers are remote by design.
+def test_drain_once_skips_symlinked_bag_dir_and_sidecar(tmp_path: Path) -> None:
+    watch_dir = tmp_path / "bags"
+    watch_dir.mkdir()
+    real_root = tmp_path / "elsewhere"
+    real_root.mkdir()
+    linked_name = "patrol_dirlink_20260629_120000"
+    real_bag = _put_watched_bag(
+        real_root,
+        linked_name,
+        f'{{"mission_id": "standin", "bag_uri": "{linked_name}", '
+        '"started_utc": "2026-06-29T12:00:00+00:00"}',
+    )
+    (watch_dir / linked_name).symlink_to(real_bag)  # symlinked bag dir in the landing dir
+    (watch_dir / (linked_name + ".meta.json")).write_text("{}")  # real sidecar beside the link
+    sidelink_name = "patrol_sidecarlink_20260629_130000"
+    bag2 = watch_dir / sidelink_name  # real bag dir whose SIDECAR is a symlink
+    bag2.mkdir()
+    (bag2 / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    real_sidecar = tmp_path / "redirect-target.meta.json"
+    real_sidecar.write_text(
+        f'{{"mission_id": "standin", "bag_uri": "{sidelink_name}", '
+        '"started_utc": "2026-06-29T13:00:00+00:00"}'
+    )
+    (watch_dir / (sidelink_name + ".meta.json")).symlink_to(real_sidecar)
+    service = IngestService(ManifestStore(tmp_path / "m.db"), bag_facts=_fixed_facts_reader())
+
+    _drain_once(service, watch_dir, _BoundedSeen())  # must NOT raise — both entries are refused
+
+    assert service._store.query_recent(10) == []  # nothing indexed through a symlink
 
 
 # F-05: a bag whose bag_id is ALREADY in the manifest is skipped by _drain_once — the reader is never

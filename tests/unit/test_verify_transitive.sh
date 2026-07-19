@@ -96,4 +96,14 @@ git -C "${super}/thirdparty/fastcdr" remote set-url origin "${_URL}"
 verify_transitive "${_URL}" "${manifest_pin}" "Fast-CDR" >/dev/null 2>&1 \
   || fail "a submodule at its superproject-pinned commit must pass (not forced to the manifest pin)"
 
-echo "PASS: verify_transitive checks every checkout against its authoritative pin (top-level + vendored)"
+# --- Case 6: a vendored submodule whose WORKTREE moved off the recorded gitlink -> FAIL. ------------
+# The exact tamper case the gate exists for (Mira High, review 4728294643): the nested checkout
+# advances (or is replaced) while the superproject still records the original pin. `git submodule
+# status` would report the moved HEAD — stripping its `+` drift marker made the guard self-compare
+# and pass; the recorded-gitlink (`ls-tree HEAD`) read must catch it.
+git -C "${super}/thirdparty/fastcdr" -c user.email=t@t -c user.name=t -c commit.gpgsign=false \
+  commit -q --allow-empty -m "tampered"
+verify_transitive "${_URL}" "${manifest_pin}" "Fast-CDR" >/dev/null 2>&1 \
+  && fail "a vendored submodule whose worktree drifted off the recorded gitlink must FAIL"
+
+echo "PASS: verify_transitive checks every checkout against its RECORDED authoritative pin (top-level + vendored + tampered)"

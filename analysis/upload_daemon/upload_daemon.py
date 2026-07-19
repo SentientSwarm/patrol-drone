@@ -24,15 +24,27 @@ def sidecar_path_for(bag_path: Path) -> Path:
     return bag_path.with_name(bag_path.name + ".meta.json")
 
 
+def _is_regular_file(path: Path) -> bool:
+    """True for a plain file that is NOT a symlink — the watch boundary refuses redirects.
+
+    A symlinked ``metadata.yaml``/sidecar planted in a writable watch dir would redirect reads (and
+    the rsync source) outside the watched tree (Mira Medium, review 4728294643), so every
+    completeness predicate insists on real files. Mirrored by the ingest counterpart
+    (``docker/ingest/__main__``) so the two loops keep their documented symmetry.
+    """
+    return path.is_file() and not path.is_symlink()
+
+
 def is_finalized_bag_dir(bag_path: Path) -> bool:
     """True iff ``bag_path`` is a rosbag2 bag directory rosbag2 has finalized.
 
     The M7 recorder writes each run as a directory ``<name>/`` (the ``ros2 bag record -o`` URI) with
     the MCAP nested inside; rosbag2 drops ``metadata.yaml`` into it only on a clean finalize. So the
     finalized-bag marker is the directory's ``metadata.yaml`` — not a flat ``<name>.mcap`` (which
-    never exists at the watch-dir top level). The same predicate is the ingest service's bag guard.
+    never exists at the watch-dir top level). The marker must be a real file (a symlinked
+    ``metadata.yaml`` is refused). The same predicate is the ingest service's bag guard.
     """
-    return (bag_path / "metadata.yaml").is_file()
+    return _is_regular_file(bag_path / "metadata.yaml")
 
 
 def iter_bag_dirs(watch_dir: Path) -> list[Path]:
@@ -42,16 +54,30 @@ def iter_bag_dirs(watch_dir: Path) -> list[Path]:
     Completeness/finalization is decided per-dir by :func:`is_complete` / :func:`is_finalized_bag_dir`,
     not here — this only enumerates the candidates so both loops share one discovery rule. Returns
     empty if ``watch_dir`` doesn't exist yet (the daemon may start before the first recording run
-    creates it), mirroring the ingest sibling ``docker/ingest/__main__._iter_bag_dirs``.
+    creates it), mirroring the ingest sibling ``docker/ingest/__main__._iter_bag_dirs``. Symlinked
+    entries are refused (Mira Medium, review 4728294643): a symlink planted in the watch dir would
+    redirect the transfer source outside the watched tree, so discovery admits only real
+    directories that resolve inside the watch root.
     """
     if not watch_dir.is_dir():
         return []
-    return sorted(p for p in watch_dir.iterdir() if p.is_dir())
+    root = watch_dir.resolve()
+    return sorted(
+        p
+        for p in watch_dir.iterdir()
+        if p.is_dir() and not p.is_symlink() and p.resolve().is_relative_to(root)
+    )
 
 
 def is_complete(bag_path: Path) -> bool:
-    """A bag is complete iff it is a finalized bag dir AND its sidecar both exist (upload marker)."""
-    return is_finalized_bag_dir(bag_path) and sidecar_path_for(bag_path).is_file()
+    """A bag is complete iff it is a finalized bag dir AND its sidecar both exist (upload marker).
+
+    Refuses symlinks at every component (the bag dir itself, ``metadata.yaml``, the sidecar) even
+    when called directly rather than via discovery — a symlinked bag is never shippable (Mira).
+    """
+    if bag_path.is_symlink():
+        return False
+    return is_finalized_bag_dir(bag_path) and _is_regular_file(sidecar_path_for(bag_path))
 
 
 def upload_marker_for(bag_path: Path) -> Path:

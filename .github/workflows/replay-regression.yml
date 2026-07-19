@@ -21,7 +21,9 @@ concurrency:
 jobs:
   replay_regression:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 30 (was 20): covers the uncached ~8 min px4_msgs message-overlay colcon build; cache-hit runs
+    # are unaffected (the overlay restores in seconds).
+    timeout-minutes: 30
     # The setup-ros-docker image does NOT export ROS_DISTRO as a container env, so set it here. Kept
     # in sync with stack-manifest.toml middleware.ros_distro (same pin ros-ci passes as
     # target-ros2-distro); a drift would surface as an apt "unable to locate package" on the line below.
@@ -38,9 +40,10 @@ jobs:
       # git-lfs is NOT in the ROS toolchain image, so `checkout` with `lfs: true` would fail to
       # locate the git-lfs executable. Install it FIRST so the checkout's LFS smudge can materialize
       # the reference bag.
-      # NOTE (PR #16 / F-08): this git-lfs apt package is unversioned and drifts with the apt source —
-      # knowingly accepted for Phase 1 (sim-only CI); revisit with an apt snapshot at hardening, same
-      # as the ros-${ROS_DISTRO}-* / rsync installs below. actions/* + the job container are pinned.
+      # NOTE (PR #16 / F-08, re-raised as Mira F-06): unversioned apt. This step — like every
+      # job-time apt step in this lane — is deleted once the pre-built pinned lane image
+      # (docker/ci/replay-lane/, which bakes git-lfs) is published and container.image flips to its
+      # digest; see docker/ci/replay-lane/README.md for the flip procedure.
       - name: Install git-lfs
         shell: bash
         run: |
@@ -74,36 +77,69 @@ jobs:
           [ "$missing" -eq 0 ] || exit 1
 
       # Install the focused ROS runtime this lane needs (the base image has NO ROS distro — see the
-      # container note above). rclpy + std_msgs for the subscriber counter; ros2bag + rosbag2 for
+      # container note above). rclpy + std_msgs/sensor_msgs for the subscriber counter — EVERY
+      # asserted topic is now live-subscribed (Mira High, review 4728294643); rosidl-runtime-py +
+      # python3-numpy so message classes resolve by name (get_message, see the repo's Jazzy-rclpy
+      # note); the rosidl generators + ament-cmake + geometry/diagnostic deps so the msg-overlay
+      # step below can colcon-build px4_msgs + patrol_interfaces; ros2bag + rosbag2 for
       # `ros2 bag play`/`info`; the MCAP storage plugin so they can read the .mcap reference bag
       # (bag format is MCAP, not sqlite3 — plan M7); rsync for the stand-in test's RsyncSshTransport.
-      # This apt-installs ~90 MB from the packages.ros.org source already configured in the image.
-      # NOTE (PR #16 / F-05): these ros-${ROS_DISTRO}-* / rsync apt packages are unversioned and drift
-      # with packages.ros.org. Knowingly accepted for Phase 1 (sim-only); revisit with an apt snapshot
-      # at hardening. actions/* and the job container are already digest-pinned above.
-      - name: Install the ROS runtime (rclpy + ros2bag + MCAP plugin) and rsync
+      # NOTE (PR #16 / F-05, re-raised as Mira F-06): these apt packages are unversioned. The
+      # pre-built pinned lane image (docker/ci/replay-lane/) bakes this exact runtime; once its
+      # digest is published, container.image flips to it and every job-time apt step here is
+      # deleted — see docker/ci/replay-lane/README.md for the flip. actions/* and the job container
+      # are already digest-pinned above.
+      - name: Install the ROS runtime (rclpy + msg type support + ros2bag + MCAP plugin) and rsync
         shell: bash
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             "ros-${ROS_DISTRO}-rclpy" \
             "ros-${ROS_DISTRO}-std-msgs" \
+            "ros-${ROS_DISTRO}-sensor-msgs" \
+            "ros-${ROS_DISTRO}-geometry-msgs" \
+            "ros-${ROS_DISTRO}-diagnostic-msgs" \
+            "ros-${ROS_DISTRO}-builtin-interfaces" \
+            "ros-${ROS_DISTRO}-rosidl-default-generators" \
+            "ros-${ROS_DISTRO}-rosidl-default-runtime" \
+            "ros-${ROS_DISTRO}-rosidl-runtime-py" \
+            "ros-${ROS_DISTRO}-ament-cmake" \
             "ros-${ROS_DISTRO}-rosbag2" \
             "ros-${ROS_DISTRO}-rosbag2-storage-mcap" \
+            python3-numpy \
             rsync
           rm -rf /var/lib/apt/lists/*
 
-      # Fail-loud ROS-env probe: import rclpy + std_msgs directly so an image-level ROS problem
+      # Fail-loud ROS-env probe: import the subscriber stack directly so an image-level ROS problem
       # surfaces clearly here, not as a cryptic "collected 0 items / 1 error" at pytest collection
       # (PR #16 / F-01: the lane's prior failure was an unresolved rclpy import dressed up as a
       # pytest collection error — root-caused to the base image carrying no ROS distro, now fixed by
       # the install step above). If this step regresses, the ROS runtime apt-install above is the
       # first place to look (a renamed/missing ros-jazzy-* package), before any source/PATH issue.
-      - name: Probe the ROS env (rclpy importable)
+      - name: Probe the ROS env (rclpy + type-resolution stack importable)
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
-          python3 -c "import rclpy, std_msgs.msg; print('rclpy OK:', rclpy.__file__)"
+          python3 -c "import rclpy, std_msgs.msg, sensor_msgs.msg, numpy, rosidl_runtime_py.utilities; print('rclpy OK:', rclpy.__file__)"
+
+      # The two non-apt message packages the live subscriber needs (Mira High): px4_msgs (vendored)
+      # + patrol_interfaces (in-repo). Cached on their source hash so the ~8 min px4_msgs colcon
+      # build is paid once per pin bump, not per run. Exact-key only (no restore-keys): a partial
+      # overlay must never satisfy the gate.
+      - name: Cache the message overlay (px4_msgs + patrol_interfaces)
+        id: msg-overlay-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ros2_ws/install
+          key: replay-msg-overlay-${{ env.ROS_DISTRO }}-${{ hashFiles('ros2_ws/src/external/px4_msgs/**', 'ros2_ws/src/patrol_interfaces/**') }}
+
+      - name: Build the message overlay (cache miss only)
+        if: steps.msg-overlay-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          source /opt/ros/"${ROS_DISTRO}"/setup.bash
+          cd ros2_ws
+          colcon build --packages-select px4_msgs patrol_interfaces --cmake-args -DBUILD_TESTING=OFF
 
       # LFS-pointer tripwire: fail loudly here (not as a confusing test error) if the bag did not
       # materialize — i.e. the checkout's `lfs: true` silently failed. The reference bag is required.
@@ -122,6 +158,7 @@ jobs:
         shell: bash
         run: |
           source /opt/ros/"${ROS_DISTRO}"/setup.bash
+          source ros2_ws/install/setup.bash  # the msg overlay (px4_msgs + patrol_interfaces types)
           # System python3 (carries rclpy/numpy via the ROS env). Plugin autoload off (the ROS
           # launch_testing/pytest plugins pull deps not needed here and break collection — see the
           # repo's pytest-ROS-plugin-collision note). `-c replay-lane.ini` uses the checked-in lane

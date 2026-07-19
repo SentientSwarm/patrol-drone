@@ -153,6 +153,42 @@ def test_index_raises_on_missing_bag(tmp_path: Path) -> None:
     assert store.query_recent(10) == []  # nothing indexed
 
 
+# F-02 (Mira High, review 4728294643): a required identity field that is valid JSON but not a
+# non-empty string must be rejected by schema validation BEFORE any store call — previously such a
+# value reached sqlite3 parameter binding and raised ProgrammingError, which is NOT an
+# _INGEST_FAULTS member, so one malformed sidecar killed the ingest daemon. TypeError IS a member,
+# so the watch loop now skips + retries the bag instead.
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("mission_id", ["a"]),
+        ("mission_id", 7),
+        ("mission_id", ""),
+        ("started_utc", {"t": 1}),
+        ("started_utc", None),
+        ("bag_uri", 42),
+    ],
+)
+def test_index_rejects_non_string_required_sidecar_field(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    bag = _make_bag_dir(tmp_path)
+    payload: dict[str, object] = {
+        "mission_id": "patrol",
+        "bag_uri": bag.name,
+        "started_utc": "2026-06-26T08:07:40.635796+00:00",
+    }
+    payload[field] = value
+    sidecar = tmp_path / (bag.name + ".meta.json")
+    sidecar.write_text(json.dumps(payload))
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(TypeError, match=field):
+        IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
+
+    assert store.query_recent(10) == []  # nothing half-indexed
+
+
 # F-04: a sidecar whose bag_uri names a DIFFERENT bag must fail loudly and index nothing — a
 # swapped/stale sidecar can no longer silently mis-label the manifest (Hermes Medium #2). ValueError is
 # a member of _INGEST_FAULTS, so the watch loop skips (not crashes) the mismatched pair.
@@ -165,3 +201,36 @@ def test_index_raises_on_sidecar_bag_uri_mismatch(tmp_path: Path) -> None:
         IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
 
     assert store.query_recent(10) == []  # nothing indexed
+
+
+# Mira Medium (review 4728294643): index() refuses a SYMLINKED metadata.yaml even when invoked
+# directly (not via the loop) — a planted symlink would redirect the finalized-bag read outside the
+# landing tree. FileNotFoundError is an _INGEST_FAULTS member, so the watch loop logs + skips.
+def test_index_raises_on_symlinked_metadata_yaml(tmp_path: Path) -> None:
+    bag = tmp_path / "patrol_symmeta_20260626_080740"
+    bag.mkdir()
+    real_meta = tmp_path / "redirect-target-metadata.yaml"
+    real_meta.write_text("rosbag2_bagfile_information:\n")
+    (bag / "metadata.yaml").symlink_to(real_meta)
+    sidecar = _write_sidecar(tmp_path / (bag.name + ".meta.json"), bag_uri=bag.name)
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(FileNotFoundError, match="symlinked"):
+        IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
+
+    assert store.query_recent(10) == []  # nothing indexed through a symlink
+
+
+# Mira Medium (review 4728294643): index() likewise refuses a SYMLINKED sidecar before reading it.
+# ValueError is an _INGEST_FAULTS member, so the watch loop logs + skips.
+def test_index_raises_on_symlinked_sidecar(tmp_path: Path) -> None:
+    bag = _make_bag_dir(tmp_path)
+    real_sidecar = _write_sidecar(tmp_path / "redirect-target.meta.json")
+    sidecar = tmp_path / (bag.name + ".meta.json")
+    sidecar.symlink_to(real_sidecar)
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(ValueError, match="symlinked sidecar"):
+        IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
+
+    assert store.query_recent(10) == []  # nothing indexed through a symlink

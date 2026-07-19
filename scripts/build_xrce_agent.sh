@@ -28,18 +28,21 @@ set -eo pipefail
 # Fast-CDR (v2.2.6 for Fast-DDS v3.1.3, vs the agent's v2.2.4). That vendored copy is authoritative to
 # its superproject, not the manifest — so verify it against the commit the superproject RECORDS for it
 # (deterministic for the pinned Fast-DDS tag), not the manifest pin. Walks up to the nearest ancestor
-# git repo and reads that path's `git submodule status` gitlink; empty when `dir` is a top-level
-# checkout (no submodule ancestor records it), so the caller falls back to the manifest pin.
+# git repo and reads the gitlink recorded in that superproject's HEAD tree; empty when `dir` is a
+# top-level checkout (no submodule ancestor records it), so the caller falls back to the manifest pin.
 submodule_pinned_commit() {
-  local dir="$1" parent rel status
+  local dir="$1" parent rel entry
   parent="$(git -C "${dir}/.." rev-parse --show-toplevel 2>/dev/null || true)"
   [[ -z "${parent}" || "${parent}" == "$(git -C "${dir}" rev-parse --show-toplevel 2>/dev/null)" ]] && return 0
   rel="$(realpath --relative-to="${parent}" "${dir}" 2>/dev/null || true)"
   [[ -z "${rel}" ]] && return 0
-  # `git submodule status <path>` prints " <sha> <path> (<describe>)"; take the recorded gitlink sha.
-  status="$(git -C "${parent}" submodule status "${rel}" 2>/dev/null || true)"
-  [[ -z "${status}" ]] && return 0
-  printf '%s\n' "${status}" | awk '{gsub(/^[-+U ]/, "", $1); print $1}'
+  # Read the gitlink RECORDED in the superproject's HEAD tree (`ls-tree` mode 160000 / type commit),
+  # NOT `git submodule status` — status reports the submodule's currently CHECKED-OUT worktree HEAD
+  # (with a `+` when it drifted), so a tampered nested checkout would compare equal to itself and
+  # bypass the pin gate (Mira High, review 4728294643). The HEAD tree is immune to worktree mutation.
+  entry="$(git -C "${parent}" ls-tree HEAD -- "${rel}" 2>/dev/null || true)"
+  [[ "${entry}" == 160000\ commit\ * ]] || return 0
+  printf '%s\n' "${entry}" | awk '{print $3}'
 }
 
 # POST-BUILD re-check of the superbuild's TRANSITIVE deps before installing them (Hermes Medium #1;

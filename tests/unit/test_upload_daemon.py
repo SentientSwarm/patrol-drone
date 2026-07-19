@@ -161,3 +161,35 @@ def test_failed_transfer_writes_no_upload_marker(tmp_path: Path) -> None:
 
     assert _daemon(transport, max_retries=3, backoff_s=0).on_bag_complete(bag) is False
     assert not upload_marker_for(bag).exists()
+
+
+# Mira Medium (review 4728294643): a SYMLINKED bag dir — even one pointing at a genuinely complete
+# bag — is refused at discovery AND by the complete-guard when called directly: a symlink planted
+# in the watch dir would redirect the rsync source outside the watched tree.
+def test_symlinked_bag_dir_is_rejected(tmp_path: Path) -> None:
+    transport = _FakeTransport()
+    real_root = tmp_path / "elsewhere"
+    real_root.mkdir()
+    real_bag = _make_bag(real_root, with_sidecar=True)  # a genuinely complete bag, outside watch
+    watch_dir = tmp_path / "watch"
+    watch_dir.mkdir()
+    link = watch_dir / real_bag.name
+    link.symlink_to(real_bag)
+    (watch_dir / (link.name + ".meta.json")).write_text("{}")  # sidecar beside the link, real file
+
+    assert iter_bag_dirs(watch_dir) == []  # excluded from discovery
+    assert _daemon(transport).on_bag_complete(link) is False  # refused even when called directly
+    assert transport.sent == []
+
+
+# Mira Medium (review 4728294643): a bag whose SIDECAR is a symlink is not complete — the sidecar
+# read/transfer would follow the link outside the watched tree, so the bag is never shipped.
+def test_symlinked_sidecar_is_not_complete(tmp_path: Path) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=False)  # finalized bag dir, no real sidecar
+    real_sidecar = tmp_path / "redirect-target.meta.json"
+    real_sidecar.write_text("{}")
+    (tmp_path / (bag.name + ".meta.json")).symlink_to(real_sidecar)
+
+    assert _daemon(transport).on_bag_complete(bag) is False
+    assert transport.sent == []

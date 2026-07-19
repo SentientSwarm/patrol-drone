@@ -85,6 +85,7 @@ rc=$?
 # two bounded waits are ~1s each — the default 90s would hang this test ~180s; stop_launch_group
 # re-reads FINALIZE_WAIT as a global and does NOT re-validate the >60s bound (that guard lives in
 # require_finalize_wait / main only, neither of which runs when the script is sourced for its defs).
+# shellcheck disable=SC2034  # consumed as a shell global by the sourced stop_launch_group (above)
 FINALIZE_WAIT=1
 setsid bash -c "trap '' INT TERM; sleep 30" &  # group leader that traps-ignores BOTH signals
 ig_pid=$!

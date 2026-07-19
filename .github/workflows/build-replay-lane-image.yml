@@ -1,0 +1,55 @@
+name: Build replay-lane image
+# Builds + publishes the pre-built pinned replay-lane CI image (docker/ci/replay-lane/) to GHCR
+# (PR #16, Mira Medium F-06 / review 4728294643). The published DIGEST — printed in the job
+# summary — is what .github/workflows/replay-regression.yml pins as its job container, making the
+# lane's entire runtime toolchain immutable. Flip procedure: docker/ci/replay-lane/README.md.
+#
+# Plain `docker build`/`docker push` on the runner's preinstalled docker — deliberately no
+# third-party build/login actions, so this supply-chain-motivated workflow adds no new action
+# dependencies to pin. GITHUB_TOKEN (packages: write) publishes the package and auto-links it to
+# this repo, which is what later lets the lane pull it with the default token.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [docker/ci/replay-lane/**]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build_publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # GHCR image paths must be lowercase; the repo slug may not be (SentientSwarm/...).
+      - name: Build the image
+        shell: bash
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/replay-lane"
+          echo "IMAGE=${image}" >> "$GITHUB_ENV"
+          docker build -t "${image}:latest" docker/ci/replay-lane
+
+      - name: Push and print the digest (pin THIS in replay-regression.yml)
+        shell: bash
+        run: |
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE}:latest"
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:latest")"
+          echo "published: ${digest}"
+          {
+            echo "### replay-lane image published"
+            echo ""
+            echo "Pin this (by digest) as the replay-regression job container:"
+            echo ""
+            echo '```'
+            echo "${digest}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -7,12 +7,15 @@ regression test" payoff: a later-phase change that drops a recorded topic is cau
 before it reaches hardware (PRD H3 — deterministic, plays a fixed bag, not the simulator).
 
 This is the ROS lane (``pytest.mark.ros``): it needs a sourced ROS env + ``ros2 bag play`` + the
-LFS-materialized reference bag. The pure comparison logic is unit-tested separately in
-tests/unit/test_replay_assertions.py; here we drive the real play→subscribe→evaluate path.
+LFS-materialized reference bag + the message packages for every asserted topic (std_msgs and
+sensor_msgs from apt; px4_msgs and patrol_interfaces from the lane's cached colcon overlay), since
+every topic is counted by live subscription (Mira High, review 4728294643). The pure comparison
+logic is unit-tested separately in tests/unit/test_replay_assertions.py; here we drive the real
+play→subscribe→evaluate path.
 
-Budget: ≤ 90 s wall-clock (OQ-6). The deliberate-break self-check (test_dropped_topic_fails) proves
-the guard actually guards — a reference bag missing an asserted topic must FAIL the assertions
-(LR-5 deliberate-break AC).
+Budget: ≤ 90 s wall-clock (OQ-6; ~20 s live play + a ~5 s 4x-rate deliberate-break play). The
+deliberate-break self-check (test_dropped_topic_fails_end_to_end) proves the guard actually guards
+— an asserted topic withheld from playback must FAIL the assertions (LR-5 deliberate-break AC).
 """
 
 from __future__ import annotations
@@ -24,22 +27,20 @@ from pathlib import Path
 
 import pytest
 import rclpy
+import yaml
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Int32, String
+from rosidl_runtime_py.utilities import get_message
 
-# Self-bootstrap the dirs this test imports first-party modules from, so the imports do not depend on
+# Self-bootstrap the dir this test imports first-party modules from, so the import does not depend on
 # the lane's pytest `pythonpath` — the /tmp-config rootdir bug (PR #16 / F-01) broke exactly that
 # dependence. Mirrors tests/integration/test_upload_ingest_standin.py, which is immune for this reason.
-#   tests/replay (here) → replay_assertions ;  docker → ingest.bag_reader (the bag-info count source)
+#   tests/replay (here) → replay_assertions
 _HERE = Path(__file__).resolve().parent
-for _p in (_HERE, _HERE.parents[1] / "docker"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
-from ingest.bag_reader import parse_bag_info  # noqa: E402  (after the sys.path bootstrap above)
 from replay_assertions import (  # noqa: E402  (after the sys.path bootstrap above)
-    AssertionSpec,
     ObservedTopic,
     evaluate,
     load_specs,
@@ -82,37 +83,49 @@ class _CountingNode(Node):
         return _cb
 
 
-# std_msgs topics are counted by live subscription; the rest (camera/compressed, fmu pose,
-# checkpoint_capture) are counted from `ros2 bag info` so the gate covers ALL asserted topics
-# without importing their (non-std) message types into the subscriber. Resolving those non-std
-# types from the played stream would require rosidl_runtime_py + numpy + the message packages
-# (px4_msgs/sensor_msgs/patrol_interfaces), none of which the focused replay lane installs — so the
-# stream-count is limited to the std_msgs topics and the rest stay bag-info counts (F-04: the added
-# `assert returncode == 0` in _play_and_count is what catches a player that errored out).
-_SUBSCRIBED = {
-    "/patrol/mission_state": String,
-    "/patrol/current_waypoint": Int32,
-}
+# EVERY asserted topic is counted by LIVE subscription during playback (Mira High, review
+# 4728294643) — no static `ros2 bag info` fallback: a bag-info count proves the bag CONTAINS a
+# topic, not that playback DELIVERED it. The non-std message classes (px4_msgs/sensor_msgs/
+# patrol_interfaces) are resolved by name at runtime from the bag's own metadata, so
+# assertions.yaml stays the single source of asserted topics; the replay lane provides the message
+# packages (apt type-support + the cached px4_msgs/patrol_interfaces colcon overlay) and numpy —
+# the get_message prerequisites (see the repo's Jazzy-rclpy note).
+def _recorded_topic_types(bag: Path) -> dict[str, str]:
+    """topic -> ROS type string, read from the bag's own metadata.yaml (the recorded truth)."""
+    meta = yaml.safe_load((bag / "metadata.yaml").read_text())
+    entries = meta["rosbag2_bagfile_information"]["topics_with_message_count"]
+    return {e["topic_metadata"]["name"]: e["topic_metadata"]["type"] for e in entries}
 
 
-def _bag_info_observed(bag: Path, topics: set[str]) -> list[ObservedTopic]:
-    """ObservedTopic for each of ``topics`` from `ros2 bag info` (count over the bag's duration)."""
-    info = subprocess.run(
-        ["ros2", "bag", "info", str(bag)], check=True, capture_output=True, text=True
-    )
-    facts = parse_bag_info(info.stdout)
-    return [ObservedTopic(t, facts.topic_counts.get(t, 0), facts.duration_s) for t in topics]
+def _subscribed_types(bag: Path, topics: set[str]) -> dict[str, type]:
+    """Resolve each asserted topic's message class by name — every topic is counted LIVE at
+    playback; a topic absent from the bag or an uninstalled message package fails loudly here
+    (KeyError / import error), never silently downgrades to a static count."""
+    types = _recorded_topic_types(bag)
+    return {t: get_message(types[t]) for t in topics}
 
 
-def _play_and_count(bag: Path, topics: dict[str, type], window_s: float) -> list[ObservedTopic]:
+def _play_and_count(
+    bag: Path,
+    topics: dict[str, type],
+    window_s: float,
+    *,
+    rate: float = _PLAY_RATE,
+    play_topics: list[str] | None = None,
+) -> list[ObservedTopic]:
     """Play ``bag`` and return per-topic ObservedTopic counts over the playback window.
 
     Asserts ``ros2 bag play`` exits 0 — a player that errored out is a failure, not a silent pass
-    (F-04). This is the achievable half of F-04 in the focused replay lane.
+    (F-04). ``play_topics`` narrows what the PLAYER publishes (``--topics``) while the subscriber
+    set stays ``topics`` — the deliberate-break test uses it to withhold one asserted topic from
+    playback and prove the full play→count→evaluate path fails.
     """
     rclpy.init()
     node = _CountingNode(topics)
-    player = subprocess.Popen(["ros2", "bag", "play", "--rate", str(_PLAY_RATE), str(bag)])
+    argv = ["ros2", "bag", "play", "--rate", str(rate), str(bag)]
+    if play_topics is not None:
+        argv += ["--topics", *play_topics]
+    player = subprocess.Popen(argv)
     try:
         start = time.monotonic()
         while player.poll() is None and time.monotonic() - start < window_s:
@@ -136,26 +149,34 @@ def _terminate(player: subprocess.Popen) -> None:
 
 def test_replay_topics_present_and_rated() -> None:
     """TS-18/TS-20: GIVEN the reference bag (LFS-materialized), WHEN replayed, THEN every asserted
-    topic is present at its rate. std_msgs topics are counted live during playback; the rest are
-    counted from `ros2 bag info`. _require_reference_bag covers TS-20 (LFS pointer → hard fail);
+    topic is present at its rate — ALL topics counted by live subscription during playback (Mira
+    High, review 4728294643). _require_reference_bag covers TS-20 (LFS pointer → hard fail);
     _play_and_count asserts the player exited 0 (F-04)."""
     _require_reference_bag()
     specs = load_specs(_ASSERTIONS)
-    info_topics = {s.topic for s in specs} - set(_SUBSCRIBED)
+    types = _subscribed_types(_REFERENCE_BAG, {s.topic for s in specs})
 
-    observed = _play_and_count(_REFERENCE_BAG, _SUBSCRIBED, window_s=80.0)
-    observed += _bag_info_observed(_REFERENCE_BAG, info_topics)
+    observed = _play_and_count(_REFERENCE_BAG, types, window_s=80.0)
 
     result = evaluate(specs, observed)
     assert result.passed, result.failures
 
 
-def test_dropped_topic_fails() -> None:
-    """TS-19: Deliberate break — asserting a topic the playback never delivers MUST fail (LR-5)."""
-    # A spec for a topic that is not in the bag / not subscribed → the comparator must report failure.
-    specs = [AssertionSpec(topic="/patrol/this_topic_was_dropped", min_count=1)]
-    observed = [ObservedTopic("/patrol/mission_state", count=200, duration_s=20.0)]
+def test_dropped_topic_fails_end_to_end() -> None:
+    """TS-19: Deliberate break — play the reference bag with one asserted topic WITHHELD from
+    playback (``--topics`` keeps the rest); the full play→subscribe→count→evaluate path MUST fail
+    on exactly that topic (LR-5, Mira High: end-to-end, not comparator-only — the comparator-level
+    break stays covered by tests/unit/test_replay_assertions.py). 4x rate keeps this second play
+    ~5 s (OQ-6 budget); rate-band noise on OTHER topics at 4x is irrelevant — only the dropped
+    topic's presence failure is asserted."""
+    _require_reference_bag()
+    specs = load_specs(_ASSERTIONS)
+    dropped = "/patrol/mission_state"
+    kept = [s.topic for s in specs if s.topic != dropped]
+    types = _subscribed_types(_REFERENCE_BAG, {s.topic for s in specs})
+
+    observed = _play_and_count(_REFERENCE_BAG, types, window_s=30.0, rate=4.0, play_topics=kept)
 
     result = evaluate(specs, observed)
     assert result.passed is False
-    assert any("this_topic_was_dropped" in f for f in result.failures)
+    assert any(dropped in f for f in result.failures)

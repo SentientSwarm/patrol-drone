@@ -215,7 +215,7 @@ stop_launch_group() {  # stop_launch_group PGID
 # is no finalized bag / no staging crumb. Runs in the ROS-sourced env so patrol_logging is importable.
 # shellcheck disable=SC2317,SC2329  # reached from graceful_stop_mission, not a direct call
 finalize_bag_sidecars() {  # finalize_bag_sidecars RUN_ROOT
-  local run_root="$1" bag_dir
+  local run_root="$1" bag_dir missing=0
   while IFS= read -r bag_dir; do
     [[ -n "${bag_dir}" ]] || continue
     python3 -c '
@@ -225,7 +225,16 @@ from patrol_logging.recorder import finalize_sidecar_from_staging
 written = finalize_sidecar_from_staging(Path(sys.argv[1]))
 print(f"wrote bag sidecar {written}" if written else "sidecar already present (or nothing to finalize)")
 ' "${bag_dir}" || warn "sidecar finalize failed for ${bag_dir} (patrol_logging importable?)"
+    # Outcome gate (Mira Medium, review 4728294643): a finalized bag (metadata.yaml) that still has
+    # no <bag>.meta.json is stranded — upload_daemon.is_complete() will refuse it forever — so this
+    # must be a FAILURE, not a warning-then-success. Checking the artifact (not the command's exit
+    # code) also catches a finalize that "succeeded" without writing (no staging crumb).
+    if [[ ! -f "${bag_dir}.meta.json" ]]; then
+      warn "finalized bag ${bag_dir} has NO sidecar after finalize — not ingestable"
+      missing=$((missing + 1))
+    fi
   done < <(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null)
+  [[ ${missing} -eq 0 ]]
 }
 
 # Stop the mission launch CLEANLY so the recorder finalizes its MCAP (writes metadata.yaml) before the
@@ -259,8 +268,13 @@ graceful_stop_mission() {
   fi
   # Finalize the JSON sidecar from the launch's staging file now that the launch is gone (no-op if its
   # OnProcessExit handler already wrote it on the clean SIGINT path). This is what makes the bag
-  # ingestable (upload_daemon.is_complete() requires <bag>.meta.json) regardless of how launch exited.
-  finalize_bag_sidecars "${run_root}"
+  # ingestable (upload_daemon.is_complete() requires <bag>.meta.json) regardless of how launch exited
+  # — so a bag left sidecar-less is a HARD failure here (Mira Medium, review 4728294643), exactly
+  # like the missing-metadata.yaml gate above, not a warning the run then reports success over.
+  if ! finalize_bag_sidecars "${run_root}"; then
+    err "sidecar finalize left >=1 finalized bag without <bag>.meta.json under ${run_root} — bag(s) not ingestable (upload_daemon requires the sidecar)"
+    return 1
+  fi
   return 0
 }
 

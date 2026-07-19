@@ -65,11 +65,31 @@ def _sidecar_for(bag: Path) -> Path:
     return bag.with_name(bag.name + ".meta.json")
 
 
+def _is_regular_file(path: Path) -> bool:
+    """True for a plain file that is NOT a symlink — the landing boundary refuses redirects.
+
+    The DGX landing dir's writers are remote by design, so a planted symlink redirecting the
+    metadata/sidecar reads outside the landing tree is refused here (Mira Medium, review
+    4728294643). Mirrors ``analysis/upload_daemon/upload_daemon._is_regular_file`` — the two loops
+    keep their documented symmetry (they cannot share code across the deploy boundary).
+    """
+    return path.is_file() and not path.is_symlink()
+
+
 def _iter_bag_dirs(watch_dir: Path) -> list[Path]:
-    """Candidate bag directories under ``watch_dir`` (sorted; empty if the dir doesn't exist yet)."""
+    """Candidate bag directories under ``watch_dir`` (sorted; empty if the dir doesn't exist yet).
+
+    Symlinked entries are refused, and every candidate must resolve inside the resolved watch root
+    (Mira Medium, review 4728294643) — mirroring the upload sibling's discovery rule.
+    """
     if not watch_dir.is_dir():
         return []
-    return sorted(p for p in watch_dir.iterdir() if p.is_dir())
+    root = watch_dir.resolve()
+    return sorted(
+        p
+        for p in watch_dir.iterdir()
+        if p.is_dir() and not p.is_symlink() and p.resolve().is_relative_to(root)
+    )
 
 
 def _try_index(service: IngestService, bag: Path, sidecar: Path) -> bool:
@@ -95,7 +115,7 @@ def _drain_once(service: IngestService, watch_dir: Path, indexed: _BoundedSeen) 
     """
     for bag in _iter_bag_dirs(watch_dir):
         sidecar = _sidecar_for(bag)
-        if bag in indexed or not sidecar.is_file():
+        if bag in indexed or not _is_regular_file(sidecar):  # symlinked sidecar refused (Mira)
             continue
         seen = _already_indexed_safe(service, bag)
         if seen is None:  # dedup check hit a caught fault → skip this poll, retry later
