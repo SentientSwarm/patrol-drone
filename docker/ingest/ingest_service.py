@@ -41,6 +41,40 @@ def _validate_sidecar_fields(sidecar: dict, sidecar_path: Path) -> None:
             )
 
 
+def _require_finalized_bag(bag_path: Path) -> None:
+    """The bag guard: ``metadata.yaml`` must be present and a REAL file, else fail loudly.
+
+    A symlinked ``metadata.yaml`` is refused (Mira Medium, review 4728294643): the landing dir's
+    writers are remote, and a planted symlink would redirect the read outside the landing tree.
+    """
+    meta = bag_path / "metadata.yaml"
+    if meta.is_symlink() or not meta.is_file():
+        raise FileNotFoundError(
+            f"not a finalized bag dir (no metadata.yaml, or symlinked): {bag_path}"
+        )
+
+
+def _load_valid_sidecar(sidecar_path: Path, bag_path: Path) -> dict:
+    """Read + fully validate the sidecar (shape, identity schema, bag match) before any store use.
+
+    Every raise here is an ``_INGEST_FAULTS`` member, so the watch loop logs + skips the bag: a
+    symlinked sidecar is refused like the metadata guard above; a non-object or bad-typed field is
+    the F-02 boundary validation; a mismatched ``bag_uri`` refuses a swapped/stale sidecar.
+    """
+    if sidecar_path.is_symlink():
+        raise ValueError(f"refusing symlinked sidecar: {sidecar_path}")
+    sidecar = json.loads(sidecar_path.read_text())
+    if not isinstance(sidecar, dict):
+        raise TypeError(f"sidecar is not a JSON object: {sidecar_path}")  # caught by _INGEST_FAULTS
+    _validate_sidecar_fields(sidecar, sidecar_path)
+    if sidecar.get("bag_uri") != bag_path.name:
+        raise ValueError(
+            f"sidecar bag_uri {sidecar.get('bag_uri')!r} does not match bag dir "
+            f"{bag_path.name!r} — refusing to index a mismatched sidecar/bag pair"
+        )
+    return sidecar
+
+
 @dataclass(frozen=True)
 class BagFacts:
     """The facts derived FROM the bag (not the sidecar): duration + per-topic message counts."""
@@ -63,31 +97,13 @@ class IngestService:
     def index(self, bag_path: Path, sidecar_path: Path) -> None:
         """Index ``bag_path`` (a finalized rosbag2 bag dir) using ``sidecar_path`` for identity.
 
-        Guards: the bag must be a finalized bag directory (``metadata.yaml`` present) and the sidecar
-        must parse as JSON — both fail loudly (FileNotFoundError / JSONDecodeError) before any
-        manifest write, so a bad input is never silently half-indexed (§4.4.5). Symlinked
-        ``metadata.yaml``/sidecar files are refused (Mira Medium, review 4728294643): the landing
-        dir's writers are remote, and a planted symlink would redirect the reads outside the
-        landing tree. Both raised types are ``_INGEST_FAULTS`` members, so the loop logs + skips.
+        Guards (all before any manifest write, so a bad input is never silently half-indexed,
+        §4.4.5): ``_require_finalized_bag`` — real ``metadata.yaml`` present, symlink refused;
+        ``_load_valid_sidecar`` — real file, JSON object, identity schema, matching ``bag_uri``.
+        Every guard raise is an ``_INGEST_FAULTS`` member, so the watch loop logs + skips.
         """
-        meta = bag_path / "metadata.yaml"
-        if meta.is_symlink() or not meta.is_file():
-            raise FileNotFoundError(
-                f"not a finalized bag dir (no metadata.yaml, or symlinked): {bag_path}"
-            )
-        if sidecar_path.is_symlink():
-            raise ValueError(f"refusing symlinked sidecar: {sidecar_path}")
-        sidecar = json.loads(sidecar_path.read_text())
-        if not isinstance(sidecar, dict):
-            raise TypeError(
-                f"sidecar is not a JSON object: {sidecar_path}"
-            )  # caught by _INGEST_FAULTS
-        _validate_sidecar_fields(sidecar, sidecar_path)
-        if sidecar.get("bag_uri") != bag_path.name:
-            raise ValueError(
-                f"sidecar bag_uri {sidecar.get('bag_uri')!r} does not match bag dir "
-                f"{bag_path.name!r} — refusing to index a mismatched sidecar/bag pair"
-            )
+        _require_finalized_bag(bag_path)
+        sidecar = _load_valid_sidecar(sidecar_path, bag_path)
 
         facts = self._bag_facts(bag_path)  # DERIVED from the bag — the trusted topic/duration truth
 

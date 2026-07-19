@@ -23,6 +23,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -109,23 +110,19 @@ def _play_and_count(
     bag: Path,
     topics: dict[str, type],
     window_s: float,
-    *,
-    rate: float = _PLAY_RATE,
-    play_topics: list[str] | None = None,
+    play_args: Sequence[str] = ("--rate", str(_PLAY_RATE)),
 ) -> list[ObservedTopic]:
     """Play ``bag`` and return per-topic ObservedTopic counts over the playback window.
 
     Asserts ``ros2 bag play`` exits 0 — a player that errored out is a failure, not a silent pass
-    (F-04). ``play_topics`` narrows what the PLAYER publishes (``--topics``) while the subscriber
-    set stays ``topics`` — the deliberate-break test uses it to withhold one asserted topic from
-    playback and prove the full play→count→evaluate path fails.
+    (F-04). ``play_args`` is appended to the player argv AFTER the bag positional (``--topics`` is
+    greedy nargs and would otherwise swallow the path): the deliberate-break test passes a faster
+    ``--rate`` plus ``--topics`` to withhold one asserted topic from playback while the subscriber
+    set stays ``topics``, proving the full play→count→evaluate path fails.
     """
     rclpy.init()
     node = _CountingNode(topics)
-    argv = ["ros2", "bag", "play", "--rate", str(rate), str(bag)]
-    if play_topics is not None:
-        argv += ["--topics", *play_topics]
-    player = subprocess.Popen(argv)
+    player = subprocess.Popen(["ros2", "bag", "play", str(bag), *play_args])
     try:
         start = time.monotonic()
         while player.poll() is None and time.monotonic() - start < window_s:
@@ -175,7 +172,9 @@ def test_dropped_topic_fails_end_to_end() -> None:
     kept = [s.topic for s in specs if s.topic != dropped]
     types = _subscribed_types(_REFERENCE_BAG, {s.topic for s in specs})
 
-    observed = _play_and_count(_REFERENCE_BAG, types, window_s=30.0, rate=4.0, play_topics=kept)
+    observed = _play_and_count(
+        _REFERENCE_BAG, types, window_s=30.0, play_args=["--rate", "4.0", "--topics", *kept]
+    )
 
     result = evaluate(specs, observed)
     assert result.passed is False
