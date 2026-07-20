@@ -3,8 +3,12 @@
 Plays the checked-in reference bag via ``ros2 bag play`` while rclpy subscribers count messages per
 topic, then asserts the result against the curated subset in ``assertions.yaml`` using the ROS-free
 :func:`replay_assertions.evaluate` comparator (design §4.2.5). This is the "the bag is the
-regression test" payoff: a later-phase change that drops a recorded topic is caught here in CI
-before it reaches hardware (PRD H3 — deterministic, plays a fixed bag, not the simulator).
+regression test" payoff, with a precise scope split (F-06): playing the FROZEN reference bag proves
+BACKWARD compatibility — a known-good artifact still passes the comparator — while the Layer-A
+config-subset guard (tests/unit/test_replay_config_consistency.py) proves FORWARD compatibility,
+catching a topic dropped/renamed in the CURRENT recorder config at its source. Together they catch
+a recorded-topic regression in CI before it reaches hardware (PRD H3 — deterministic, plays a
+fixed bag, not the simulator).
 
 This is the ROS lane (``pytest.mark.ros``): it needs a sourced ROS env + ``ros2 bag play`` + the
 LFS-materialized reference bag + the message packages for every asserted topic (std_msgs and

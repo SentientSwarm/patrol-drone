@@ -6,13 +6,18 @@ local-path rsync transport, then indexed by the IngestService into a SQLite mani
 manifest_query — proving the two tracks compose on one artifact (the M8 demo's automated half).
 
 This is the integration tier (real rsync + real sqlite3 + a real `ros2 bag info` reader), but it
-needs no ROS topics — so it runs wherever rsync + ros2 are on PATH. The bag-fact derivation uses a
-trimmed real bag if one is available, else a stub reader, so the manifest-row assertions hold without
-depending on a live recording.
+needs no ROS topics — so it runs wherever rsync + ros2 are on PATH. Bag-fact derivation is covered
+at two tiers (F-05, Mira review 4731322384): the stub-reader tests are fast COMPOSITION checks
+(upload → index → query wiring), and the real-reader tests drive the production ``read_bag_facts``
+over the checked-in LFS reference bag — both its structured metadata.yaml branch and its
+``ros2 bag info`` subprocess fallback — so a regression in the production bag-fact boundary is
+caught here rather than masked by the stub.
 """
 
 from __future__ import annotations
 
+import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -26,6 +31,8 @@ for _p in (_REPO / "analysis", _REPO / "docker"):
         sys.path.insert(0, str(_p))
 
 from ingest.__main__ import _drain_once  # noqa: E402
+from ingest.bag_reader import read_bag_facts  # noqa: E402
+from ingest.bounded_seen import _BoundedSeen  # noqa: E402
 from ingest.ingest_service import BagFacts, IngestService  # noqa: E402
 from ingest.manifest_query import render_rows  # noqa: E402
 from ingest.manifest_store import ManifestStore  # noqa: E402
@@ -118,7 +125,7 @@ def test_one_bad_sidecar_does_not_block_other_bags(tmp_path: Path) -> None:
 
     store = ManifestStore(tmp_path / "manifest.db")
     service = IngestService(store, bag_facts=_stub_facts)
-    indexed: set[Path] = set()
+    indexed = _BoundedSeen()  # the loop's real bounded seen-set (mypy: _drain_once's declared type)
 
     _drain_once(service, watch_dir, indexed)  # one deterministic pass, never raises
 
@@ -127,3 +134,67 @@ def test_one_bad_sidecar_does_not_block_other_bags(tmp_path: Path) -> None:
     # The bad bag is NOT marked indexed, so a later (corrected) poll would retry it.
     assert (watch_dir / "patrol_bad_20260629_121000") not in indexed
     assert len(indexed) == 2
+
+
+# --- Real-reader tier (F-05, Mira review 4731322384): the stub tests above prove the COMPOSITION;
+# these prove the PRODUCTION bag-fact boundary — the real read_bag_facts over a real finalized bag
+# (the LFS reference bag the replay lane already materializes), covering BOTH of its branches:
+# the structured metadata.yaml parse and the `ros2 bag info` subprocess fallback Mira named.
+
+_REFERENCE_BAG = _REPO / "tests" / "replay" / "reference" / "patrol_reference"
+
+
+def _require_reference_bag() -> Path:
+    """The LFS reference bag as a real production fixture — hard-fail if it's an unresolved pointer."""
+    mcap = next(_REFERENCE_BAG.glob("*.mcap"), None)
+    if mcap is None or mcap.stat().st_size < 1024:
+        pytest.fail(
+            f"reference bag missing/unresolved at {_REFERENCE_BAG} — checkout needs lfs:true "
+            "(this lane materializes it; the real-reader ingest tests require it)."
+        )
+    return _REFERENCE_BAG
+
+
+# TS-16 (F-05): a REAL finalized bag ingested through the PRODUCTION read_bag_facts (no stub) — the
+# metadata.yaml branch. A regression in the real reader (a changed metadata shape, a parse bug) fails
+# here, where _stub_facts would have masked it. Loose bag-derived assertions (duration > 0, non-empty
+# topics) so a reference-bag regeneration doesn't false-fail the test.
+def test_ingest_real_bag_through_production_reader(tmp_path: Path) -> None:
+    bag = _require_reference_bag()
+    sidecar = tmp_path / (bag.name + ".meta.json")
+    sidecar.write_text(
+        f'{{"mission_id": "refbag", "bag_uri": "{bag.name}", '
+        '"started_utc": "2026-06-27T17:01:01+00:00", "ended_utc": "2026-06-27T17:01:21+00:00", '
+        '"recorded_topics": ["/patrol/mission_state"], "mission_config_ref": "patrol.yaml"}'
+    )
+    store = ManifestStore(tmp_path / "manifest.db")
+    IngestService(store, bag_facts=read_bag_facts).index(bag, sidecar)  # REAL reader, no stub
+
+    rows = store.query_recent(10)
+    assert len(rows) == 1
+    assert rows[0].mission_id == "refbag"
+    assert rows[0].duration_s > 0  # DERIVED from the bag, not the sidecar (dumb-producer, §3.4)
+    assert json.loads(rows[0].topics_json)  # non-empty real topic set from the production reader
+
+
+# TS-17 (F-05): the `ros2 bag info` SUBPROCESS branch Mira explicitly named. The reference bag
+# carries a real metadata.yaml, so read_bag_facts prefers the structured parse and never shells out —
+# to force the fallback we strip metadata.yaml from a copy and hand the reader the bare .mcap. (The
+# metadata-less COPY can't go through IngestService.index: _require_finalized_bag refuses a bag dir
+# without metadata.yaml by design, and `ros2 bag info` itself errors on a metadata-less DIR — but it
+# reads a bare .mcap fine, which is exactly the artifact shape the fallback exists for.) Both
+# production branches must derive the SAME truth from the same bag.
+def test_read_bag_facts_ros2_bag_info_fallback_matches_metadata(tmp_path: Path) -> None:
+    src = _require_reference_bag()
+    bag_copy = tmp_path / src.name
+    shutil.copytree(src, bag_copy)
+    (bag_copy / "metadata.yaml").unlink()  # force the subprocess fallback
+    mcap = next(bag_copy.glob("*.mcap"))
+
+    info_facts = read_bag_facts(mcap)  # metadata.yaml unfindable from a file path → ros2 bag info
+    meta_facts = read_bag_facts(src)  # the structured metadata.yaml branch, same underlying bag
+
+    assert info_facts.duration_s > 0
+    assert info_facts.topic_counts  # non-empty, parsed from real `ros2 bag info` stdout
+    assert info_facts.topic_counts == meta_facts.topic_counts
+    assert info_facts.duration_s == pytest.approx(meta_facts.duration_s, rel=1e-6)

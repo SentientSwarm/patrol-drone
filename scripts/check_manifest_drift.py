@@ -288,6 +288,16 @@ def check_vendor_provenance(repo_root: Path, manifest: dict) -> list[str]:
 _INGEST_ARGS = ("ROS_BASE_DIGEST", "ROSBAG2_APT_VERSION", "ROSBAG2_MCAP_APT_VERSION")
 _INGEST_MANIFEST_KEYS = ("ros_base_digest", "rosbag2_apt_version", "rosbag2_mcap_apt_version")
 
+# Per ingest ARG, the regex proving it is CONSUMED (not just declared) — a future edit that declares
+# the ARG but hardcodes a literal digest/version in FROM/install stays green otherwise (F-07, guide
+# §2.C). ROS_BASE_DIGEST must appear in the FROM line as @${...}; each ROSBAG2_* must appear as ${...}
+# inside an apt-get install package spec. Kept as a data table so the loop stays flat (health gate).
+_INGEST_ARG_CONSUMED = {
+    "ROS_BASE_DIGEST": r"^FROM\s+\S+@\$\{ROS_BASE_DIGEST\}",
+    "ROSBAG2_APT_VERSION": r"=\$\{ROSBAG2_APT_VERSION\}",
+    "ROSBAG2_MCAP_APT_VERSION": r"=\$\{ROSBAG2_MCAP_APT_VERSION\}",
+}
+
 
 def check_ingest_pins(repo_root: Path, manifest: dict) -> list[str]:
     """The ingest Dockerfile's base digest + apt pins come from [ingest], never inlined (F-01).
@@ -295,7 +305,10 @@ def check_ingest_pins(repo_root: Path, manifest: dict) -> list[str]:
     Mirrors the sim/dev ARG-default guard for the ingest image (whose base differs, so it has its own
     manifest section): each pin ARG must be declared with no default, so the value is injected from
     the manifest and a bump can't silently reintroduce a duplicated literal. Also asserts the
-    [ingest] keys exist so `gen_build_args.py --section ingest` can resolve them.
+    [ingest] keys exist so `gen_build_args.py --section ingest` can resolve them, AND that each ARG is
+    actually CONSUMED where it must be (F-07, guide §2.C): declared-but-unused is a drift hole — a
+    future edit could declare the ARG yet hardcode a divergent digest/version in FROM/install and
+    stay green. `_INGEST_ARG_CONSUMED` pins the FROM/apt-install reference each ARG must appear in.
     """
     problems = [
         f"stack-manifest.toml [ingest] missing key {k!r}"
@@ -311,6 +324,12 @@ def check_ingest_pins(repo_root: Path, manifest: dict) -> list[str]:
             problems.append(f"docker/ingest/Dockerfile pins ARG {arg} with a default; inject it")
         elif not re.search(rf"^ARG {arg}\b", text, re.MULTILINE):
             problems.append(f"docker/ingest/Dockerfile does not declare manifest ARG {arg}")
+    for arg, consumed in _INGEST_ARG_CONSUMED.items():
+        if not re.search(consumed, text, re.MULTILINE):
+            problems.append(
+                f"docker/ingest/Dockerfile declares ARG {arg} but does not consume it "
+                f"(expected {consumed!r}); a hardcoded literal would silently bypass the pin"
+            )
     return problems
 
 

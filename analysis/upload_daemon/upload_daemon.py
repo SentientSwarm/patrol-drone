@@ -13,6 +13,7 @@ truth until a transfer is confirmed, so no data is ever lost to a flaky link.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -85,14 +86,30 @@ def upload_marker_for(bag_path: Path) -> Path:
     return bag_path.with_name(bag_path.name + ".uploaded")
 
 
+def _write_upload_marker(bag_path: Path) -> None:
+    """Create the LOCAL <bag>.uploaded marker the daemon exclusively owns (F-04, guide §1.B).
+
+    O_CREAT|O_EXCL|O_NOFOLLOW so a pre-planted file OR symlink at the marker path fails the create
+    loudly (the daemon never adopts a marker it didn't make); mode 0o600 keeps it owner-only. This is
+    the write-side pair to is_already_uploaded's symlink-strict read.
+    """
+    marker = upload_marker_for(bag_path)
+    fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    os.close(fd)
+
+
 def is_already_uploaded(bag_path: Path) -> bool:
     """True iff a confirmed-upload marker exists for ``bag_path`` (the watch loop's durable skip).
 
     Survives the in-memory LRU's eviction (F-05), so an old bag with its marker is skipped forever
     rather than re-rsynced every poll. The marker is written only on a CONFIRMED transfer, so a
-    failed/partial upload leaves none and correctly retries.
+    failed/partial upload leaves none and correctly retries. Symlink-strict (F-04, guide §1.B): a
+    planted symlink named ``<bag>.uploaded`` pointing at any regular file would make a plain
+    ``is_file()`` return True, marking a never-shipped bag "uploaded" forever (a false-success that
+    suppresses the transfer). The daemon trusts ONLY a marker it exclusively owns — a real,
+    non-symlink file it created via ``_write_upload_marker``.
     """
-    return upload_marker_for(bag_path).is_file()
+    return _is_regular_file(upload_marker_for(bag_path))
 
 
 class UploadDaemon:
@@ -123,9 +140,10 @@ class UploadDaemon:
 
         if not all(self._send_with_retry(path) for path in (bag_path, sidecar_path_for(bag_path))):
             return False
-        upload_marker_for(
-            bag_path
-        ).touch()  # LOCAL-only durable 'uploaded' signal (F-05); not shipped
+        # LOCAL-only durable 'uploaded' signal (F-05); not shipped. Exclusive create (F-04): a
+        # pre-planted marker raises FileExistsError rather than being silently adopted — the driver
+        # loop's _UPLOAD_FAULTS boundary (⊇ OSError) logs it and leaves the bag un-marked to retry.
+        _write_upload_marker(bag_path)
         return True
 
     def _send_with_retry(self, path: Path) -> bool:

@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -211,11 +212,21 @@ def _atomic_write_text(path: Path, text: str) -> None:
     file is a same-directory sibling (``os.replace`` is atomic only within one filesystem; the sidecar
     and its temp are always siblings of the bag dir, so this holds). ``fsync`` before the rename makes
     the bytes durable so a crash can't leave the renamed-in file empty. On any failure the temp file
-    is removed so a ``.<pid>.tmp`` crumb never masquerades as a real artifact.
+    is removed so a ``.tmp`` crumb never masquerades as a real artifact.
     """
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    # Exclusive, no-follow temp create (F-03, guide §1.B): a predictable `.<pid>.tmp` sibling opened
+    # with plain open() follows a symlink a local process can pre-plant in a writable output dir,
+    # redirecting the write (and the subsequent os.replace inode) to an attacker target. An
+    # unpredictable suffix + O_CREAT|O_EXCL|O_NOFOLLOW means a pre-existing file OR symlink at the temp
+    # path fails the open loudly rather than being reused, while the same-directory placement keeps
+    # os.replace atomic. mode 0o600 so the crumb is owner-only if a crash leaves it.
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    # The exclusive create sits OUTSIDE the cleanup try: if it fails (something already occupies the
+    # temp path), we created nothing and must remove nothing — unlinking there would delete a FOREIGN
+    # planted object we never owned. Cleanup below only ever unlinks a temp this call created.
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     try:
-        with open(tmp, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())

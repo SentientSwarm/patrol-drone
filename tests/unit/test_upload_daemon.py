@@ -20,7 +20,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from upload_daemon.upload_daemon import UploadDaemon, iter_bag_dirs, upload_marker_for
+import pytest
+
+from upload_daemon.upload_daemon import (
+    UploadDaemon,
+    is_already_uploaded,
+    iter_bag_dirs,
+    upload_marker_for,
+)
 
 
 class _FakeTransport:
@@ -193,3 +200,50 @@ def test_symlinked_sidecar_is_not_complete(tmp_path: Path) -> None:
 
     assert _daemon(transport).on_bag_complete(bag) is False
     assert transport.sent == []
+
+
+# F-04 (guide §1.B) read side: a planted SYMLINK named <bag>.uploaded pointing at any regular file
+# must NOT count as "already uploaded" — a symlink-following is_file() would suppress the transfer
+# of a never-shipped bag forever (a false-success). The daemon trusts only real, non-symlink markers.
+def test_symlinked_upload_marker_is_not_already_uploaded(tmp_path: Path) -> None:
+    bag = _make_bag(tmp_path, with_sidecar=True)
+    redirect_target = tmp_path / "some-real-file"
+    redirect_target.write_text("x")
+    upload_marker_for(bag).symlink_to(redirect_target)
+
+    assert is_already_uploaded(bag) is False
+
+
+# F-04 write side: the daemon only trusts markers it EXCLUSIVELY creates. A pre-planted file or
+# symlink at the marker path makes the post-transfer O_CREAT|O_EXCL|O_NOFOLLOW create fail LOUDLY
+# (FileExistsError) instead of silently adopting a foreign marker; the driver loop's _UPLOAD_FAULTS
+# boundary (⊇ OSError) logs it and the bag stays un-marked by us, so it is retried, not lost.
+@pytest.mark.parametrize(
+    "plant", ["regular_file", "symlink"], ids=["planted-file", "planted-symlink"]
+)
+def test_preplanted_marker_fails_the_confirm_loudly(tmp_path: Path, plant: str) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=True)
+    marker = upload_marker_for(bag)
+    redirect_target = tmp_path / "attacker-target"
+    redirect_target.write_text("untouched")
+    if plant == "regular_file":
+        marker.write_text("squatter")
+    else:
+        marker.symlink_to(redirect_target)
+
+    with pytest.raises(FileExistsError):
+        _daemon(transport).on_bag_complete(bag)
+
+    assert redirect_target.read_text() == "untouched"  # never written through a planted symlink
+
+
+# F-04 happy path: the durable-skip loop stays intact — a confirmed transfer writes a real,
+# non-symlink marker and the NEXT poll's is_already_uploaded sees it.
+def test_confirmed_marker_is_seen_by_the_next_poll(tmp_path: Path) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    assert _daemon(transport).on_bag_complete(bag) is True
+    assert not upload_marker_for(bag).is_symlink()
+    assert is_already_uploaded(bag) is True

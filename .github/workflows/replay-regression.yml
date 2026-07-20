@@ -34,16 +34,21 @@ jobs:
     # ROS distro (no /opt/ros, no rclpy, no ros2). ros-ci installs ROS via action-ros-ci; this lane
     # instead apt-installs the focused runtime it needs below (rclpy + ros2bag + the MCAP plugin),
     # since action-ros-ci is a colcon *build* action, not a "run pytest against a real bag" runner.
+    # This toolchain image + the job-time installs below are the accepted INTERIM until the
+    # docker/ci/replay-lane image publishes a digest from main and a fast-follow PR flips this
+    # container onto it (Mira F-01, review 4731322384; docker/ci/replay-lane/README.md §Flipping).
     container:
       image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
     steps:
       # git-lfs is NOT in the ROS toolchain image, so `checkout` with `lfs: true` would fail to
       # locate the git-lfs executable. Install it FIRST so the checkout's LFS smudge can materialize
       # the reference bag.
-      # NOTE (PR #16 / F-08, re-raised as Mira F-06): unversioned apt. This step — like every
-      # job-time apt step in this lane — is deleted once the pre-built pinned lane image
-      # (docker/ci/replay-lane/, which bakes git-lfs) is published and container.image flips to its
-      # digest; see docker/ci/replay-lane/README.md for the flip procedure.
+      # NOTE (Mira F-01, review 4731322384): unversioned job-time apt — an accepted INTERIM. The
+      # pinned lane image (docker/ci/replay-lane/, which bakes git-lfs) cannot publish a digest
+      # until docker/ci/replay-lane/** lands on main (build-replay-lane-image.yml registers and
+      # runs from the default branch), so the flip is a tracked FAST-FOLLOW PR: point
+      # container.image at the published digest and delete this step — see
+      # docker/ci/replay-lane/README.md §"Flipping the lane onto the image".
       - name: Install git-lfs
         shell: bash
         run: |
@@ -84,11 +89,12 @@ jobs:
       # step below can colcon-build px4_msgs + patrol_interfaces; ros2bag + rosbag2 for
       # `ros2 bag play`/`info`; the MCAP storage plugin so they can read the .mcap reference bag
       # (bag format is MCAP, not sqlite3 — plan M7); rsync for the stand-in test's RsyncSshTransport.
-      # NOTE (PR #16 / F-05, re-raised as Mira F-06): these apt packages are unversioned. The
-      # pre-built pinned lane image (docker/ci/replay-lane/) bakes this exact runtime; once its
-      # digest is published, container.image flips to it and every job-time apt step here is
-      # deleted — see docker/ci/replay-lane/README.md for the flip. actions/* and the job container
-      # are already digest-pinned above.
+      # NOTE (Mira F-01, review 4731322384): these apt packages are unversioned — an accepted
+      # INTERIM until the fast-follow flip. The pre-built pinned lane image (docker/ci/replay-lane/)
+      # bakes this exact runtime, but it can only publish a digest once docker/ci/replay-lane/**
+      # lands on main; the follow-up PR then points container.image at that digest and deletes
+      # every job-time apt step here — see docker/ci/replay-lane/README.md §"Flipping the lane onto
+      # the image". actions/* and the job container are already digest-pinned above.
       - name: Install the ROS runtime (rclpy + msg type support + ros2bag + MCAP plugin) and rsync
         shell: bash
         run: |

@@ -69,11 +69,24 @@ pin="$(make_checkout "${src}/build/fastcdr" solo)"
 verify_transitive "${_URL}" "${pin}" "Fast-CDR" >/dev/null 2>&1 \
   || fail "a single checkout at the pin must pass"
 
-# --- Case 4: no checkout of this dep -> skipped (system-satisfied), returns 0. ----------------------
+# --- Case 4a: no checkout AND no system provenance -> FAIL CLOSED (F-02). ---------------------------
+# Zero checkouts can mean "discovery failed" just as easily as "system-satisfied"; without a positive
+# dpkg signal the gate must refuse. Override _system_provides deterministically rather than relying on
+# the host's dpkg state — a ROS host may genuinely have libfastcdr installed, which would turn this
+# into a host-dependent false pass.
 src="${tmp}/case_absent"
 mkdir -p "${src}/build"
+_system_provides() { return 1; }
 verify_transitive "${_URL}" "${_PIN}" "Fast-CDR" >/dev/null 2>&1 \
-  || fail "an absent dep (no checkout) must be skipped, not failed"
+  && fail "an absent dep with NO system provenance must FAIL CLOSED, not be skipped"
+
+# --- Case 4b: no checkout but POSITIVE system provenance -> accepted (returns 0). -------------------
+# The legitimate system-satisfied path: dpkg owns the dep's lib, so the superbuild skipping the fetch
+# is fine. Same deterministic override, inverted. (Cases 5/6 below have checkouts, so the lingering
+# override is never called again.)
+_system_provides() { return 0; }
+verify_transitive "${_URL}" "${_PIN}" "Fast-CDR" >/dev/null 2>&1 \
+  || fail "an absent dep WITH system provenance must be accepted, not failed"
 
 # --- Case 5: a VENDORED submodule at a different-but-superproject-pinned commit -> pass. ------------
 # The real shape: a superproject (stand-in for Fast-DDS) pins a Fast-CDR submodule to commit X while
@@ -106,4 +119,4 @@ git -C "${super}/thirdparty/fastcdr" -c user.email=t@t -c user.name=t -c commit.
 verify_transitive "${_URL}" "${manifest_pin}" "Fast-CDR" >/dev/null 2>&1 \
   && fail "a vendored submodule whose worktree drifted off the recorded gitlink must FAIL"
 
-echo "PASS: verify_transitive checks every checkout against its RECORDED authoritative pin (top-level + vendored + tampered)"
+echo "PASS: verify_transitive checks every checkout against its RECORDED authoritative pin (top-level + vendored + tampered) and fails CLOSED on absence without system provenance"

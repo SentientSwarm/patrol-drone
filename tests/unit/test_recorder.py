@@ -323,6 +323,32 @@ def test_write_sidecar_removes_temp_and_leaves_dest_untouched_on_failure(
     assert path.read_text() == original  # destination untouched (the atomic swap never happened)
 
 
+@pytest.mark.parametrize(
+    "plant", ["regular_file", "symlink"], ids=["planted-file", "planted-symlink"]
+)
+def test_write_sidecar_refuses_a_preplanted_temp_path(tmp_path, monkeypatch, plant: str) -> None:
+    # Interleaving guard (F-03, guide §1.B): the temp is created O_CREAT|O_EXCL|O_NOFOLLOW under an
+    # unpredictable secrets.token_hex name, so a pre-planted file OR symlink at the exact temp path
+    # must make the write FAIL CLOSED — never written through, never adopted, and never deleted (the
+    # cleanup only unlinks temps this call created). Pin the token so the temp path is constructible.
+    monkeypatch.setattr("patrol_logging.recorder.secrets.token_hex", lambda _n: "feedface")
+    path = tmp_path / f"patrol_alpha_{_TS}.meta.json"
+    planted = tmp_path / f"{path.name}.feedface.tmp"
+    target = tmp_path / "attacker_target"
+    target.write_text("untouched")
+    if plant == "regular_file":
+        planted.write_text("squatter")
+    else:
+        planted.symlink_to(target)
+
+    with pytest.raises(FileExistsError):  # O_EXCL: an occupied temp path fails loudly
+        write_sidecar(path, _sample_sidecar())
+
+    assert target.read_text() == "untouched"  # nothing was written through a planted symlink
+    assert not path.exists()  # the real sidecar never landed
+    assert os.path.lexists(planted)  # the foreign plant is evidence — not adopted, not removed
+
+
 def test_write_sidecar_inputs_cleans_up_temp_on_success(tmp_path) -> None:
     # The staging file goes through the same atomic helper (consistency, F-01) — lock its cleanup too.
     path = sidecar_inputs_path(tmp_path / f"patrol_alpha_{_TS}")

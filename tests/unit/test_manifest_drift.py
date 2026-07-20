@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _MODULE_PATH = REPO_ROOT / "scripts" / "check_manifest_drift.py"
 
@@ -289,6 +291,61 @@ def test_no_defaults_flags_defaulted_manifest_arg_in_either_dockerfile(tmp_path)
     problems = drift.check_dockerfile_no_defaults(tmp_path)
     assert any("docker/sim/Dockerfile" in p and "XRCE_FASTDDS_COMMIT" in p for p in problems)
     assert any("docker/dev/Dockerfile" in p and "ROS_DISTRO" in p for p in problems)
+
+
+# --- F-07: check_ingest_pins asserts each ingest ARG is CONSUMED, not merely declared -------------
+
+# A correct ingest Dockerfile: every manifest ARG declared (no default) AND consumed where it must be
+# (FROM @${digest}; each apt version as =${...}). Test cases mutate ONE consumption site to a literal.
+_GOOD_INGEST_DOCKERFILE = (
+    "ARG ROS_DISTRO\n"
+    "ARG ROS_BASE_DIGEST\n"
+    "FROM ros:${ROS_DISTRO}-ros-base@${ROS_BASE_DIGEST}\n"
+    "ARG ROS_DISTRO\n"
+    "ARG ROSBAG2_APT_VERSION\n"
+    "ARG ROSBAG2_MCAP_APT_VERSION\n"
+    'RUN apt-get install -y "ros-${ROS_DISTRO}-rosbag2=${ROSBAG2_APT_VERSION}" '
+    '"ros-${ROS_DISTRO}-rosbag2-storage-mcap=${ROSBAG2_MCAP_APT_VERSION}"\n'
+)
+_INGEST_MANIFEST = {
+    "ingest": {
+        "ros_base_digest": "sha256:abc",
+        "rosbag2_apt_version": "0.26.11-1",
+        "rosbag2_mcap_apt_version": "0.26.11-1",
+    }
+}
+
+
+def _write_ingest_dockerfile(root: Path, contents: str) -> None:
+    (root / "docker" / "ingest").mkdir(parents=True, exist_ok=True)
+    (root / "docker" / "ingest" / "Dockerfile").write_text(contents)
+
+
+def test_ingest_pins_clean_when_every_arg_is_declared_and_consumed(tmp_path):
+    _write_ingest_dockerfile(tmp_path, _GOOD_INGEST_DOCKERFILE)
+    assert drift.check_ingest_pins(tmp_path, _INGEST_MANIFEST) == []
+
+
+# Each ARG declared-but-HARDCODED: replace the ${ARG} consumption with a literal so the ARG is still
+# declared (no default → passes the old check) but silently bypassed — the F-07 hole the new check
+# closes. Parametrized so the three sites share one assertion body (no copy-paste; CodeScene guard).
+@pytest.mark.parametrize(
+    ("arg", "consumed_literal", "hardcoded_literal"),
+    [
+        ("ROS_BASE_DIGEST", "@${ROS_BASE_DIGEST}", "@sha256:deadbeef"),
+        ("ROSBAG2_APT_VERSION", "=${ROSBAG2_APT_VERSION}", "=0.26.11-1literal"),
+        ("ROSBAG2_MCAP_APT_VERSION", "=${ROSBAG2_MCAP_APT_VERSION}", "=0.26.11-1literal"),
+    ],
+)
+def test_ingest_pins_flags_declared_but_hardcoded_arg(
+    tmp_path, arg: str, consumed_literal: str, hardcoded_literal: str
+):
+    dockerfile = _GOOD_INGEST_DOCKERFILE.replace(consumed_literal, hardcoded_literal)
+    _write_ingest_dockerfile(tmp_path, dockerfile)
+
+    problems = drift.check_ingest_pins(tmp_path, _INGEST_MANIFEST)
+
+    assert any(arg in p and "does not consume it" in p for p in problems), problems
 
 
 def test_live_repo_has_no_manifest_drift():

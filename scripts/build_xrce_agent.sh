@@ -45,6 +45,24 @@ submodule_pinned_commit() {
   printf '%s\n' "${entry}" | awk '{print $3}'
 }
 
+# Positive system-provenance signal for a transitive dep with no superbuild checkout (F-02, guide
+# §2.A). Maps the dep NAME to the shared-library stem the eProsima/foonathan/spdlog packages install,
+# then asks dpkg whether a package OWNS a matching lib on the loader path. A hit means the dep is
+# genuinely system-provided (fetch legitimately skipped); a miss means we could not resolve it, so the
+# caller fails closed rather than assuming "system-satisfied". Kept a straight case→dpkg check (no
+# nesting) so the complexity/health gates stay green.
+_system_provides() {
+  local name="$1" stem
+  case "${name}" in
+    "Fast-CDR")          stem="libfastcdr" ;;
+    "Fast-DDS")          stem="libfastdds" ;;
+    "foonathan_memory")  stem="libfoonathan_memory" ;;
+    "spdlog")            stem="libspdlog" ;;
+    *)                   return 1 ;;
+  esac
+  dpkg-query -S "${stem}"*.so* >/dev/null 2>&1
+}
+
 # POST-BUILD re-check of the superbuild's TRANSITIVE deps before installing them (Hermes Medium #1;
 # PR #16 / F-05). Belt-and-suspenders with the pre-build gate: this closes the TOCTOU window (the ref
 # could move between ls-remote and the superbuild's actual fetch) and catches the superbuild fetching a
@@ -60,8 +78,9 @@ submodule_pinned_commit() {
 # top-level checkout, or the superproject-recorded gitlink for a vendored submodule (so Fast-DDS's own
 # v2.2.6 Fast-CDR is verified against Fast-DDS's pin, not forced to the agent's v2.2.4). It reads
 # ${src}/build (set by the imperative body below). Each EXPECT_<dep>_COMMIT is the manifest pin
-# (stack-manifest.toml [bridge]); empty = not pinned -> skipped. A dep satisfied by a system package is
-# not fetched (no checkout) and is skipped with a note. Fail CLOSED on a mismatch — built, refuse install.
+# (stack-manifest.toml [bridge]); empty = not pinned -> skipped. A dep with NO checkout is accepted
+# only on a positive _system_provides signal (dpkg owns its lib — genuinely system-satisfied);
+# otherwise zero checkouts = failed discovery and the gate fails CLOSED (F-02), same as a mismatch.
 verify_transitive() {
   local url="$1" expected="$2" name="$3" actual want origin
   [[ -z "${expected}" ]] && return 0
@@ -73,8 +92,20 @@ verify_transitive() {
     [[ "${url_actual%.git}" == "${url%.git}" ]] && dirs+=("${d}")
   done < <(find "${src}/build" -name .git 2>/dev/null)
   if [[ ${#dirs[@]} -eq 0 ]]; then
-    echo "[xrce] NOTE: ${name} not fetched by the superbuild (system-satisfied?) — skipping pin check" >&2
-    return 0
+    # Zero checkouts has TWO causes that must not be conflated (guide §2.A): (a) the dep is genuinely
+    # provided by a system package (legitimate — the superbuild skipped fetching it), or (b) discovery
+    # FAILED — the clone didn't happen, the build tree moved/renamed, an upstream layout change — and a
+    # manifest-pinned dep silently went unverified. Fail OPEN on (b) accepts unverified code. So we
+    # demand a POSITIVE system-provenance signal (dpkg-provided lib for this dep) before accepting the
+    # absence; with none, we fail closed.
+    if _system_provides "${name}"; then
+      echo "[xrce] OK: ${name} not fetched by the superbuild but resolved to a system package — accepting." >&2
+      return 0
+    fi
+    echo "[xrce] ERROR: ${name} has NO superbuild checkout under ${src}/build AND no system-package" >&2
+    echo "[xrce]   provenance. Discovery may have failed (clone skipped, build tree moved, upstream" >&2
+    echo "[xrce]   layout change) — a manifest-pinned dep would go unverified. Refusing to install." >&2
+    return 1
   fi
   for dir in "${dirs[@]}"; do
     actual="$(git -C "${dir}" rev-parse HEAD)"
