@@ -299,6 +299,37 @@ _INGEST_ARG_CONSUMED = {
 }
 
 
+def _ingest_manifest_key_problems(manifest: dict) -> list[str]:
+    """[ingest] keys `gen_build_args.py --section ingest` must resolve (missing = drift)."""
+    ingest = manifest.get("ingest", {})
+    return [
+        f"stack-manifest.toml [ingest] missing key {k!r}"
+        for k in _INGEST_MANIFEST_KEYS
+        if k not in ingest
+    ]
+
+
+def _ingest_arg_declaration_problems(text: str) -> list[str]:
+    """Each pin ARG must be declared with NO default, so the value is injected from the manifest."""
+    problems = []
+    for arg in _INGEST_ARGS:
+        if re.search(rf"^ARG {arg}=", text, re.MULTILINE):
+            problems.append(f"docker/ingest/Dockerfile pins ARG {arg} with a default; inject it")
+        elif not re.search(rf"^ARG {arg}\b", text, re.MULTILINE):
+            problems.append(f"docker/ingest/Dockerfile does not declare manifest ARG {arg}")
+    return problems
+
+
+def _ingest_arg_consumption_problems(text: str) -> list[str]:
+    """Each declared ARG must be CONSUMED in FROM/apt-install (F-07) — declared-but-unused is a hole."""
+    return [
+        f"docker/ingest/Dockerfile declares ARG {arg} but does not consume it "
+        f"(expected {consumed!r}); a hardcoded literal would silently bypass the pin"
+        for arg, consumed in _INGEST_ARG_CONSUMED.items()
+        if not re.search(consumed, text, re.MULTILINE)
+    ]
+
+
 def check_ingest_pins(repo_root: Path, manifest: dict) -> list[str]:
     """The ingest Dockerfile's base digest + apt pins come from [ingest], never inlined (F-01).
 
@@ -309,28 +340,18 @@ def check_ingest_pins(repo_root: Path, manifest: dict) -> list[str]:
     actually CONSUMED where it must be (F-07, guide §2.C): declared-but-unused is a drift hole — a
     future edit could declare the ARG yet hardcode a divergent digest/version in FROM/install and
     stay green. `_INGEST_ARG_CONSUMED` pins the FROM/apt-install reference each ARG must appear in.
+    Each rule family is a small helper so this stays a flat aggregation (no bumpy-road nesting).
     """
-    problems = [
-        f"stack-manifest.toml [ingest] missing key {k!r}"
-        for k in _INGEST_MANIFEST_KEYS
-        if k not in manifest.get("ingest", {})
-    ]
+    problems = _ingest_manifest_key_problems(manifest)
     path = repo_root / "docker" / "ingest" / "Dockerfile"
     if not path.exists():
         return [*problems, "docker/ingest/Dockerfile is missing"]
     text = path.read_text()
-    for arg in _INGEST_ARGS:
-        if re.search(rf"^ARG {arg}=", text, re.MULTILINE):
-            problems.append(f"docker/ingest/Dockerfile pins ARG {arg} with a default; inject it")
-        elif not re.search(rf"^ARG {arg}\b", text, re.MULTILINE):
-            problems.append(f"docker/ingest/Dockerfile does not declare manifest ARG {arg}")
-    for arg, consumed in _INGEST_ARG_CONSUMED.items():
-        if not re.search(consumed, text, re.MULTILINE):
-            problems.append(
-                f"docker/ingest/Dockerfile declares ARG {arg} but does not consume it "
-                f"(expected {consumed!r}); a hardcoded literal would silently bypass the pin"
-            )
-    return problems
+    return [
+        *problems,
+        *_ingest_arg_declaration_problems(text),
+        *_ingest_arg_consumption_problems(text),
+    ]
 
 
 # Each required workflow that pins the ROS distro, and the regex capturing its pinned value. Both must

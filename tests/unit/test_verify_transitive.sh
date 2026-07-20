@@ -76,6 +76,10 @@ verify_transitive "${_URL}" "${pin}" "Fast-CDR" >/dev/null 2>&1 \
 # into a host-dependent false pass.
 src="${tmp}/case_absent"
 mkdir -p "${src}/build"
+# SC2329: invoked INDIRECTLY — verify_transitive (sourced from build_xrce_agent.sh) calls
+# _system_provides, which shellcheck can't trace across the source boundary (same limitation as the
+# SC1091 disable above). The override is essential: it makes the fail-closed assertion host-independent.
+# shellcheck disable=SC2329
 _system_provides() { return 1; }
 verify_transitive "${_URL}" "${_PIN}" "Fast-CDR" >/dev/null 2>&1 \
   && fail "an absent dep with NO system provenance must FAIL CLOSED, not be skipped"
@@ -84,6 +88,7 @@ verify_transitive "${_URL}" "${_PIN}" "Fast-CDR" >/dev/null 2>&1 \
 # The legitimate system-satisfied path: dpkg owns the dep's lib, so the superbuild skipping the fetch
 # is fine. Same deterministic override, inverted. (Cases 5/6 below have checkouts, so the lingering
 # override is never called again.)
+# shellcheck disable=SC2329  # invoked indirectly via the sourced verify_transitive (see Case 4a)
 _system_provides() { return 0; }
 verify_transitive "${_URL}" "${_PIN}" "Fast-CDR" >/dev/null 2>&1 \
   || fail "an absent dep WITH system provenance must be accepted, not failed"
