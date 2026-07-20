@@ -24,8 +24,9 @@
 # is reproducible — mirroring the digest-pin discipline the sim image gets. It is a DIFFERENT, smaller
 # base than the sim/dev [container] one (plain ros:<distro>-ros-base), so it has its own [ingest]
 # digest. Bump the manifest (re-resolve the digest / apt candidates), never edit inline, so drift is
-# caught by manifest-drift CI. NB: no CI lane builds this Dockerfile — these pins are validated by a
-# local/DGX build only (PR #16 / F-01).
+# caught by manifest-drift CI. The pins' STATIC declaration is checked by manifest-drift; that they
+# actually RESOLVE + the image runs is proven by the build-ingest-image.yml CI lane (a docker
+# build + `manifest_query --help` smoke on every ingest-touching PR — PR #16 / F-04).
 ARG ROS_DISTRO
 ARG ROS_BASE_DIGEST      # stack-manifest.toml [ingest] ros_base_digest (sha256:… for ros:<distro>-ros-base)
 FROM ros:${ROS_DISTRO}-ros-base@${ROS_BASE_DIGEST}

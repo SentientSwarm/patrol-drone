@@ -18,7 +18,8 @@ import time
 from pathlib import Path
 
 from _shared.bounded_seen import _BoundedSeen
-from upload_daemon.transport import RsyncSshTransport, S3Transport, Transport
+from _shared.positive_interval import positive_interval
+from upload_daemon.transport import RsyncSshTransport, Transport
 from upload_daemon.upload_daemon import (
     UploadDaemon,
     is_already_uploaded,
@@ -38,18 +39,28 @@ _POLL_INTERVAL_S = 5.0
 # The recoverable transport faults a per-bag upload can raise. The watch loop catches exactly these
 # (not bare Exception) so one bad bag is logged + retried on a later poll instead of crashing the
 # long-running daemon, while a genuine programming bug still surfaces. Mirrors ingest's _INGEST_FAULTS.
+# NotImplementedError is deliberately NOT here: it's a PERMANENT condition (an unimplemented
+# transport), not a transient transport fault, so it must abort at startup — never retry forever
+# (F-03). Only genuinely-transient faults belong in this set.
 _UPLOAD_FAULTS = (
     OSError,  # rsync binary absent (FileNotFoundError), SSH/socket failure, etc.
-    NotImplementedError,  # the S3Transport parity stub raises this until Phase-1+ implements it
 )
 
 
 def _make_transport(kind: str) -> Transport:
-    """Resolve the ``--transport`` flag to a concrete Transport (rsync ships; s3 is a stub)."""
+    """Resolve the ``--transport`` flag to a concrete Transport (rsync ships; s3 is a stub).
+
+    ``s3`` is a selectable name for interface parity but is unimplemented in Phase 1, so selecting it
+    aborts here with an actionable message rather than entering the watch loop and infinite-retrying
+    an ``S3Transport.send`` that only raises (F-03).
+    """
     if kind == "rsync":
         return RsyncSshTransport()
     if kind == "s3":
-        return S3Transport()
+        raise SystemExit(
+            "--transport s3 is an OQ-8 parity stub, not implemented in Phase 1; "
+            "use --transport rsync (the shipping transport)."
+        )
     raise SystemExit(f"unknown --transport {kind!r} (expected 'rsync' or 's3')")
 
 
@@ -58,7 +69,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--watch", required=True, type=Path, help="bag output directory to watch")
     parser.add_argument("--target", required=True, help="rsync/SSH dest or local stand-in dir")
     parser.add_argument("--transport", default="rsync", choices=("rsync", "s3"))
-    parser.add_argument("--poll-interval", type=float, default=_POLL_INTERVAL_S)
+    parser.add_argument("--poll-interval", type=positive_interval, default=_POLL_INTERVAL_S)
     return parser.parse_args(argv)
 
 

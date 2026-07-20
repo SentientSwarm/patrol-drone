@@ -26,6 +26,7 @@ from ingest.bag_reader import read_bag_facts
 from ingest.bounded_seen import _BoundedSeen
 from ingest.ingest_service import IngestService
 from ingest.manifest_store import ManifestStore
+from ingest.positive_interval import positive_interval
 
 logger = logging.getLogger("ingest")
 
@@ -148,7 +149,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="ingest", description=__doc__)
     parser.add_argument("--watch", required=True, type=Path, help="DGX landing dir to index")
     parser.add_argument("--db", required=True, type=Path, help="manifest SQLite path")
-    parser.add_argument("--poll-interval", type=float, default=_POLL_INTERVAL_S)
+    parser.add_argument("--poll-interval", type=positive_interval, default=_POLL_INTERVAL_S)
     return parser.parse_args(argv)
 
 

@@ -434,3 +434,47 @@ def test_finalize_no_ops_and_writes_nothing_when_a_precondition_is_missing(
 
     assert finalize_sidecar_from_staging(staged_bag_dir) is None
     assert not staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json").exists()
+
+
+def _replace_with_symlink(path: Path) -> None:
+    """Swap the real file at ``path`` for a symlink pointing at a same-content decoy (F-02)."""
+    decoy = path.with_name(path.name + ".decoy")
+    if path.exists():
+        path.rename(decoy)
+    else:
+        decoy.write_text("planted\n")
+    path.symlink_to(decoy)
+
+
+@pytest.mark.parametrize("symlinked", ["metadata.yaml", "staging"])
+def test_finalize_no_ops_on_a_symlinked_precondition(staged_bag_dir, symlinked: str) -> None:
+    # F-02: a symlinked metadata.yaml or staging file is NOT a finalizable artifact (parity with the
+    # uploader's _is_regular_file), so finalize no-ops (None) and writes no REAL <bag>.meta.json —
+    # letting the runner's outcome gate fail loudly instead of blessing a symlink-planted bag.
+    if symlinked == "metadata.yaml":
+        _replace_with_symlink(staged_bag_dir / "metadata.yaml")
+    else:
+        _replace_with_symlink(sidecar_inputs_path(staged_bag_dir))
+
+    real_sidecar = staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json")
+    assert finalize_sidecar_from_staging(staged_bag_dir) is None
+    assert not real_sidecar.exists()  # no sidecar written for a symlink-tampered bag
+
+
+def test_finalize_overwrites_a_symlinked_sidecar_without_following_it(staged_bag_dir) -> None:
+    # F-02: a pre-planted <bag>.meta.json SYMLINK must not count as an already-present sidecar (that
+    # would let a planted link suppress finalize). _is_regular_file rejects it, so finalize proceeds
+    # and writes a REAL sidecar — and the atomic os.replace REPLACES the symlink rather than following
+    # it, so the decoy target is never written through.
+    real_sidecar = staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json")
+    decoy = staged_bag_dir.with_name("decoy_target")
+    decoy.write_text("attacker-owned\n")
+    real_sidecar.symlink_to(decoy)
+
+    written = finalize_sidecar_from_staging(staged_bag_dir)
+
+    assert written == real_sidecar
+    assert real_sidecar.is_file()  # a real file now lives at the sidecar path...
+    assert not real_sidecar.is_symlink()  # ...the planted symlink was replaced, not followed
+    assert decoy.read_text() == "attacker-owned\n"  # the symlink's target was NOT written through
+    assert json.loads(real_sidecar.read_text())["mission_id"] == "alpha"  # a genuine sidecar

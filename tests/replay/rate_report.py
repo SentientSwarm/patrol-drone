@@ -58,7 +58,10 @@ def unique_stamp_rate(stamps_ns: list[int]) -> float:
     if len(unique) < 2:
         return 0.0
     span_s = (unique[-1] - unique[0]) / 1e9
-    return len(unique) / span_s if span_s > 0 else 0.0
+    # N unique stamps bound N-1 intervals; dividing N by the span over-reads the rate on a short
+    # series (2 stamps 0.1 s apart is 10 Hz, not 20). Use the interval count so the witness's
+    # short live-bag rate is exact (F-01).
+    return (len(unique) - 1) / span_s if span_s > 0 else 0.0
 
 
 def dup_factor(row_count: int, unique_count: int) -> float:
@@ -139,9 +142,11 @@ def _observed(sample: TopicSample) -> ObservedTopic:
     """One ObservedTopic carrying the unique-stamp rate (count = unique stamps, dur = stamp span)."""
     unique = sorted(set(sample.rate_stamps_ns))
     if len(unique) < 2:
-        return ObservedTopic(sample.topic, count=len(unique), duration_s=0.0)
+        return ObservedTopic(sample.topic, count=0, duration_s=0.0)
     span_s = (unique[-1] - unique[0]) / 1e9
-    return ObservedTopic(sample.topic, count=len(unique), duration_s=span_s)
+    # count = N-1 intervals (not N stamps) so ObservedTopic.hz = intervals / span matches
+    # unique_stamp_rate exactly — the off-by-one fix has to live in BOTH encoders (F-01).
+    return ObservedTopic(sample.topic, count=len(unique) - 1, duration_s=span_s)
 
 
 def evaluate_true_rates(specs: list[AssertionSpec], samples: list[TopicSample]) -> ReplayResult:

@@ -283,6 +283,18 @@ def read_sidecar_inputs(path: Path) -> tuple[RecordingRun, list[str]]:
     return run, list(payload["recorded_topics"])
 
 
+def _is_regular_file(path: Path) -> bool:
+    """A real file at ``path``, not a symlink (mirrors the uploader's predicate, F-02).
+
+    The finalize boundary must agree with the uploader (``upload_daemon._is_regular_file``): a
+    symlinked ``metadata.yaml`` / staging / sidecar is NOT a finalizable artifact, so a planted
+    symlink can neither drive a spurious "finalized" nor be written through. Following-``exists()``
+    let a symlink pass the recorder while the uploader rejected the same bag — the two halves
+    disagreeing about one artifact (F-02, the twin of the uploader hardening H-04).
+    """
+    return path.is_file() and not path.is_symlink()
+
+
 def finalize_sidecar_from_staging(bag_dir: Path) -> Path | None:
     """Write ``<bag>.meta.json`` from the staging file once the bag has finalized (caller-independent).
 
@@ -291,13 +303,13 @@ def finalize_sidecar_from_staging(bag_dir: Path) -> Path | None:
     sidecar already present (the OnProcessExit happy path beat us to it). On success it writes the
     sidecar (``ended`` stamped now), removes the staging file, and returns the sidecar path.
     """
-    if not (bag_dir / "metadata.yaml").exists():
+    if not _is_regular_file(bag_dir / "metadata.yaml"):
         return None
     inputs = sidecar_inputs_path(bag_dir)
-    if not inputs.exists():
+    if not _is_regular_file(inputs):
         return None
     sidecar_path = bag_dir.with_name(bag_dir.name + ".meta.json")
-    if sidecar_path.exists():
+    if _is_regular_file(sidecar_path):
         inputs.unlink()  # the handler already finalized; just clear the staging crumb
         return None
     run, recorded_topics = read_sidecar_inputs(inputs)

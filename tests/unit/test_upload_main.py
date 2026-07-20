@@ -1,10 +1,12 @@
 """Layer-A unit tests for the upload watch-loop fault tolerance (M8 / F-08, design §4.4.5).
 
 `upload_daemon.__main__._try_upload` wraps `UploadDaemon.on_bag_complete` in `except _UPLOAD_FAULTS`
-so a bag whose transport *raises* (rsync binary absent, SSH failure, the S3 stub's
-NotImplementedError) is skipped + retried instead of crashing the long-running daemon — symmetric
-with the ingest loop's `_try_index`. `__main__.py` is a coverage-omitted I/O shell, but the
-_UPLOAD_FAULTS membership + the skip-not-crash behaviour is load-bearing first-party logic.
+so a bag whose transport *raises* a transient fault (rsync binary absent, SSH failure) is skipped +
+retried instead of crashing the long-running daemon — symmetric with the ingest loop's `_try_index`.
+`__main__.py` is a coverage-omitted I/O shell, but the _UPLOAD_FAULTS membership + the skip-not-crash
+behaviour is load-bearing first-party logic. NotImplementedError is deliberately NOT a documented
+upload fault (F-03): the S3 stub is unimplemented, a permanent condition, so `--transport s3` aborts
+at startup rather than being caught + retried forever.
 
 The daemon is driven for real (not faked) via a transport whose ``send`` raises — so the actual
 ``on_bag_complete`` → ``_send_with_retry`` → ``transport.send`` path is what raises the fault.
@@ -16,7 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from upload_daemon.__main__ import _UPLOAD_FAULTS, _BoundedSeen, _drain_once, _try_upload
+from upload_daemon.__main__ import (
+    _UPLOAD_FAULTS,
+    _BoundedSeen,
+    _drain_once,
+    _make_transport,
+    _try_upload,
+    main,
+)
+from upload_daemon.transport import RsyncSshTransport
 from upload_daemon.upload_daemon import UploadDaemon, upload_marker_for
 
 
@@ -49,7 +59,6 @@ def _make_complete_bag(tmp_path: Path) -> Path:
     [
         FileNotFoundError("rsync: command not found"),  # OSError subclass — missing binary
         OSError("ssh: connect to host ... : Connection refused"),
-        NotImplementedError("S3Transport is an OQ-8 parity stub"),
     ],
 )
 def test_try_upload_skips_transport_fault_without_propagating(
@@ -61,7 +70,27 @@ def test_try_upload_skips_transport_fault_without_propagating(
 
 def test_transport_faults_are_in_documented_upload_fault_set() -> None:
     assert OSError in _UPLOAD_FAULTS
-    assert NotImplementedError in _UPLOAD_FAULTS
+    # F-03: NotImplementedError is NOT a transient transport fault — a stub must abort at startup,
+    # never be caught and retried forever. It is deliberately absent from the retryable-fault set.
+    assert NotImplementedError not in _UPLOAD_FAULTS
+
+
+def test_make_transport_rsync_returns_rsync() -> None:
+    assert isinstance(_make_transport("rsync"), RsyncSshTransport)
+
+
+def test_make_transport_s3_aborts_rather_than_constructing_a_stub() -> None:
+    # F-03: selecting the unimplemented s3 transport must fail fast (SystemExit) at construction —
+    # not return an S3Transport whose send() raises NotImplementedError inside the retry loop forever.
+    with pytest.raises(SystemExit):
+        _make_transport("s3")
+
+
+def test_main_transport_s3_exits_without_entering_the_watch_loop(tmp_path: Path) -> None:
+    # F-03: `--transport s3` exits non-zero before the poll loop (no time.sleep to mock — never
+    # reached), so an operator who selects the stub gets an immediate abort, not a silent busy-retry.
+    with pytest.raises(SystemExit):
+        main(["--watch", str(tmp_path), "--target", "dgx:/data/bags/", "--transport", "s3"])
 
 
 def test_drain_once_leaves_a_faulting_bag_out_of_uploaded_for_retry(tmp_path: Path) -> None:

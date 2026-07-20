@@ -65,6 +65,21 @@ def test_unique_stamp_rate_recovers_true_rate(n: int, hz: float, dup: int) -> No
     assert unique_stamp_rate(_ramp(n, hz, dup=dup)) == pytest.approx(hz, rel=0.02)
 
 
+# F-01: N stamps bound N-1 intervals, so a SHORT series must not over-read. The old N/span math
+# reported a 2-sample 10 Hz sequence as 20 Hz and a 3-sample one as 15 Hz — these pin the exact Hz.
+@pytest.mark.parametrize(
+    ("n", "hz"),
+    [
+        (2, 10.0),  # was 2/0.1 = 20 Hz under the off-by-one
+        (3, 10.0),  # was 3/0.2 = 15 Hz under the off-by-one
+        (5, 10.0),  # a slightly longer short series
+    ],
+)
+def test_unique_stamp_rate_short_series_is_exact(n: int, hz: float) -> None:
+    # _ramp gives n unique stamps 1/hz apart; (n-1) intervals over the span is exactly hz.
+    assert unique_stamp_rate(_ramp(n, hz)) == pytest.approx(hz)
+
+
 @pytest.mark.parametrize(
     "stamps",
     [
@@ -148,6 +163,13 @@ def test_observed_true_rates_uses_unique_span() -> None:
     # 300 rows but 150 unique 15 Hz rate-stamps → the observed rate must be 15 Hz, not 30.
     sample = _sample(_CAMERA, 300, _ramp(150, 15.0, dup=2))
     assert observed_true_rates([sample])[0].hz == pytest.approx(15.0, rel=0.02)
+
+
+def test_observed_true_rates_short_series_is_exact() -> None:
+    # F-01: the _observed encoder carries the same N-1 fix — a 2-sample 10 Hz series is 10 Hz,
+    # not 20 Hz, so evaluate_true_rates inherits the exact rate (not the inflated one).
+    sample = _sample(_STATE, 2, _ramp(2, 10.0))
+    assert observed_true_rates([sample])[0].hz == pytest.approx(10.0)
 
 
 @pytest.mark.parametrize(

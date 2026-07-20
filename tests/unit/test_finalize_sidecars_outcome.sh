@@ -77,4 +77,15 @@ finalize_bag_sidecars "${root4}"
 rc=$?
 [[ ${rc} -eq 0 ]] || fail "a run_root with no finalized bags must return 0 (got ${rc})"
 
+# --- Case 5: <bag>.meta.json is a SYMLINK -> non-zero (parity with uploader _is_regular_file, F-02). -
+# A planted symlink must not satisfy the outcome gate: -f follows it, but the runner also rejects -L,
+# matching recorder._is_regular_file and upload_daemon.is_complete (which refuse a symlinked sidecar).
+root5="${tmp}/run5"
+make_finalized_bag "${root5}" "patrol_link"
+ln -s /etc/hostname "${root5}/patrol_link.meta.json"  # a symlink, not a regular sidecar
+# shellcheck disable=SC2031  # PATH scoped to the subshell: stub python3 so finalize itself no-ops
+(PATH="${stub_noop}:${PATH}" && finalize_bag_sidecars "${root5}")
+rc=$?
+[[ ${rc} -ne 0 ]] || fail "a symlinked <bag>.meta.json must not satisfy the outcome gate (F-02)"
+
 echo "PASS: finalize_bag_sidecars fails when a finalized bag ends without its sidecar (outcome gate)"
