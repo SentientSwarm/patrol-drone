@@ -163,13 +163,22 @@ def test_replay_topics_present_and_rated() -> None:
     assert result.passed, result.failures
 
 
+def _observed_count(observed: list[ObservedTopic], topic: str) -> int:
+    """The message count the replay saw for ``topic`` (KeyError if it wasn't subscribed — a test
+    wiring bug, surfaced loudly rather than silently treated as zero)."""
+    counts = {o.topic: o.count for o in observed}
+    return counts[topic]
+
+
 def test_dropped_topic_fails_end_to_end() -> None:
     """TS-19: Deliberate break — play the reference bag with one asserted topic WITHHELD from
     playback (``--topics`` keeps the rest); the full play→subscribe→count→evaluate path MUST fail
-    on exactly that topic (LR-5, Mira High: end-to-end, not comparator-only — the comparator-level
-    break stays covered by tests/unit/test_replay_assertions.py). 4x rate keeps this second play
-    ~5 s (OQ-6 budget); rate-band noise on OTHER topics at 4x is irrelevant — only the dropped
-    topic's presence failure is asserted."""
+    because that topic was truly ABSENT — proven on the observed COUNTS, not on the failure text
+    (F-01, Mira review 4744452284). Playing at rate 1.0 keeps every retained topic inside its rate
+    band, so the only reason the run can fail is the withheld topic's presence check — no 4x
+    rate-band excursion can manufacture a look-alike failure. The ~20 s slice is well under the
+    90 s replay budget (OQ-6). The comparator-level break stays covered by
+    tests/unit/test_replay_assertions.py."""
     _require_reference_bag()
     specs = load_specs(_ASSERTIONS)
     dropped = "/patrol/mission_state"
@@ -177,9 +186,22 @@ def test_dropped_topic_fails_end_to_end() -> None:
     types = _subscribed_types(_REFERENCE_BAG, {s.topic for s in specs})
 
     observed = _play_and_count(
-        _REFERENCE_BAG, types, window_s=30.0, play_args=["--rate", "4.0", "--topics", *kept]
+        _REFERENCE_BAG, types, window_s=80.0, play_args=["--rate", "1.0", "--topics", *kept]
     )
+
+    # The seam under test is `--topics` exclusion: the withheld topic must be truly ABSENT
+    # (count 0) and every retained topic truly DELIVERED (count > 0). This keys on presence, not
+    # on the failure string — a rate-band excursion could also mention `dropped`, so string
+    # membership alone can't prove the drop actually fired (F-01).
+    assert _observed_count(observed, dropped) == 0, (
+        "withheld topic still delivered — --topics regressed"
+    )
+    for topic in kept:
+        assert _observed_count(observed, topic) > 0, f"retained topic {topic} was not delivered"
 
     result = evaluate(specs, observed)
     assert result.passed is False
-    assert any(dropped in f for f in result.failures)
+    # Pin the failure to the withheld topic's PRESENCE check (`_presence_failure` shape), not to a
+    # rate excursion that merely mentions the same name.
+    presence_failure = f"{dropped}: expected count >= 1, got absent"
+    assert presence_failure in result.failures, result.failures

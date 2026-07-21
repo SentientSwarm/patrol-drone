@@ -56,6 +56,11 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends git-lfs
+          # Diagnostic only (interim mutable-apt audit — SWM-84): dump the RESOLVED git-lfs version
+          # so a future mutable-layer drift is diffable, not a mystery. Mirrors the manifest the
+          # pinned lane image bakes (docker/ci/replay-lane/replay-lane-apt.manifest). No lane
+          # behavior changes; dpkg-query reads /var/lib/dpkg/status, so it works after the rm below.
+          dpkg-query -W -f '${Package}=${Version}\n' git-lfs | tee -a "$GITHUB_STEP_SUMMARY"
           rm -rf /var/lib/apt/lists/*
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -117,6 +122,25 @@ jobs:
             "ros-${ROS_DISTRO}-rosbag2-storage-mcap" \
             python3-numpy \
             rsync
+          # Diagnostic only (interim mutable-apt audit — SWM-84): dump the RESOLVED versions of
+          # exactly the packages installed above so a future mutable-layer drift is diffable, not a
+          # mystery. Mirror the package list above verbatim (and thus the Dockerfile manifest,
+          # docker/ci/replay-lane/replay-lane-apt.manifest). No lane behavior changes.
+          dpkg-query -W -f '${Package}=${Version}\n' \
+            "ros-${ROS_DISTRO}-rclpy" \
+            "ros-${ROS_DISTRO}-std-msgs" \
+            "ros-${ROS_DISTRO}-sensor-msgs" \
+            "ros-${ROS_DISTRO}-geometry-msgs" \
+            "ros-${ROS_DISTRO}-diagnostic-msgs" \
+            "ros-${ROS_DISTRO}-builtin-interfaces" \
+            "ros-${ROS_DISTRO}-rosidl-default-generators" \
+            "ros-${ROS_DISTRO}-rosidl-default-runtime" \
+            "ros-${ROS_DISTRO}-rosidl-runtime-py" \
+            "ros-${ROS_DISTRO}-ament-cmake" \
+            "ros-${ROS_DISTRO}-rosbag2" \
+            "ros-${ROS_DISTRO}-rosbag2-storage-mcap" \
+            python3-numpy \
+            rsync | tee -a "$GITHUB_STEP_SUMMARY"
           rm -rf /var/lib/apt/lists/*
 
       # Fail-loud ROS-env probe: import the subscriber stack directly so an image-level ROS problem
