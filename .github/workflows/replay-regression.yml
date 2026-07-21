@@ -37,6 +37,8 @@ jobs:
     # This toolchain image + the job-time installs below are the accepted INTERIM until the
     # docker/ci/replay-lane image publishes a digest from main and a fast-follow PR flips this
     # container onto it (Mira F-01, review 4731322384; docker/ci/replay-lane/README.md §Flipping).
+    # The flip is tracked as SWM-84 (Patrol Drone 05 Logging Replay) so it can't be lost at M8
+    # close-out; the steps live in docker/ci/replay-lane/README.md §"Flipping the lane onto the image".
     container:
       image: rostooling/setup-ros-docker:ubuntu-noble-latest@sha256:f0ba5d588664d0533f4bee2d1078e29d7ef151989fa0ba020e4ac935d38a7676
     steps:
@@ -46,7 +48,7 @@ jobs:
       # NOTE (Mira F-01, review 4731322384): unversioned job-time apt — an accepted INTERIM. The
       # pinned lane image (docker/ci/replay-lane/, which bakes git-lfs) cannot publish a digest
       # until docker/ci/replay-lane/** lands on main (build-replay-lane-image.yml registers and
-      # runs from the default branch), so the flip is a tracked FAST-FOLLOW PR: point
+      # runs from the default branch), so the flip is a tracked fast-follow PR (SWM-84): point
       # container.image at the published digest and delete this step — see
       # docker/ci/replay-lane/README.md §"Flipping the lane onto the image".
       - name: Install git-lfs
@@ -90,8 +92,9 @@ jobs:
       # `ros2 bag play`/`info`; the MCAP storage plugin so they can read the .mcap reference bag
       # (bag format is MCAP, not sqlite3 — plan M7); rsync for the stand-in test's RsyncSshTransport.
       # NOTE (Mira F-01, review 4731322384): these apt packages are unversioned — an accepted
-      # INTERIM until the fast-follow flip. The pre-built pinned lane image (docker/ci/replay-lane/)
-      # bakes this exact runtime, but it can only publish a digest once docker/ci/replay-lane/**
+      # INTERIM until the fast-follow flip, tracked as SWM-84 (Patrol Drone 05 Logging Replay). The
+      # pre-built pinned lane image (docker/ci/replay-lane/) bakes this exact runtime, but it can
+      # only publish a digest once docker/ci/replay-lane/**
       # lands on main; the follow-up PR then points container.image at that digest and deletes
       # every job-time apt step here — see docker/ci/replay-lane/README.md §"Flipping the lane onto
       # the image". actions/* and the job container are already digest-pinned above.
