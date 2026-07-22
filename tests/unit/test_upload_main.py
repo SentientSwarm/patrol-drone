@@ -14,6 +14,7 @@ The daemon is driven for real (not faked) via a transport whose ``send`` raises 
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,7 @@ from upload_daemon.__main__ import (
     main,
 )
 from upload_daemon.transport import RsyncSshTransport
-from upload_daemon.upload_daemon import UploadDaemon, upload_marker_for
+from upload_daemon.upload_daemon import UploadDaemon, sidecar_path_for, upload_marker_for
 
 
 class _RaisingTransport:
@@ -52,6 +53,17 @@ def _make_complete_bag(tmp_path: Path) -> Path:
     (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
     (tmp_path / "patrol_x_20260629_120000.meta.json").write_text("{}")
     return bag
+
+
+def _plant_valid_receipt(bag: Path) -> None:
+    """Write the <bag>.uploaded receipt a prior CONFIRMED transfer would leave (F-02).
+
+    Mirrors what ``_write_upload_marker`` writes — a JSON receipt naming the transfer target and the
+    sorted covered filenames (bag dir + sidecar) — so ``is_already_uploaded`` accepts it as the
+    durable 'already uploaded' signal. A bare ``touch`` is no longer a valid receipt.
+    """
+    receipt = {"target": "dgx:/data/bags/", "files": sorted([bag.name, sidecar_path_for(bag).name])}
+    upload_marker_for(bag).write_text(json.dumps(receipt))
 
 
 @pytest.mark.parametrize(
@@ -103,14 +115,14 @@ def test_drain_once_leaves_a_faulting_bag_out_of_uploaded_for_retry(tmp_path: Pa
     assert len(uploaded) == 0  # nothing marked done → retried on the next poll
 
 
-# F-05: a complete bag that ALREADY has a <bag>.uploaded marker is skipped by _drain_once — the
-# transport is never touched (a raising daemon would blow up if it were), so retention-scale bags
-# aren't re-rsynced each poll even after the in-memory seen-set evicts them.
+# F-05: a complete bag that ALREADY has a valid <bag>.uploaded receipt is skipped by _drain_once —
+# the transport is never touched (a raising daemon would blow up if it were), so retention-scale bags
+# aren't re-rsynced each poll even after the in-memory seen-set evicts them. F-02: the durable skip
+# is now keyed on a valid RECEIPT (target + covered filenames), not a bare `touch` — an empty marker
+# no longer suppresses the transfer, so the "already uploaded" fixture writes the real receipt shape.
 def test_drain_once_skips_bag_with_upload_marker(tmp_path: Path) -> None:
     bag = _make_complete_bag(tmp_path)
-    upload_marker_for(
-        bag
-    ).touch()  # durable 'already uploaded' signal from a prior confirmed transfer
+    _plant_valid_receipt(bag)  # durable 'already uploaded' signal from a prior confirmed transfer
 
     uploaded = _BoundedSeen()
     _drain_once(_daemon_that_raises(OSError("must not be called")), tmp_path, uploaded)  # no raise

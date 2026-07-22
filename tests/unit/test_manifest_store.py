@@ -126,6 +126,20 @@ def test_contains_reflects_indexed_membership(tmp_path: Path) -> None:
     assert store.contains("patrol_never_indexed") is False
 
 
+# F-03 (review 4748505221): sqlite3.connect creates the DB file but NOT intermediate directories, so
+# the documented nested `--db /tmp/dgx_manifest/bag_manifest.db` path fails on a clean host. The store
+# must create the parent dir first — constructing it against a not-yet-existing nested dir initializes
+# without raising and round-trips a row.
+def test_creates_db_in_nonexistent_nested_dir(tmp_path: Path) -> None:
+    store = ManifestStore(tmp_path / "does" / "not" / "exist" / "manifest.db")
+
+    store.upsert(_row("patrol_a_20260626_080740.mcap", duration=142.0))
+    rows = store.query_recent(1)
+
+    assert len(rows) == 1
+    assert rows[0].duration_s == 142.0
+
+
 # F-02: _connect must pass a non-zero busy `timeout` so a transient lock (a concurrent reader/writer,
 # e.g. a manifest_query CLI reading while the daemon writes) is retried by SQLite before it raises
 # OperationalError — the budget must not silently regress to 0. Capture the kwargs sqlite3.connect

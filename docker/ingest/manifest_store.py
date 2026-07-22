@@ -51,6 +51,20 @@ class ManifestRow:
     ingested_utc: str
 
 
+def _ensure_parent_dir(db_path: Path) -> None:
+    """Create the DB file's parent directory if it doesn't exist yet.
+
+    ``sqlite3.connect`` creates the DB *file* but never intermediate directories, so a documented
+    nested path like ``/tmp/dgx_manifest/bag_manifest.db`` raises OperationalError on a clean host
+    (Mira Medium, review 4748505221). Creating the parent first makes the documented fresh path
+    "just work"; idempotent (``exist_ok=True``) and a no-op for a bare relative filename whose parent
+    resolves to ``.``.
+    """
+    parent = db_path.parent
+    if parent != Path():
+        parent.mkdir(parents=True, exist_ok=True)
+
+
 class ManifestStore:
     """Persist + serve the bag manifest. SQLite-backed; store-agnostic interface."""
 
@@ -60,7 +74,8 @@ class ManifestStore:
     _BUSY_TIMEOUT_S = 5.0
 
     def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
+        self._db_path = Path(db_path)
+        _ensure_parent_dir(self._db_path)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 

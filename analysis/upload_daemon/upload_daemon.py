@@ -13,6 +13,7 @@ truth until a transfer is confirmed, so no data is ever lost to a flaky link.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -86,30 +87,78 @@ def upload_marker_for(bag_path: Path) -> Path:
     return bag_path.with_name(bag_path.name + ".uploaded")
 
 
-def _write_upload_marker(bag_path: Path) -> None:
-    """Create the LOCAL <bag>.uploaded marker the daemon exclusively owns (F-04, guide §1.B).
+# The receipt schema the marker carries so a durable skip is bound to a real transfer, not a bare
+# sentinel. A stale/pre-planted EMPTY or malformed marker fails this parse and is treated as "not
+# uploaded" (retry) — closing the false-success a `touch`-ed or backup-restored marker would cause
+# (F-02, review 4748505221), the stale-plain-marker counterpart to the symlink hardening.
+_RECEIPT_TARGET_KEY = "target"
+_RECEIPT_FILES_KEY = "files"
+
+
+def _receipt_bytes(bag_path: Path, target: str) -> bytes:
+    """The JSON transfer receipt written into the marker on a confirmed transfer.
+
+    Records the transfer target and the covered file names (bag dir + sidecar) so
+    :func:`is_already_uploaded` can validate the marker describes *this* bag's transfer rather than
+    trusting a bare sentinel. Kept to structural fields (no digest) — enough to defeat an empty
+    ``touch``-ed or backup-restored marker while staying dependency-light.
+    """
+    receipt = {
+        _RECEIPT_TARGET_KEY: target,
+        _RECEIPT_FILES_KEY: sorted([bag_path.name, sidecar_path_for(bag_path).name]),
+    }
+    return json.dumps(receipt, sort_keys=True).encode()
+
+
+def _write_upload_marker(bag_path: Path, target: str) -> None:
+    """Write the LOCAL <bag>.uploaded RECEIPT the daemon exclusively owns (F-04 + F-02).
 
     O_CREAT|O_EXCL|O_NOFOLLOW so a pre-planted file OR symlink at the marker path fails the create
-    loudly (the daemon never adopts a marker it didn't make); mode 0o600 keeps it owner-only. This is
-    the write-side pair to is_already_uploaded's symlink-strict read.
+    loudly (the daemon never adopts a marker it didn't make); mode 0o600 keeps it owner-only. The
+    body is a JSON receipt (target + covered filenames) so the marker is bound to a real transfer,
+    not an empty sentinel — an empty/malformed marker no longer reads as "uploaded". This is the
+    write-side pair to is_already_uploaded's symlink-strict + receipt-validated read.
     """
     marker = upload_marker_for(bag_path)
     fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-    os.close(fd)
+    try:
+        os.write(fd, _receipt_bytes(bag_path, target))
+    finally:
+        os.close(fd)
+
+
+def _is_valid_receipt(marker: Path, bag_path: Path) -> bool:
+    """True iff ``marker`` is a well-formed transfer receipt covering ``bag_path``.
+
+    A well-formed receipt names this bag dir and its sidecar under ``files`` and carries a ``target``
+    string. An empty, unparseable, or mismatched marker returns False → the bag is treated as NOT
+    uploaded (retry), so a stale/pre-planted plain sentinel can no longer suppress the transfer.
+    """
+    try:
+        receipt = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(receipt, dict) or not isinstance(receipt.get(_RECEIPT_TARGET_KEY), str):
+        return False
+    expected = sorted([bag_path.name, sidecar_path_for(bag_path).name])
+    return receipt.get(_RECEIPT_FILES_KEY) == expected
 
 
 def is_already_uploaded(bag_path: Path) -> bool:
-    """True iff a confirmed-upload marker exists for ``bag_path`` (the watch loop's durable skip).
+    """True iff a VALID confirmed-upload receipt exists for ``bag_path`` (the durable skip).
 
-    Survives the in-memory LRU's eviction (F-05), so an old bag with its marker is skipped forever
-    rather than re-rsynced every poll. The marker is written only on a CONFIRMED transfer, so a
-    failed/partial upload leaves none and correctly retries. Symlink-strict (F-04, guide §1.B): a
-    planted symlink named ``<bag>.uploaded`` pointing at any regular file would make a plain
-    ``is_file()`` return True, marking a never-shipped bag "uploaded" forever (a false-success that
-    suppresses the transfer). The daemon trusts ONLY a marker it exclusively owns — a real,
-    non-symlink file it created via ``_write_upload_marker``.
+    Survives the in-memory LRU's eviction (F-05), so an old bag with its receipt is skipped forever
+    rather than re-rsynced every poll. Two gates, both required, closing the two false-success vectors
+    together (F-04 symlink + F-02 stale plain marker):
+      * symlink-strict — a planted symlink named ``<bag>.uploaded`` is refused (``_is_regular_file``),
+        so a symlink-following read can't mark a never-shipped bag "uploaded".
+      * receipt-validated — the marker body must be a well-formed JSON receipt naming *this* bag +
+        sidecar (``_is_valid_receipt``). An empty ``touch``-ed, backup-restored, or mismatched marker
+        fails the parse and reads as "not uploaded" (retry) — it no longer suppresses the transfer.
+    The daemon trusts ONLY a real, non-symlink marker it wrote via ``_write_upload_marker``.
     """
-    return _is_regular_file(upload_marker_for(bag_path))
+    marker = upload_marker_for(bag_path)
+    return _is_regular_file(marker) and _is_valid_receipt(marker, bag_path)
 
 
 class UploadDaemon:
@@ -143,7 +192,7 @@ class UploadDaemon:
         # LOCAL-only durable 'uploaded' signal (F-05); not shipped. Exclusive create (F-04): a
         # pre-planted marker raises FileExistsError rather than being silently adopted — the driver
         # loop's _UPLOAD_FAULTS boundary (⊇ OSError) logs it and leaves the bag un-marked to retry.
-        _write_upload_marker(bag_path)
+        _write_upload_marker(bag_path, self._target)
         return True
 
     def _send_with_retry(self, path: Path) -> bool:

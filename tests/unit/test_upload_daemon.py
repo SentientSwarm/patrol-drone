@@ -18,6 +18,7 @@ fake transport so the logic is host- and ROS-independent.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from upload_daemon.upload_daemon import (
     UploadDaemon,
     is_already_uploaded,
     iter_bag_dirs,
+    sidecar_path_for,
     upload_marker_for,
 )
 
@@ -247,3 +249,42 @@ def test_confirmed_marker_is_seen_by_the_next_poll(tmp_path: Path) -> None:
     assert _daemon(transport).on_bag_complete(bag) is True
     assert not upload_marker_for(bag).is_symlink()
     assert is_already_uploaded(bag) is True
+
+
+# F-02 (review 4748505221) core: a stale/pre-planted EMPTY plain marker — a bare `touch` or a
+# backup-restored sentinel — must NOT read as "already uploaded". The old code trusted any regular
+# non-symlink file; now the marker must be a valid receipt, so an empty one correctly re-uploads.
+def test_empty_stale_marker_is_not_already_uploaded(tmp_path: Path) -> None:
+    bag = _make_bag(tmp_path, with_sidecar=True)
+    upload_marker_for(bag).write_text("")  # a bare `touch` — real file, but no receipt
+
+    assert is_already_uploaded(bag) is False
+
+
+# F-02: any marker that is not a well-formed receipt for THIS bag (empty, non-JSON, missing the
+# files list, or naming other files) reads as "not uploaded" so the bag retries — a stale/pre-planted
+# marker can no longer silently suppress the transfer, regardless of its exact bad shape.
+@pytest.mark.parametrize(
+    "body",
+    ["", "not json", '{"target": "dgx:/data/bags/"}', '{"target": "x", "files": ["other"]}'],
+    ids=["empty", "non-json", "missing-files", "wrong-files"],
+)
+def test_malformed_marker_is_not_already_uploaded(tmp_path: Path, body: str) -> None:
+    bag = _make_bag(tmp_path, with_sidecar=True)
+    upload_marker_for(bag).write_text(body)
+
+    assert is_already_uploaded(bag) is False
+
+
+# F-02: a CONFIRMED transfer writes a valid, self-describing receipt — the transfer target plus the
+# sorted covered filenames (bag dir + sidecar) — so is_already_uploaded is bound to a real transfer,
+# not a bare sentinel. This is the write-side pair to the malformed-marker rejection above.
+def test_confirmed_marker_is_a_valid_receipt(tmp_path: Path) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    assert _daemon(transport, target="dgx:/data/bags/").on_bag_complete(bag) is True
+
+    receipt = json.loads(upload_marker_for(bag).read_text())
+    assert receipt["target"] == "dgx:/data/bags/"
+    assert receipt["files"] == sorted([bag.name, sidecar_path_for(bag).name])

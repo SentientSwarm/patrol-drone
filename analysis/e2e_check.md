@@ -57,6 +57,7 @@ Confirm the bag + sidecar appear under `/tmp/dgx_landing/` within ~30 s of missi
 source /opt/ros/jazzy/setup.bash
 # `--watch` is a DAEMON (infinite poll loop, no one-shot flag): run it, wait for the
 # "ingest ... indexed <bag>" line, then Ctrl-C. ingest lives under docker/ (PYTHONPATH, from repo root):
+mkdir -p /tmp/dgx_manifest   # ingest creates this too, but make the fresh path explicit in the doc
 PYTHONPATH=docker python3 -m ingest --watch /tmp/dgx_landing --db /tmp/dgx_manifest/bag_manifest.db
 #   → wait for:  ingest ... indexed patrol_<...>    then press Ctrl-C
 PYTHONPATH=docker python3 -m ingest.manifest_query --recent 1 --db /tmp/dgx_manifest/bag_manifest.db

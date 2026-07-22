@@ -200,8 +200,13 @@ def test_dropped_topic_fails_end_to_end() -> None:
         assert _observed_count(observed, topic) > 0, f"retained topic {topic} was not delivered"
 
     result = evaluate(specs, observed)
+    # The run must FAIL, and the ONLY failing topic must be the withheld one — a format-independent
+    # check on the failure SET, not a pinned message string. Prior cycles re-broke this seam by
+    # pinning `_presence_failure`'s exact wording (it emits `got count=0` for a subscribed-but-empty
+    # topic, not `got absent`); keying on which topic failed removes that whole class of regression
+    # while still proving the drop — and only the drop — tripped the comparator (F-01, PATTERN-1/2).
     assert result.passed is False
-    # Pin the failure to the withheld topic's PRESENCE check (`_presence_failure` shape), not to a
-    # rate excursion that merely mentions the same name.
-    presence_failure = f"{dropped}: expected count >= 1, got absent"
-    assert presence_failure in result.failures, result.failures
+    assert any(f.startswith(f"{dropped}:") for f in result.failures), result.failures
+    assert not any(f.startswith(f"{topic}:") for topic in kept for f in result.failures), (
+        result.failures
+    )
