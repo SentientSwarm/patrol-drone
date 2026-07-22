@@ -59,19 +59,31 @@ def _seed(store: ManifestStore) -> None:
     )
 
 
-# TS-12: --recent N returns the N most recent rows with mission/duration/topics visible.
-def test_recent_lists_rows(tmp_path: Path, capsys) -> None:
+# TS-12: listing modes return both seeded bags with mission/duration visible. Parametrized over the
+# two modes so the identical seed → assert structure is one test, not a copied block (CodeScene).
+@pytest.mark.parametrize(
+    ("argv", "extra_assertions"),
+    [
+        (["--recent", "5"], True),
+        (["--all"], False),
+    ],
+    ids=["recent", "all"],
+)
+def test_listing_mode_returns_seeded_bags(
+    tmp_path: Path, capsys, argv: list[str], extra_assertions: bool
+) -> None:
     store = ManifestStore(tmp_path / "m.db")
     _seed(store)
 
-    rc = run(["--recent", "5"], store=store)
+    rc = run(argv, store=store)
 
     out = capsys.readouterr().out
     assert rc == 0
     assert "patrol_a_20260626_080740.mcap" in out
     assert "survey_b_20260626_090000.mcap" in out
-    assert "patrol" in out
-    assert "142" in out  # duration surfaced
+    if extra_assertions:
+        assert "patrol" in out
+        assert "142" in out  # duration surfaced
 
 
 # F-03: --recent orders by RECORD (flown) time, not ingest time, so a rebuild can't float old bags.
@@ -163,20 +175,6 @@ def test_recent_accepts_one(tmp_path: Path, capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 0
     assert len(out.strip().splitlines()) == 1
-
-
-# F-04, the review's OTHER branch ("or define an explicit, bounded all-results mode"): `--all` lists
-# everything — but still as a BOUNDED query, so no code path reaches SQLite with an unbounded LIMIT.
-def test_all_lists_every_row(tmp_path: Path, capsys) -> None:
-    store = ManifestStore(tmp_path / "m.db")
-    _seed(store)
-
-    rc = run(["--all"], store=store)
-
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "patrol_a_20260626_080740.mcap" in out
-    assert "survey_b_20260626_090000.mcap" in out
 
 
 # `--all` joins the existing mutually-exclusive group, so combining it with `--recent` is an argparse

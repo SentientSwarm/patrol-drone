@@ -38,12 +38,12 @@ def _build_bag(tmp_path: Path, *, marker: str, payload: str) -> Path:
     """
     bag = tmp_path / _BAG_NAME
     bag.mkdir()
-    _place(bag, bag / "metadata.yaml", tmp_path / "elsewhere-metadata.yaml", marker, b"rosbag2:\n")
-    _place(bag, bag / f"{_BAG_NAME}_0.mcap", tmp_path / "elsewhere.mcap", payload, b"\x89MCAP0\r\n")
+    _place(bag / "metadata.yaml", tmp_path / "elsewhere-metadata.yaml", marker, b"rosbag2:\n")
+    _place(bag / f"{_BAG_NAME}_0.mcap", tmp_path / "elsewhere.mcap", payload, b"\x89MCAP0\r\n")
     return bag
 
 
-def _place(_bag: Path, path: Path, redirect: Path, kind: str, body: bytes) -> None:
+def _place(path: Path, redirect: Path, kind: str, body: bytes) -> None:
     """Create ``path`` as a real file, a symlink to ``redirect``, or not at all."""
     if kind == "real":
         path.write_bytes(body)
@@ -124,7 +124,7 @@ def test_is_regular_file_refuses_symlinks_and_absences(
     tmp_path: Path, kind: str, expected: bool
 ) -> None:
     path = tmp_path / "sidecar.meta.json"
-    _place(tmp_path, path, tmp_path / "redirect.meta.json", kind, b"{}")
+    _place(path, tmp_path / "redirect.meta.json", kind, b"{}")
 
     assert is_regular_file(path) is expected
 
