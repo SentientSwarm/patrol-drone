@@ -205,6 +205,42 @@ stop_launch_group() {  # stop_launch_group PGID
   wait_for_pgroup_exit "${pgid}" "${FINALIZE_WAIT}"
 }
 
+# True iff BAG_DIR holds at least one REAL (non-symlink) *.mcap payload — the shell half of
+# _shared.bag_layout.has_mcap_payload. A no-match glob stays literal and fails -f, so no nullglob.
+# shellcheck disable=SC2317,SC2329  # reached from find_finalized_bags, not a direct call
+bag_dir_has_mcap_payload() {  # bag_dir_has_mcap_payload BAG_DIR
+  local payload
+  for payload in "$1"/*.mcap; do
+    [[ -f "${payload}" && ! -L "${payload}" ]] && return 0
+  done
+  return 1
+}
+
+# Emit each REAL finalized bag dir under RUN_ROOT: a non-symlink metadata.yaml AND a non-symlink
+# *.mcap payload — the shell twin of _shared.bag_layout.is_valid_bag_dir, which the upload and ingest
+# boundaries already use. Keying on metadata.yaml ALONE let a metadata-only bag (recorder killed
+# before the MCAP flushed) report "finalized" here while the uploader skipped it forever — stranded
+# silently (Mira Medium, review 4754192970). One helper, so the three call sites below cannot drift
+# apart again (and the triplicated `find … -name metadata.yaml` literal is gone).
+# shellcheck disable=SC2317,SC2329  # reached from graceful_stop_mission/assert_bag_*, not directly
+find_finalized_bags() {  # find_finalized_bags RUN_ROOT
+  local run_root="$1" bag_dir
+  while IFS= read -r bag_dir; do
+    [[ -n "${bag_dir}" ]] || continue
+    [[ -f "${bag_dir}/metadata.yaml" && ! -L "${bag_dir}/metadata.yaml" ]] || continue
+    bag_dir_has_mcap_payload "${bag_dir}" || continue
+    printf '%s\n' "${bag_dir}"
+  done < <(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null)
+  # Pin the status explicitly: "no bags found" is a legitimate EMPTY result reported via stdout,
+  # never via exit status. assert_bag_has_compressed_imagery calls this in a plain assignment
+  # (`bag_dir="$(find_finalized_bags … | head -n1)"`), which under `set -eo pipefail` would abort the
+  # whole run rather than reach its own "no finalized bag" error branch if a non-zero ever leaked out.
+  # A `while` body ending in `continue` does NOT currently leak one (bash reports 0), so this is
+  # belt-and-braces against a future edit adding a trailing command whose status would — cheap
+  # insurance on a path whose failure mode is an aborted SITL run. Asserted in the unit test.
+  return 0
+}
+
 # Write <bag>.meta.json for every finalized bag under run_root, from the record-start staging file the
 # launch dropped (<bag>.sidecar-inputs.json) — CALLER-INDEPENDENT of how the launch died. The launch's
 # OnProcessExit sidecar handler only runs if `ros2 launch`'s asyncio loop survives shutdown, which a
@@ -235,7 +271,7 @@ print(f"wrote bag sidecar {written}" if written else "sidecar already present (o
       warn "finalized bag ${bag_dir} has NO sidecar after finalize — not ingestable"
       missing=$((missing + 1))
     fi
-  done < <(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null)
+  done < <(find_finalized_bags "${run_root}")
   [[ ${missing} -eq 0 ]]
 }
 
@@ -262,10 +298,12 @@ graceful_stop_mission() {
     # not survive teardown.
     warn "mission launch group still running after the finalize window — leaving it for shutdown() to reap"
   fi
-  # A finalized bag has metadata.yaml; its absence means the record path did NOT finalize — surface
-  # that as the real failure here rather than as a confusing "no finalized bag" from assert_bag below.
-  if [[ -z "$(find "${run_root}" -maxdepth 2 -name metadata.yaml -print -quit 2>/dev/null)" ]]; then
-    err "no finalized bag (metadata.yaml) under ${run_root} after clean stop — recorder did not finalize"
+  # A finalized bag has metadata.yaml AND an .mcap payload; its absence means the record path did NOT
+  # finalize a real bag — surface that as the real failure here rather than as a confusing "no
+  # finalized bag" from assert_bag below. A metadata-only bag now FAILS here instead of silently
+  # succeeding and being stranded at the uploader (F-02): fail at the producer, not the consumer.
+  if [[ -z "$(find_finalized_bags "${run_root}" | head -n1)" ]]; then
+    err "no finalized bag (metadata.yaml + .mcap payload) under ${run_root} after clean stop — recorder did not finalize"
     return 1
   fi
   # Finalize the JSON sidecar from the launch's staging file now that the launch is gone (no-op if its
@@ -551,10 +589,11 @@ fly_and_verify_patrol() {
 assert_bag_has_compressed_imagery() {
   local run_root="$1"
   local bag_dir
-  # The recorder writes one bag DIRECTORY (patrol_<id>_<ts>/ holding metadata.yaml) under run_root.
-  bag_dir="$(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null | head -n1)"
+  # The recorder writes one bag DIRECTORY (patrol_<id>_<ts>/ holding metadata.yaml + the .mcap
+  # payload) under run_root; find_finalized_bags applies the same predicate as the upload/ingest side.
+  bag_dir="$(find_finalized_bags "${run_root}" | head -n1)"
   if [[ -z "${bag_dir}" ]]; then
-    err "no finalized bag (metadata.yaml) found under ${run_root} — recorder produced no ingestable bag"
+    err "no finalized bag (metadata.yaml + .mcap payload) found under ${run_root} — recorder produced no ingestable bag"
     return 1
   fi
   # A bag is only INGESTABLE with its JSON sidecar (upload_daemon.is_complete() requires <bag>.meta.json).

@@ -112,6 +112,23 @@ def test_main_transport_s3_exits_without_entering_the_watch_loop(tmp_path: Path)
         main(["--watch", str(tmp_path), "--target", "dgx:/data/bags/", "--transport", "s3"])
 
 
+# F-03 (Mira Medium, review 4754192970): a --target differing only by surrounding whitespace
+# canonicalizes to the SAME receipt but rsyncs to a DIFFERENT destination, so a receipt for one would
+# suppress the transfer to the other. It is never intentional, so it is rejected as invalid
+# configuration at parse time (argparse exit code 2) rather than silently normalized — the watch loop
+# is never entered, so there is no time.sleep to mock.
+@pytest.mark.parametrize(
+    "target",
+    ["dgx:/data/bags ", " dgx:/data/bags"],
+    ids=["trailing-space", "leading-space"],
+)
+def test_main_rejects_a_target_with_surrounding_whitespace(tmp_path: Path, target: str) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--watch", str(tmp_path), "--target", target])
+
+    assert excinfo.value.code == 2  # argparse usage error, not a crash inside the loop
+
+
 def test_drain_once_leaves_a_faulting_bag_out_of_uploaded_for_retry(tmp_path: Path) -> None:
     # A complete bag whose upload raises must NOT be marked uploaded (so it retries next poll).
     _make_complete_bag(tmp_path)

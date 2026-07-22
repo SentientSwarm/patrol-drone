@@ -19,6 +19,7 @@ fake transport so the logic is host- and ROS-independent.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -372,6 +373,51 @@ def test_trailing_slash_variants_match_the_same_target(tmp_path: Path, configure
     assert _daemon(transport, target="dgx:/data/bags/").on_bag_complete(bag) is True
 
     assert is_already_uploaded(bag, configured) is True
+
+
+# F-04 (Mira Medium, review 4754192970): an INTERRUPTED marker publication must leave no marker at
+# all, not a zero-length one. The old O_EXCL-on-the-marker write published the NAME before the body
+# and never fsynced, so a crash mid-write left an empty marker that: fails receipt validation → reads
+# as "not uploaded" → the bag is re-transferred → the exclusive create hits the leftover name →
+# FileExistsError → caught by _UPLOAD_FAULTS → the bag is never marked → re-transfers EVERY poll,
+# forever. Publishing via a temp + fsync + os.link makes the name and its durable body appear
+# together, so the observable outcome of a crash is "no marker", and the next poll recovers cleanly.
+def test_interrupted_marker_publication_leaves_no_marker_and_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    def _crash_mid_publish(_fd: int) -> None:
+        raise OSError("simulated crash while the receipt was being made durable")
+
+    monkeypatch.setattr(os, "fsync", _crash_mid_publish)
+
+    with pytest.raises(OSError, match="simulated crash"):
+        _daemon(_FakeTransport()).on_bag_complete(bag)
+
+    assert not upload_marker_for(bag).exists()  # no zero-length marker to livelock on
+    assert not list(tmp_path.glob("*.tmp"))  # and no temp crumb masquerading as an artifact
+
+    monkeypatch.undo()  # the crash is over; the next poll must just work
+    assert _daemon(_FakeTransport()).on_bag_complete(bag) is True
+    # A real, valid receipt — recovery, not the FileExistsError livelock.
+    assert is_already_uploaded(bag, _TARGET) is True
+
+
+# F-03 (Mira Medium, review 4754192970), the paired constructor half of the CLI rejection in
+# test_upload_main.py: the receipt is written against the CANONICAL target while the transport is
+# handed the RAW one, so a target differing only by surrounding whitespace would write one receipt but
+# rsync to a different destination. Validating at the CLI alone would leave a programmatic
+# UploadDaemon(...) able to re-introduce exactly that divergence — hardening one half of a boundary is
+# what authored this finding in the first place — so construction refuses it too.
+@pytest.mark.parametrize(
+    "target",
+    ["dgx:/data/bags ", " dgx:/data/bags", ""],
+    ids=["trailing-space", "leading-space", "empty"],
+)
+def test_constructing_with_a_whitespace_target_is_rejected(target: str) -> None:
+    with pytest.raises(ValueError, match="surrounding whitespace"):
+        _daemon(_FakeTransport(), target=target)
 
 
 # F-03 (Mira Medium, review 4752923085): a WEDGED transfer must be retried like any other recoverable

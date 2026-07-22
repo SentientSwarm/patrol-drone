@@ -21,7 +21,12 @@ from pathlib import Path
 from _shared.bounded_seen import _BoundedSeen
 from _shared.positive_interval import positive_interval, positive_timeout
 from upload_daemon.transport import _TRANSFER_TIMEOUT_S, RsyncSshTransport, Transport
-from upload_daemon.upload_daemon import UploadDaemon, is_complete, iter_bag_dirs
+from upload_daemon.upload_daemon import (
+    UploadDaemon,
+    is_complete,
+    iter_bag_dirs,
+    validate_transfer_target,
+)
 
 logger = logging.getLogger("upload_daemon")
 
@@ -65,10 +70,29 @@ def _make_transport(kind: str, timeout_s: float = _TRANSFER_TIMEOUT_S) -> Transp
     raise SystemExit(f"unknown --transport {kind!r} (expected 'rsync' or 's3')")
 
 
+def target_argument(raw: str) -> str:
+    """argparse ``type=`` for ``--target``: the daemon's own validity rule, surfaced at parse time.
+
+    Mirrors the ``positive_interval`` / ``positive_timeout`` convention — an operator misconfig
+    becomes an actionable startup error instead of reaching the watch loop. The rule itself lives in
+    ``upload_daemon.validate_transfer_target`` (also applied by the constructor), so the CLI and the
+    programmatic path cannot disagree about what a valid target is (F-03).
+    """
+    try:
+        return validate_transfer_target(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="upload_daemon", description=__doc__)
     parser.add_argument("--watch", required=True, type=Path, help="bag output directory to watch")
-    parser.add_argument("--target", required=True, help="rsync/SSH dest or local stand-in dir")
+    parser.add_argument(
+        "--target",
+        required=True,
+        type=target_argument,
+        help="rsync/SSH dest or local stand-in dir",
+    )
     parser.add_argument("--transport", default="rsync", choices=("rsync", "s3"))
     parser.add_argument("--poll-interval", type=positive_interval, default=_POLL_INTERVAL_S)
     parser.add_argument(

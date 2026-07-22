@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+from ingest.bag_layout import contained_payload_path
 from ingest.ingest_service import BagFacts
 
 # "Duration:          142.317327555s"
@@ -131,9 +132,14 @@ def _require_declared_payloads(bag_path: Path, info: dict) -> None:
     still land a fully-populated manifest row for facts nothing on disk backs. Symlinks are refused
     for the same reason every other landing-dir read refuses them: the writers are remote.
     ``ValueError`` is an ``_INGEST_FAULTS`` member, so the watch loop logs + skips + retries.
+
+    The join itself goes through the shared :func:`~_shared.bag_layout.contained_payload_path`, which
+    refuses an absolute or ``..``-bearing declaration BEFORE joining — a raw ``bag_path / relative``
+    silently discards ``bag_path`` for an absolute entry, so this guard would otherwise validate a
+    file outside the bag and then derive the manifest's facts from a document describing it.
     """
     for relative in _declared_payloads(info):
-        payload = bag_path / relative
+        payload = contained_payload_path(bag_path, relative)
         if payload.is_symlink() or not payload.is_file():
             raise ValueError(
                 f"metadata.yaml declares payload {relative!r} that is missing or symlinked: "

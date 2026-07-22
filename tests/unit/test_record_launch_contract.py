@@ -94,10 +94,17 @@ def test_sidecar_bag_uri_points_at_the_on_disk_bag_directory(tmp_path: Path) -> 
 # --- F-03: failure -> no success sidecar (the pure recorder_finished_cleanly decision) --------
 
 
-def _bag_dir_with_metadata(tmp_path: Path) -> Path:
+def _bag_dir_with_metadata(tmp_path: Path, *, with_payload: bool = True) -> Path:
+    """A finalized bag dir: metadata.yaml AND the nested <uri>_0.mcap payload.
+
+    ``with_payload=False`` models the metadata-only bag (recorder killed after the marker was written
+    but before the MCAP flushed), which ``recorder._is_finalized_bag_dir`` refuses (F-02).
+    """
     bag_dir = tmp_path / f"patrol_alpha_{_TS}"
     bag_dir.mkdir()
     (bag_dir / "metadata.yaml").write_text("version: 9\n")
+    if with_payload:
+        (bag_dir / f"{bag_dir.name}_0.mcap").write_bytes(b"\x89MCAP0\r\n")
     return bag_dir
 
 
@@ -115,6 +122,14 @@ def test_recorder_finished_cleanly_false_when_metadata_missing(tmp_path: Path) -
     empty_bag_dir = tmp_path / f"patrol_alpha_{_TS}"
     empty_bag_dir.mkdir()
     assert recorder_finished_cleanly(_ProcessExited(0), empty_bag_dir) is False
+
+
+def test_recorder_finished_cleanly_false_on_a_metadata_only_bag(tmp_path: Path) -> None:
+    # F-02: metadata.yaml alone is not a bag. A clean exit whose MCAP never flushed must NOT bless a
+    # sidecar the uploader (is_valid_bag_dir) would then refuse forever — the same predicate now
+    # decides on both sides of the record boundary (Mira Medium, review 4754192970).
+    metadata_only = _bag_dir_with_metadata(tmp_path, with_payload=False)
+    assert recorder_finished_cleanly(_ProcessExited(0), metadata_only) is False
 
 
 # --- F-03++: the staged/runner path matches the OnProcessExit handler path --------------------
@@ -135,6 +150,8 @@ def test_staged_finalize_produces_the_same_identity_as_the_handler_path(tmp_path
     bag_dir = tmp_path / run.bag_uri
     bag_dir.mkdir()
     (bag_dir / "metadata.yaml").write_text("version: 9\n")
+    # A real bag, not metadata-only: _is_finalized_bag_dir requires the payload too (F-02).
+    (bag_dir / f"{run.bag_uri}_0.mcap").write_bytes(b"\x89MCAP0\r\n")
     write_sidecar_inputs(sidecar_inputs_path(bag_dir), run, topics)  # launch, at record-start
 
     sidecar_path = finalize_sidecar_from_staging(bag_dir)  # runner, after the launch is gone

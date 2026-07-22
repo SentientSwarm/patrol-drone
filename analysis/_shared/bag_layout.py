@@ -63,3 +63,30 @@ def is_valid_bag_dir(bag_path: Path) -> bool:
     if bag_path.is_symlink() or not bag_path.is_dir():
         return False
     return has_finalize_marker(bag_path) and has_mcap_payload(bag_path)
+
+
+def contained_payload_path(bag_path: Path, relative: str) -> Path:
+    """Join a metadata-AUTHORED ``relative`` under ``bag_path``, proving it cannot escape (F-01).
+
+    ``Path.__truediv__`` DISCARDS its left operand when the right side is absolute, and ``..``
+    components walk upward — so ``bag_path / relative`` on an unvalidated ``relative`` is not a
+    containment assertion at all: for ``/etc/hostname`` it asserts the exact opposite of what it
+    reads like. A bag re-rooted or copied between hosts with absolute paths in its ``metadata.yaml``
+    is the realistic non-adversarial trigger; the consequence is manifest facts derived from a
+    document describing data outside this bag, inverting the design §3.4 dumb-producer invariant.
+
+    Rejecting an absolute, ``..``-bearing or empty entry is SUFFICIENT for lexical containment, so
+    there is no redundant post-join re-check here (``Path.resolve()`` would be the wrong one anyway:
+    it FOLLOWS symlinks, and refusing symlinked payloads is the caller's existing separate gate — a
+    symlinked *intermediate directory* is therefore out of scope, and needs a writer with access to
+    the landing dir in any case). ``ValueError`` is an ``_INGEST_FAULTS`` member, so the watch loop
+    logs + skips + retries.
+    """
+    candidate = Path(relative)
+    if not candidate.parts:  # "" and "." both normalize to no parts
+        raise ValueError(f"metadata.yaml declares an empty payload path ({relative!r}): {bag_path}")
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(
+            f"metadata.yaml declares payload {relative!r} outside its bag directory: {bag_path}"
+        )
+    return bag_path / candidate

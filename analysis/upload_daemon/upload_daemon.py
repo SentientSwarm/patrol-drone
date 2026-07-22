@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 
@@ -89,6 +90,31 @@ def _canonical_target(target: str) -> str:
     return stripped.rstrip("/") or stripped  # "/" normalizes to itself, not to ""
 
 
+def validate_transfer_target(target: str) -> str:
+    """Return ``target`` unchanged, or raise ValueError if it cannot be used as a transfer target.
+
+    ``--target`` reaches BOTH the receipt (canonicalized by :func:`_canonical_target`, so a
+    trailing-slash edit doesn't re-ship every bag) and the transport (RAW, because rsync must be
+    handed exactly the destination the operator configured). Surrounding whitespace is the one
+    difference those two treatments disagree on: ``"dgx:/data/bags"`` and ``"dgx:/data/bags "``
+    canonicalize to ONE receipt but rsync to TWO destinations, so a receipt for the first suppresses
+    the transfer to the second — the daemon reports a bag shipped to a destination it never sent it
+    to (Mira Medium, review 4754192970). It is also never intentional. REJECTING it (rather than
+    silently normalizing) is the smaller, louder fix and leaves transfer behaviour byte-identical;
+    with whitespace impossible, the only remaining raw/canonical difference is a trailing separator,
+    which names the same rsync destination.
+
+    Applied at BOTH construction points — the CLI (``__main__.target_argument``) and
+    :meth:`UploadDaemon.__init__` — so the divergence cannot be re-introduced programmatically. That
+    symmetry is deliberate: hardening one half of a boundary is what authored this finding.
+    """
+    if not target or target != target.strip():
+        raise ValueError(
+            f"transfer target must be non-empty and free of surrounding whitespace, got {target!r}"
+        )
+    return target
+
+
 def _receipt_bytes(bag_path: Path, target: str) -> bytes:
     """The JSON transfer receipt written into the marker on a confirmed transfer.
 
@@ -104,21 +130,70 @@ def _receipt_bytes(bag_path: Path, target: str) -> bytes:
     return json.dumps(receipt, sort_keys=True).encode()
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Best-effort fsync of ``directory`` so a new entry in it is durable across a crash.
+
+    Mirrors ``patrol_logging.recorder._fsync_dir``: a raised ``OSError`` is swallowed because a
+    durability UPGRADE must never become a new failure path for the write it is hardening (directory
+    fsync is unsupported on some platforms/filesystems).
+    """
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def _publish_bytes_exclusive(path: Path, payload: bytes) -> None:
+    """Publish ``payload`` at ``path`` durably AND no-clobber: temp → fsync → link → fsync dir.
+
+    ``O_CREAT|O_EXCL`` directly on ``path`` publishes the NAME before the body lands and never
+    fsyncs, so a crash mid-write leaves a ZERO-LENGTH file. Where the reader validates the body (the
+    upload marker's receipt) that is worse than a lost file: the empty marker reads as "not
+    uploaded" so the payload is re-sent, then the exclusive create hits the leftover name and raises
+    ``FileExistsError`` — a permanent re-transfer livelock (Mira Medium, review 4754192970).
+
+    Writing a same-directory unpredictable-suffix temp, fsyncing it, then ``os.link``-ing it into
+    place makes the name and its durable body appear in the SAME instant, so ``FileExistsError`` can
+    only ever mean "something was already there". ``os.link`` is used rather than ``os.replace``
+    precisely because it does NOT clobber — preserving the foreign-marker protection the exclusive
+    create exists for (``link(2)`` does not follow a symlinked destination, so a planted symlink
+    still fails EEXIST and is never written through). The temp is unlinked in ``finally`` (success or
+    interrupt), so no ``.tmp`` crumb is ever left behind.
+    """
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    # The exclusive create sits OUTSIDE the cleanup block: if it fails we created nothing and must
+    # unlink nothing (unlinking there would delete a foreign object we never owned).
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(tmp, path)
+        _fsync_dir(path.parent)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _write_upload_marker(bag_path: Path, target: str) -> None:
     """Write the LOCAL <bag>.uploaded RECEIPT the daemon exclusively owns (F-04 + F-02).
 
-    O_CREAT|O_EXCL|O_NOFOLLOW so a pre-planted file OR symlink at the marker path fails the create
-    loudly (the daemon never adopts a marker it didn't make); mode 0o600 keeps it owner-only. The
-    body is a JSON receipt (target + covered filenames) so the marker is bound to a real transfer,
-    not an empty sentinel — an empty/malformed marker no longer reads as "uploaded". This is the
-    write-side pair to is_already_uploaded's symlink-strict + receipt-validated read.
+    Published via :func:`_publish_bytes_exclusive`, so the marker NAME and its durable body appear
+    together: a pre-planted file OR symlink at the marker path still fails loudly (``os.link`` is
+    no-clobber and does not follow a symlinked destination — the daemon never adopts a marker it
+    didn't make), mode 0o600 keeps it owner-only, and a crash mid-publish now leaves NO marker at
+    all rather than a zero-length one that would livelock every later poll. The body is a JSON
+    receipt (target + covered filenames) so the marker is bound to a real transfer, not an empty
+    sentinel. This is the write-side pair to is_already_uploaded's symlink-strict +
+    receipt-validated read.
     """
-    marker = upload_marker_for(bag_path)
-    fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-    try:
-        os.write(fd, _receipt_bytes(bag_path, target))
-    finally:
-        os.close(fd)
+    _publish_bytes_exclusive(upload_marker_for(bag_path), _receipt_bytes(bag_path, target))
 
 
 def _is_valid_receipt(marker: Path, bag_path: Path, target: str) -> bool:
@@ -176,7 +251,10 @@ class UploadDaemon:
         backoff_s: float = 2.0,
     ) -> None:
         self._transport = transport
-        self._target = target
+        # Validated here, not just at the CLI: the receipt is written against the CANONICAL target
+        # while the transport is handed this RAW one, so a whitespace-bearing target would make the
+        # two diverge (F-03). Rejecting it at construction makes that impossible by construction.
+        self._target = validate_transfer_target(target)
         self._max_retries = max_retries
         self._backoff_s = backoff_s
 

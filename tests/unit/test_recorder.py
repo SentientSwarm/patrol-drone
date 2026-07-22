@@ -373,10 +373,16 @@ def test_sidecar_inputs_round_trip(tmp_path) -> None:
 
 @pytest.fixture
 def staged_bag_dir(tmp_path):
-    """A finalized bag dir (metadata.yaml present) with its record-start staging file beside it."""
+    """A finalized bag dir with its record-start staging file beside it.
+
+    "Finalized" is metadata.yaml AND a real ``.mcap`` payload (``recorder._is_finalized_bag_dir``,
+    the record-side twin of ``_shared.bag_layout.is_valid_bag_dir``) — a metadata-only dir is NOT a
+    bag, so the payload is part of the fixture, not decoration (F-02).
+    """
     bag_dir = tmp_path / f"patrol_alpha_{_TS}"
     bag_dir.mkdir()
     (bag_dir / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    (bag_dir / f"{bag_dir.name}_0.mcap").write_bytes(b"\x89MCAP0\r\n")
     write_sidecar_inputs(sidecar_inputs_path(bag_dir), _sample_run(), _NAMED_TOPICS + _REGEXES)
     return bag_dir
 
@@ -434,6 +440,20 @@ def test_finalize_no_ops_and_writes_nothing_when_a_precondition_is_missing(
 
     assert finalize_sidecar_from_staging(staged_bag_dir) is None
     assert not staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json").exists()
+
+
+# F-02 (Mira Medium, review 4754192970): a metadata-only bag — recorder killed after metadata.yaml
+# was written but before the MCAP flushed — is NOT a finalized bag. It used to get a sidecar and lose
+# its staging crumb here while the uploader's stricter is_valid_bag_dir skipped it forever: the
+# producer reported success on a bag that was silently stranded. Crumb survival is the assertion that
+# matters — "returns None" alone would still pass if the crumb had been consumed, and the crumb is
+# what makes the run recoverable.
+def test_finalize_no_ops_on_a_metadata_only_bag_and_keeps_the_staging_crumb(staged_bag_dir) -> None:
+    (staged_bag_dir / f"{staged_bag_dir.name}_0.mcap").unlink()  # marker written, payload never was
+
+    assert finalize_sidecar_from_staging(staged_bag_dir) is None
+    assert not staged_bag_dir.with_name(staged_bag_dir.name + ".meta.json").exists()
+    assert sidecar_inputs_path(staged_bag_dir).exists()  # recoverable: the crumb survives
 
 
 def _replace_with_symlink(path: Path) -> None:

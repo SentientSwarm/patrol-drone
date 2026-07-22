@@ -295,15 +295,44 @@ def _is_regular_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
+def _has_mcap_payload(bag_dir: Path) -> bool:
+    """True iff ``bag_dir`` holds at least one REAL (non-symlink) ``.mcap`` storage file."""
+    return any(_is_regular_file(p) for p in bag_dir.glob("*.mcap"))
+
+
+def _is_finalized_bag_dir(bag_dir: Path) -> bool:
+    """True iff ``bag_dir`` is a real finalized bag: a real ``metadata.yaml`` AND a real ``.mcap``.
+
+    The record-side twin of ``_shared.bag_layout.is_valid_bag_dir`` — the ONE predicate the upload
+    (``upload_daemon.is_complete``) and ingest (``ingest_service._require_finalized_bag``) boundaries
+    already share. Keying finalize on ``metadata.yaml`` alone made a metadata-only bag (recorder
+    killed after the marker was written but before the MCAP flushed) report SUCCESS at the producer
+    while the uploader's stricter gate skipped it forever — silently stranded, with its staging crumb
+    already deleted (Mira Medium, review 4754192970). ``recorder.py`` lives in a colcon package that
+    cannot import ``analysis/_shared/`` (separate deploy tree — the same necessary duplication
+    already accepted for ``_is_regular_file`` and the SWM-83 run-id guard), so this mirrors that
+    contract locally and names it; the two must be changed together.
+
+    Unlike ``is_valid_bag_dir`` it does not refuse a symlinked ``bag_dir`` itself: the record side
+    composes ``bag_dir`` from its own launch configuration, so it is never a discovered path a third
+    party writes into, and a dir-level refusal would guard nothing here.
+    """
+    return _is_regular_file(bag_dir / "metadata.yaml") and _has_mcap_payload(bag_dir)
+
+
 def finalize_sidecar_from_staging(bag_dir: Path) -> Path | None:
     """Write ``<bag>.meta.json`` from the staging file once the bag has finalized (caller-independent).
 
     Idempotent and safe to call from the runner after *any* shutdown: returns ``None`` (a no-op) when
-    there is nothing to finalize — no finalized bag (``metadata.yaml`` absent), no staging file, or a
-    sidecar already present (the OnProcessExit happy path beat us to it). On success it writes the
-    sidecar (``ended`` stamped now), removes the staging file, and returns the sidecar path.
+    there is nothing to finalize — no finalized bag (:func:`_is_finalized_bag_dir`: ``metadata.yaml``
+    absent OR no ``.mcap`` payload), no staging file, or a sidecar already present (the OnProcessExit
+    happy path beat us to it). On success it writes the sidecar (``ended`` stamped now), removes the
+    staging file, and returns the sidecar path.
+
+    A metadata-only bag no-ops here and KEEPS its staging crumb, so the run stays recoverable rather
+    than being blessed with a sidecar the uploader would then refuse forever (F-02).
     """
-    if not _is_regular_file(bag_dir / "metadata.yaml"):
+    if not _is_finalized_bag_dir(bag_dir):
         return None
     inputs = sidecar_inputs_path(bag_dir)
     if not _is_regular_file(inputs):
@@ -335,15 +364,21 @@ def resolve_run_id(configured: str, now: datetime) -> str:
 
 
 def recorder_finished_cleanly(event: object, bag_dir: Path) -> bool:
-    """True iff the recorder produced a real bag (F-03): clean exit AND ``bag_dir/metadata.yaml``.
+    """True iff the recorder produced a real bag (F-03): clean exit AND a finalized ``bag_dir``.
 
     ROS-free so the failure-path decision sits on the Layer-A tier. ``event`` is the launch
     ``OnProcessExit`` event (a ``ProcessExited`` exposing ``returncode``); a non-zero code means
-    ``ros2 bag record`` failed, and a missing ``metadata.yaml`` means rosbag2 never finalized a bag —
-    either way the sidecar must not bless it. ``returncode is None`` (a non-``ProcessExited`` event
-    with no rc) is treated as inconclusive-but-present and still requires the bag artifact to exist.
+    ``ros2 bag record`` failed, and a bag_dir that is not :func:`_is_finalized_bag_dir` means rosbag2
+    never finalized a real bag — either way the sidecar must not bless it. ``returncode is None`` (a
+    non-``ProcessExited`` event with no rc) is treated as inconclusive-but-present and still requires
+    the bag artifact to exist.
+
+    Shares that ONE predicate with :func:`finalize_sidecar_from_staging` (F-02): this used to key on
+    a following-``exists()`` ``metadata.yaml`` check, which both accepted a metadata-only bag the
+    uploader would strand and was weaker than this module's own symlink-strict
+    :func:`_is_regular_file` — one decision made two different ways inside one file.
     """
     returncode = getattr(event, "returncode", None)
     if returncode not in (0, None):
         return False
-    return (bag_dir / "metadata.yaml").exists()
+    return _is_finalized_bag_dir(bag_dir)

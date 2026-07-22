@@ -184,11 +184,17 @@ rosbag2_bagfile_information:
 """
 
 
-def _bag_declaring_a_payload(tmp_path: Path) -> Path:
-    """A bag dir whose metadata.yaml DECLARES patrol_ref_0.mcap; the payload itself is the variable."""
+def _bag_declaring_a_payload(tmp_path: Path, declared: str = "patrol_ref_0.mcap") -> Path:
+    """A bag dir whose metadata.yaml DECLARES ``declared``; the payload itself is the variable.
+
+    ``declared`` defaults to the well-behaved relative name; the escaping-path cases below substitute
+    an absolute / traversing one so the containment guard is exercised through the real reader.
+    """
     bag = tmp_path / "patrol_ref"
     bag.mkdir()
-    (bag / "metadata.yaml").write_text(_METADATA_WITH_PAYLOAD_REF)
+    (bag / "metadata.yaml").write_text(
+        _METADATA_WITH_PAYLOAD_REF.replace("patrol_ref_0.mcap", declared)
+    )
     return bag
 
 
@@ -206,6 +212,26 @@ def test_read_bag_facts_raises_when_a_declared_payload_is_not_a_real_file(
         (bag / "patrol_ref_0.mcap").symlink_to(redirect)
 
     with pytest.raises(ValueError, match="declares payload"):
+        read_bag_facts(bag)
+
+
+# A declared payload path that ESCAPES the bag dir is refused BEFORE the join (PR #16 / F-01, Mira
+# High, review 4754192970). `bag_path / "/etc/hostname"` is `/etc/hostname` — the left operand is
+# discarded — so the old guard happily "validated" a real file outside the bag and then derived the
+# manifest's duration + topic counts from a document describing it. A real sibling .mcap is written
+# so the rejection is provably caused by the DECLARATION, not by an empty directory.
+@pytest.mark.parametrize(
+    "declared",
+    ["/etc/hostname", "../../other_bag/x_0.mcap"],
+    ids=["absolute", "traversal"],
+)
+def test_read_bag_facts_rejects_a_declared_payload_outside_the_bag(
+    tmp_path: Path, declared: str
+) -> None:
+    bag = _bag_declaring_a_payload(tmp_path, declared)
+    (bag / "patrol_ref_0.mcap").write_bytes(b"\x89MCAP0\r\n")
+
+    with pytest.raises(ValueError, match="outside its bag directory"):
         read_bag_facts(bag)
 
 
