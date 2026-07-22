@@ -77,7 +77,7 @@ finalize_bag_sidecars "${root4}"
 rc=$?
 [[ ${rc} -eq 0 ]] || fail "a run_root with no finalized bags must return 0 (got ${rc})"
 
-# --- Case 5: <bag>.meta.json is a SYMLINK -> non-zero (parity with uploader _is_regular_file, F-02). -
+# --- Case 5: <bag>.meta.json is a SYMLINK -> non-zero (parity with bag_layout.is_regular_file, F-02). -
 # A planted symlink must not satisfy the outcome gate: -f follows it, but the runner also rejects -L,
 # matching recorder._is_regular_file and upload_daemon.is_complete (which refuse a symlinked sidecar).
 root5="${tmp}/run5"

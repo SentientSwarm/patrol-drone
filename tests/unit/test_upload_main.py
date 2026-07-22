@@ -14,7 +14,7 @@ The daemon is driven for real (not faked) via a transport whose ``send`` raises 
 
 from __future__ import annotations
 
-import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,7 +28,9 @@ from upload_daemon.__main__ import (
     main,
 )
 from upload_daemon.transport import RsyncSshTransport
-from upload_daemon.upload_daemon import UploadDaemon, sidecar_path_for, upload_marker_for
+from upload_daemon.upload_daemon import UploadDaemon, _receipt_bytes, upload_marker_for
+
+_TARGET = "dgx:/data/bags/"
 
 
 class _RaisingTransport:
@@ -41,8 +43,8 @@ class _RaisingTransport:
         raise self._exc
 
 
-def _daemon_that_raises(exc: BaseException) -> UploadDaemon:
-    return UploadDaemon(transport=_RaisingTransport(exc), target="dgx:/data/bags/")
+def _daemon_that_raises(exc: BaseException, target: str = _TARGET) -> UploadDaemon:
+    return UploadDaemon(transport=_RaisingTransport(exc), target=target)
 
 
 def _make_complete_bag(tmp_path: Path) -> Path:
@@ -55,15 +57,14 @@ def _make_complete_bag(tmp_path: Path) -> Path:
     return bag
 
 
-def _plant_valid_receipt(bag: Path) -> None:
-    """Write the <bag>.uploaded receipt a prior CONFIRMED transfer would leave (F-02).
+def _plant_valid_receipt(bag: Path, target: str = _TARGET) -> None:
+    """Write the <bag>.uploaded receipt a prior CONFIRMED transfer to ``target`` would leave (F-02).
 
-    Mirrors what ``_write_upload_marker`` writes — a JSON receipt naming the transfer target and the
-    sorted covered filenames (bag dir + sidecar) — so ``is_already_uploaded`` accepts it as the
-    durable 'already uploaded' signal. A bare ``touch`` is no longer a valid receipt.
+    Built by the production ``_receipt_bytes`` rather than hand-rolled JSON, so the fixture cannot
+    drift from the receipt schema again (the last schema change broke a hand-rolled ``touch()``
+    fixture here) — and it picks up the canonical-target normalization automatically.
     """
-    receipt = {"target": "dgx:/data/bags/", "files": sorted([bag.name, sidecar_path_for(bag).name])}
-    upload_marker_for(bag).write_text(json.dumps(receipt))
+    upload_marker_for(bag).write_bytes(_receipt_bytes(bag, target))
 
 
 @pytest.mark.parametrize(
@@ -82,6 +83,12 @@ def test_try_upload_skips_transport_fault_without_propagating(
 
 def test_transport_faults_are_in_documented_upload_fault_set() -> None:
     assert OSError in _UPLOAD_FAULTS
+    # F-03 (review 4752923085): a wedged transfer that hits --transfer-timeout must be RETRYABLE.
+    # RsyncSshTransport already converts expiry to a False return, so this is the loop-level backstop
+    # for a custom Transport that lets it escape. TimeoutExpired derives from SubprocessError, NOT
+    # OSError, so membership is genuinely required rather than implied by the OSError row above.
+    assert subprocess.TimeoutExpired in _UPLOAD_FAULTS
+    assert not issubclass(subprocess.TimeoutExpired, OSError)
     # F-03: NotImplementedError is NOT a transient transport fault — a stub must abort at startup,
     # never be caught and retried forever. It is deliberately absent from the retryable-fault set.
     assert NotImplementedError not in _UPLOAD_FAULTS
@@ -128,3 +135,18 @@ def test_drain_once_skips_bag_with_upload_marker(tmp_path: Path) -> None:
     _drain_once(_daemon_that_raises(OSError("must not be called")), tmp_path, uploaded)  # no raise
 
     assert bag in uploaded  # recorded as handled this run, without re-uploading
+
+
+# F-02 (review 4752923085), the destination-reconfiguration case: a receipt written for target A must
+# NOT suppress the transfer once the operator repoints the daemon at target B. The daemon here raises
+# on send, so reaching the transport at all proves the durable skip did NOT fire — and the bag stays
+# out of `uploaded`, so it retries on the next poll instead of being skipped forever.
+def test_drain_once_re_uploads_after_target_change(tmp_path: Path) -> None:
+    bag = _make_complete_bag(tmp_path)
+    _plant_valid_receipt(bag, target="dgx1:/data/bags/")  # shipped to the OLD DGX
+
+    uploaded = _BoundedSeen()
+    daemon = _daemon_that_raises(OSError("reached the transport"), target="dgx2:/data/bags/")
+    _drain_once(daemon, tmp_path, uploaded)  # fault is caught by _try_upload, not propagated
+
+    assert bag not in uploaded  # the stale-target receipt did not durably skip it

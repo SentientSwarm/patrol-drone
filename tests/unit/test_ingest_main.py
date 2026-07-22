@@ -25,17 +25,30 @@ from ingest.ingest_service import BagFacts, BagFactsReader, IngestService
 from ingest.manifest_store import ManifestRow, ManifestStore
 
 
+def _make_finalized_bag(parent: Path, name: str) -> Path:
+    """A finalized rosbag2 bag dir: the nested ``<name>_0.mcap`` payload + the metadata.yaml marker.
+
+    The payload is part of the shape now, not decoration: the shared bag-layout validator
+    (``_shared.bag_layout``) requires a real ``.mcap``, so a metadata-only dir would be refused at
+    the guard and these tests would pass for the wrong reason — never reaching the fault they exist
+    to pin.
+    """
+    bag = parent / name
+    bag.mkdir()
+    (bag / f"{name}_0.mcap").write_bytes(b"\x89MCAP0\r\n")
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    return bag
+
+
 def _service_with_failing_reader(
     tmp_path: Path, exc: Exception
 ) -> tuple[IngestService, Path, Path]:
     """An IngestService whose injected bag-fact reader raises ``exc`` from inside ``index``.
 
-    Builds a finalized bag dir (metadata.yaml present) + a valid sidecar so ``index`` gets past its
+    Builds a finalized bag dir (payload + metadata.yaml) + a valid sidecar so ``index`` gets past its
     own guards and reaches ``self._bag_facts(bag_path)`` — the seam where reader faults originate.
     """
-    bag = tmp_path / "patrol_unparseable_20260629_120000"
-    bag.mkdir()
-    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    bag = _make_finalized_bag(tmp_path, "patrol_unparseable_20260629_120000")
     sidecar = tmp_path / (bag.name + ".meta.json")
     sidecar.write_text(
         '{"mission_id": "standin", "bag_uri": "x", "started_utc": "2026-06-29T12:00:00+00:00", '
@@ -89,9 +102,7 @@ def _service_with_bad_sidecar(
     tmp_path: Path, sidecar_bytes: bytes
 ) -> tuple[IngestService, Path, Path]:
     """A finalized bag dir + a sidecar whose *bytes* are written verbatim (may be non-UTF-8/non-dict)."""
-    bag = tmp_path / "patrol_badsidecar_20260629_120000"
-    bag.mkdir()
-    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    bag = _make_finalized_bag(tmp_path, "patrol_badsidecar_20260629_120000")
     sidecar = tmp_path / (bag.name + ".meta.json")
     sidecar.write_bytes(sidecar_bytes)
     service = IngestService(ManifestStore(tmp_path / "m.db"), bag_facts=_fixed_facts_reader())
@@ -165,8 +176,9 @@ def test_try_index_skips_null_required_field_sidecar(tmp_path: Path) -> None:
 # this arises inside the injected reader — so the service is built with bag_facts=read_bag_facts (not a
 # stub). It must be skipped (False, nothing indexed), else the loop crash-loops on the corrupt bag.
 def test_try_index_skips_malformed_metadata_yaml(tmp_path: Path) -> None:
-    bag = tmp_path / "patrol_corruptmeta_20260629_120000"
-    bag.mkdir()
+    bag = _make_finalized_bag(tmp_path, "patrol_corruptmeta_20260629_120000")
+    # Overwrite the marker AFTER the payload exists: the bag must pass the shared layout guard so the
+    # YAML fault is what fails, not a missing payload.
     (bag / "metadata.yaml").write_text(":\n  - [unterminated")  # invalid YAML → yaml.YAMLError
     sidecar = tmp_path / (bag.name + ".meta.json")
     sidecar.write_text(
@@ -186,9 +198,7 @@ def _raise_if_read(_bag_path: Path) -> BagFacts:
 
 def _put_watched_bag(watch_dir: Path, name: str, sidecar_json: str) -> Path:
     """A finalized bag dir + sibling sidecar under ``watch_dir`` (the drain-loop input shape)."""
-    bag = watch_dir / name
-    bag.mkdir()
-    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    bag = _make_finalized_bag(watch_dir, name)
     (watch_dir / (name + ".meta.json")).write_text(sidecar_json)
     return bag
 
@@ -243,9 +253,8 @@ def test_drain_once_skips_symlinked_bag_dir_and_sidecar(tmp_path: Path) -> None:
     (watch_dir / linked_name).symlink_to(real_bag)  # symlinked bag dir in the landing dir
     (watch_dir / (linked_name + ".meta.json")).write_text("{}")  # real sidecar beside the link
     sidelink_name = "patrol_sidecarlink_20260629_130000"
-    bag2 = watch_dir / sidelink_name  # real bag dir whose SIDECAR is a symlink
-    bag2.mkdir()
-    (bag2 / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    # A real, fully-valid bag dir whose SIDECAR is a symlink — the symlink must be the only defect.
+    _make_finalized_bag(watch_dir, sidelink_name)
     real_sidecar = tmp_path / "redirect-target.meta.json"
     real_sidecar.write_text(
         f'{{"mission_id": "standin", "bag_uri": "{sidelink_name}", '
@@ -266,9 +275,7 @@ def test_drain_once_skips_bag_already_in_manifest(tmp_path: Path) -> None:
     watch_dir = tmp_path / "bags"
     watch_dir.mkdir()
     name = "patrol_already_20260629_120000"
-    bag = watch_dir / name
-    bag.mkdir()
-    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    _make_finalized_bag(watch_dir, name)
     (watch_dir / (name + ".meta.json")).write_text(
         f'{{"mission_id": "standin", "bag_uri": "{name}", '
         '"started_utc": "2026-06-29T12:00:00+00:00"}'
@@ -298,9 +305,7 @@ def test_drain_once_skips_bag_already_in_manifest(tmp_path: Path) -> None:
 def test_try_index_skips_unreadable_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bag = tmp_path / "patrol_unreadable_20260629_120000"
-    bag.mkdir()
-    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    bag = _make_finalized_bag(tmp_path, "patrol_unreadable_20260629_120000")
     sidecar = tmp_path / (bag.name + ".meta.json")
     sidecar.write_text('{"mission_id": "standin", "bag_uri": "x", "started_utc": "x"}')
     service = IngestService(ManifestStore(tmp_path / "m.db"), bag_facts=_fixed_facts_reader())
@@ -325,9 +330,7 @@ def test_drain_once_skips_bag_when_dedup_check_locks(tmp_path: Path) -> None:
     watch_dir = tmp_path / "bags"
     watch_dir.mkdir()
     name = "patrol_lockeddb_20260629_120000"
-    bag = watch_dir / name
-    bag.mkdir()
-    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
+    bag = _make_finalized_bag(watch_dir, name)
     (watch_dir / (name + ".meta.json")).write_text(
         f'{{"mission_id": "standin", "bag_uri": "{name}", '
         '"started_utc": "2026-06-29T12:00:00+00:00"}'

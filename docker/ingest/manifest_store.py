@@ -118,8 +118,17 @@ class ManifestStore:
         """Run the ``SELECT * ... ORDER BY <order_by> LIMIT ?`` shared by the recent queries.
 
         ``order_by`` is a fixed internal literal (never operator input), so interpolating it here is
-        safe; ``limit`` stays a bound ``?`` parameter.
+        safe; ``limit`` stays a bound ``?`` parameter. ``limit`` is rejected below 1 because SQLite
+        reads a NEGATIVE LIMIT as *no limit* — the CLI rejects that at parse time (``positive_int``),
+        and this is the store-level backstop so a future non-CLI caller cannot reintroduce an
+        unbounded scan by passing a computed value through (Mira Low, review 4752923085). Raise
+        rather than clamp: this repo's boundary convention is fail-loud, and ``ValueError`` is
+        already an ``_INGEST_FAULTS`` member so it could never crash the watch loop.
         """
+        if limit < 1:
+            raise ValueError(
+                f"limit must be >= 1, got {limit} (a negative SQLite LIMIT is unbounded)"
+            )
         with self._connect() as conn:
             cursor = conn.execute(
                 f"SELECT * FROM bag_manifest ORDER BY {order_by} LIMIT ?",

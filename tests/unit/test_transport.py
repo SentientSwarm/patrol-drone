@@ -15,23 +15,38 @@ exercised against a local stand-in in test_upload_daemon / the stand-in integrat
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from upload_daemon.transport import RsyncSshTransport, S3Transport, Transport
+from upload_daemon.transport import (
+    _TRANSFER_TIMEOUT_S,
+    RsyncSshTransport,
+    S3Transport,
+    Transport,
+)
 
 
 class _RecordingRunner:
-    """A stand-in for subprocess.run that records the argv and returns a chosen return code."""
+    """A stand-in for the real runner: records the argv + timeout and returns a chosen return code."""
 
     def __init__(self, returncode: int) -> None:
         self.returncode = returncode
         self.calls: list[list[str]] = []
+        self.timeouts: list[float] = []
 
-    def __call__(self, argv: list[str]) -> int:
+    def __call__(self, argv: list[str], timeout_s: float) -> int:
         self.calls.append(list(argv))
+        self.timeouts.append(timeout_s)
         return self.returncode
+
+
+class _TimingOutRunner:
+    """A runner that always expires — models a wedged rsync/SSH the timeout had to kill (F-03)."""
+
+    def __call__(self, argv: list[str], timeout_s: float) -> int:
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout_s)
 
 
 # TS-1: RsyncSshTransport.send copies a file to target; returns True on success.
@@ -77,6 +92,37 @@ def test_rsync_send_uses_archive_flag() -> None:
 def test_rsync_send_returns_false_on_failure() -> None:
     runner = _RecordingRunner(returncode=23)  # rsync partial-transfer error
     transport = RsyncSshTransport(runner=runner)
+
+    ok = transport.send(Path("/bags/b.mcap"), "dgx:/data/")
+
+    assert ok is False
+
+
+# F-03 (Mira Medium, review 4752923085): the transfer is BOUNDED — the configured timeout reaches the
+# runner, so a wedged rsync/SSH can be killed instead of parking the serial watch loop forever.
+def test_rsync_send_passes_the_configured_timeout() -> None:
+    runner = _RecordingRunner(returncode=0)
+    transport = RsyncSshTransport(runner=runner, timeout_s=42.0)
+
+    transport.send(Path("/bags/b.mcap"), "dgx:/data/")
+
+    assert runner.timeouts == [42.0]
+
+
+# F-03: the default is the module constant, so an operator who sets nothing still gets a bound.
+def test_rsync_send_defaults_to_the_module_timeout() -> None:
+    runner = _RecordingRunner(returncode=0)
+
+    RsyncSshTransport(runner=runner).send(Path("/bags/b.mcap"), "dgx:/data/")
+
+    assert runner.timeouts == [_TRANSFER_TIMEOUT_S]
+
+
+# F-03: an expired transfer is a RECOVERABLE failure — reported exactly like a non-zero rsync exit
+# (False), never propagated. That keeps retry semantics in ONE place: the daemon's _send_with_retry
+# backoff handles it, rather than TimeoutExpired escaping into the watch loop and killing the daemon.
+def test_rsync_send_reports_timeout_as_a_recoverable_failure() -> None:
+    transport = RsyncSshTransport(runner=_TimingOutRunner())
 
     ok = transport.send(Path("/bags/b.mcap"), "dgx:/data/")
 

@@ -14,18 +14,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
 import time
 from pathlib import Path
 
 from _shared.bounded_seen import _BoundedSeen
-from _shared.positive_interval import positive_interval
-from upload_daemon.transport import RsyncSshTransport, Transport
-from upload_daemon.upload_daemon import (
-    UploadDaemon,
-    is_already_uploaded,
-    is_complete,
-    iter_bag_dirs,
-)
+from _shared.positive_interval import positive_interval, positive_timeout
+from upload_daemon.transport import _TRANSFER_TIMEOUT_S, RsyncSshTransport, Transport
+from upload_daemon.upload_daemon import UploadDaemon, is_complete, iter_bag_dirs
 
 logger = logging.getLogger("upload_daemon")
 
@@ -44,10 +40,15 @@ _POLL_INTERVAL_S = 5.0
 # (F-03). Only genuinely-transient faults belong in this set.
 _UPLOAD_FAULTS = (
     OSError,  # rsync binary absent (FileNotFoundError), SSH/socket failure, etc.
+    subprocess.TimeoutExpired,  # a wedged transfer hit --transfer-timeout (F-03). RsyncSshTransport
+    #   already converts expiry to a False return so _send_with_retry backs off, so this is the
+    #   loop-level backstop for a custom Transport that lets it escape — and it keeps the set
+    #   symmetric with ingest's _INGEST_FAULTS, which lists it for the same hazard. NOT an OSError
+    #   subclass (it derives from SubprocessError), so membership is genuinely required, not implied.
 )
 
 
-def _make_transport(kind: str) -> Transport:
+def _make_transport(kind: str, timeout_s: float = _TRANSFER_TIMEOUT_S) -> Transport:
     """Resolve the ``--transport`` flag to a concrete Transport (rsync ships; s3 is a stub).
 
     ``s3`` is a selectable name for interface parity but is unimplemented in Phase 1, so selecting it
@@ -55,7 +56,7 @@ def _make_transport(kind: str) -> Transport:
     an ``S3Transport.send`` that only raises (F-03).
     """
     if kind == "rsync":
-        return RsyncSshTransport()
+        return RsyncSshTransport(timeout_s=timeout_s)
     if kind == "s3":
         raise SystemExit(
             "--transport s3 is an OQ-8 parity stub, not implemented in Phase 1; "
@@ -70,6 +71,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target", required=True, help="rsync/SSH dest or local stand-in dir")
     parser.add_argument("--transport", default="rsync", choices=("rsync", "s3"))
     parser.add_argument("--poll-interval", type=positive_interval, default=_POLL_INTERVAL_S)
+    parser.add_argument(
+        "--transfer-timeout",
+        type=positive_timeout,
+        default=_TRANSFER_TIMEOUT_S,
+        help="seconds before a wedged transfer is killed and retried",
+    )
     return parser.parse_args(argv)
 
 
@@ -93,7 +100,10 @@ def _drain_once(daemon: UploadDaemon, watch_dir: Path, uploaded: _BoundedSeen) -
     for bag in iter_bag_dirs(watch_dir):
         if bag in uploaded or not is_complete(bag):
             continue
-        if is_already_uploaded(bag):
+        # Durable skip is asked of the DAEMON, not the module: only it knows the configured --target,
+        # and a receipt written for a PREVIOUS target must not suppress the transfer to a new one
+        # (F-02, review 4752923085).
+        if daemon.is_already_uploaded(bag):
             uploaded.add(
                 bag
             )  # durable skip: remember it this run, don't re-stat the marker each poll
@@ -122,7 +132,9 @@ def _watch_loop(daemon: UploadDaemon, watch_dir: Path, poll_interval: float) -> 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s upload_daemon %(message)s")
     args = _parse_args(argv)
-    daemon = UploadDaemon(transport=_make_transport(args.transport), target=args.target)
+    daemon = UploadDaemon(
+        transport=_make_transport(args.transport, args.transfer_timeout), target=args.target
+    )
     logger.info("watching %s -> %s (%s)", args.watch, args.target, args.transport)
     _watch_loop(daemon, args.watch, args.poll_interval)
 

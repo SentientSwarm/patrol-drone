@@ -104,6 +104,50 @@ def _metadata_topic_counts(info: dict) -> dict[str, int]:
     return topic_counts
 
 
+def _declared_payloads(info: dict) -> list[str]:
+    """The storage files ``metadata.yaml`` declares under ``relative_file_paths`` (possibly none).
+
+    Absent on a document that predates/omits the field — that is the review's "where available"
+    hedge, so an empty list is a legitimate no-op, not a fault. A non-list value IS a fault: it
+    normalizes to ValueError (an _INGEST_FAULTS member) like every other shape guard in this module.
+    """
+    paths = info.get("relative_file_paths", [])
+    if not isinstance(paths, list):
+        raise ValueError(
+            f"metadata.yaml relative_file_paths has unexpected shape "
+            f"(expected list, got {type(paths).__name__})"
+        )
+    return [str(p) for p in paths]
+
+
+def _require_declared_payloads(bag_path: Path, info: dict) -> None:
+    """Every payload ``metadata.yaml`` declares must exist under ``bag_path`` as a REAL file.
+
+    The shared bag-layout validator proves *a* payload is present; this proves the payloads this
+    document describes are the ones on disk. Without it the structured branch below derives a
+    duration and a topic map purely from the DESCRIPTION of storage files — the review's exact
+    objection ("the metadata parser can derive facts without opening an MCAP", Mira High, review
+    4752923085) — so a dir carrying a real metadata.yaml plus an unrelated stray ``.mcap`` would
+    still land a fully-populated manifest row for facts nothing on disk backs. Symlinks are refused
+    for the same reason every other landing-dir read refuses them: the writers are remote.
+    ``ValueError`` is an ``_INGEST_FAULTS`` member, so the watch loop logs + skips + retries.
+    """
+    for relative in _declared_payloads(info):
+        payload = bag_path / relative
+        if payload.is_symlink() or not payload.is_file():
+            raise ValueError(
+                f"metadata.yaml declares payload {relative!r} that is missing or symlinked: "
+                f"{bag_path}"
+            )
+
+
+def _facts_from_info(info: dict) -> BagFacts:
+    """Derive :class:`BagFacts` from an already-loaded ``rosbag2_bagfile_information`` mapping."""
+    duration_ns = _metadata_duration_ns(info)
+    topic_counts = _metadata_topic_counts(info)
+    return BagFacts(duration_s=float(duration_ns) / 1e9, topic_counts=topic_counts)
+
+
 def parse_bag_metadata(text: str) -> BagFacts:
     """Parse a rosbag2 ``metadata.yaml`` document into derived :class:`BagFacts`.
 
@@ -117,10 +161,7 @@ def parse_bag_metadata(text: str) -> BagFacts:
     ``ValueError`` — the caught ``_INGEST_FAULTS`` fault — rather than an uncaught ``AttributeError``
     that would crash the whole ingest watcher on a single malformed bag (F-02).
     """
-    info = _require_bag_information(text)
-    duration_ns = _metadata_duration_ns(info)
-    topic_counts = _metadata_topic_counts(info)
-    return BagFacts(duration_s=float(duration_ns) / 1e9, topic_counts=topic_counts)
+    return _facts_from_info(_require_bag_information(text))
 
 
 def read_bag_facts(bag_path: Path, timeout_s: float = _BAG_INFO_TIMEOUT_S) -> BagFacts:
@@ -130,10 +171,17 @@ def read_bag_facts(bag_path: Path, timeout_s: float = _BAG_INFO_TIMEOUT_S) -> Ba
     parse (which needs a sourced ROS env and is ``timeout_s``-bounded so a stuck ``ros2`` can't block
     the serial ingest loop) is the fallback for a bag missing/with an unreadable metadata file. Both
     paths derive facts *from the bag* — never the sidecar (the dumb-producer invariant, design §3.4).
+
+    The structured branch additionally cross-checks the payloads ``metadata.yaml`` DECLARES against
+    what is on disk (:func:`_require_declared_payloads`) — the review's "validates metadata
+    references where available" — so facts are never derived from a description of storage files
+    that aren't there. The document is parsed once and reused, so the guard costs no second YAML load.
     """
     metadata = bag_path / "metadata.yaml"
     if metadata.is_file():
-        return parse_bag_metadata(metadata.read_text())
+        info = _require_bag_information(metadata.read_text())
+        _require_declared_payloads(bag_path, info)
+        return _facts_from_info(info)
     completed = subprocess.run(
         ["ros2", "bag", "info", str(bag_path)],
         check=True,

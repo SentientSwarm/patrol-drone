@@ -5,6 +5,7 @@ the ManifestStore (design §4.2.4, LR-4):
 
   * ``--recent N`` lists the N most-recent bags with their LR-4 fields (mission/time/duration/topics).
   * ``--mission <id>`` filters to one mission.
+  * ``--all`` lists every indexed bag under a bounded cap (F-04's explicit all-results mode).
   * each rendered line carries the bag id, mission, duration, and a topic summary so the operator
     can identify a run without opening the bag.
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from ingest.manifest_query import render_rows, run
 from ingest.manifest_store import ManifestRow, ManifestStore
 
@@ -137,3 +139,50 @@ def test_empty_manifest_renders_notice(tmp_path: Path, capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 0
     assert "no bags" in out.lower()
+
+
+# F-04 (Mira Low, review 4752923085): `--recent` below 1 is rejected at PARSE time. SQLite reads a
+# negative LIMIT as *no limit*, so `--recent -1` silently dumped the entire manifest (one line per bag
+# ever recorded on a long-retention DGX) and `--recent 0` returned nothing. argparse `type=` failure
+# exits non-zero with an actionable message instead.
+@pytest.mark.parametrize("raw", ["-1", "0", "-10"])
+def test_recent_rejects_non_positive(tmp_path: Path, raw: str) -> None:
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(SystemExit):
+        run(["--recent", raw], store=store)
+
+
+# F-04 boundary: 1 is still a usable value — the guard rejects "below one", not "small".
+def test_recent_accepts_one(tmp_path: Path, capsys) -> None:
+    store = ManifestStore(tmp_path / "m.db")
+    _seed(store)
+
+    rc = run(["--recent", "1"], store=store)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert len(out.strip().splitlines()) == 1
+
+
+# F-04, the review's OTHER branch ("or define an explicit, bounded all-results mode"): `--all` lists
+# everything — but still as a BOUNDED query, so no code path reaches SQLite with an unbounded LIMIT.
+def test_all_lists_every_row(tmp_path: Path, capsys) -> None:
+    store = ManifestStore(tmp_path / "m.db")
+    _seed(store)
+
+    rc = run(["--all"], store=store)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "patrol_a_20260626_080740.mcap" in out
+    assert "survey_b_20260626_090000.mcap" in out
+
+
+# `--all` joins the existing mutually-exclusive group, so combining it with `--recent` is an argparse
+# error rather than a silent precedence rule the operator has to guess.
+def test_all_is_mutually_exclusive_with_recent(tmp_path: Path) -> None:
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(SystemExit):
+        run(["--all", "--recent", "5"], store=store)

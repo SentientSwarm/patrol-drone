@@ -449,7 +449,8 @@ def _replace_with_symlink(path: Path) -> None:
 @pytest.mark.parametrize("symlinked", ["metadata.yaml", "staging"])
 def test_finalize_no_ops_on_a_symlinked_precondition(staged_bag_dir, symlinked: str) -> None:
     # F-02: a symlinked metadata.yaml or staging file is NOT a finalizable artifact (parity with the
-    # uploader's _is_regular_file), so finalize no-ops (None) and writes no REAL <bag>.meta.json —
+    # uploader's _shared.bag_layout.is_regular_file), so finalize no-ops (None) and writes no REAL
+    # <bag>.meta.json —
     # letting the runner's outcome gate fail loudly instead of blessing a symlink-planted bag.
     if symlinked == "metadata.yaml":
         _replace_with_symlink(staged_bag_dir / "metadata.yaml")

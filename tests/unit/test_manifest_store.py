@@ -162,3 +162,19 @@ def test_connect_passes_a_nonzero_busy_timeout(
     assert seen, "sqlite3.connect was never called"
     assert all(t >= ManifestStore._BUSY_TIMEOUT_S for t in seen)
     assert ManifestStore._BUSY_TIMEOUT_S > 0.0  # the busy budget must not regress to 0
+
+
+# F-04 store-level backstop (Mira Low, review 4752923085): SQLite reads a NEGATIVE LIMIT as *no
+# limit*, so an unbounded value must never reach the query. The CLI rejects it at parse time
+# (`positive_int`); this guards a future non-CLI caller passing a computed value through. Fail-loud
+# (raise, not clamp) per this repo's boundary convention — ValueError is an _INGEST_FAULTS member, so
+# it can never crash the watch loop. Parametrized over both public entry points, one table.
+@pytest.mark.parametrize(
+    "method", ["query_recent", "query_recently_recorded"], ids=["by-ingest", "by-record"]
+)
+@pytest.mark.parametrize("limit", [-1, 0])
+def test_query_rejects_non_positive_limit(tmp_path: Path, method: str, limit: int) -> None:
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(ValueError, match="limit must be >= 1"):
+        getattr(store, method)(limit)

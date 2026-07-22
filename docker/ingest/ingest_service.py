@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ingest.bag_layout import is_valid_bag_dir
 from ingest.manifest_store import ManifestRow, ManifestStore
 
 # The sidecar fields that feed typed manifest columns (identity + record time). Validated as
@@ -42,15 +43,23 @@ def _validate_sidecar_fields(sidecar: dict, sidecar_path: Path) -> None:
 
 
 def _require_finalized_bag(bag_path: Path) -> None:
-    """The bag guard: ``metadata.yaml`` must be present and a REAL file, else fail loudly.
+    """The bag guard: the dir must satisfy the SHARED bag-layout validator, else fail loudly.
 
-    A symlinked ``metadata.yaml`` is refused (Mira Medium, review 4728294643): the landing dir's
-    writers are remote, and a planted symlink would redirect the read outside the landing tree.
+    Delegates to :func:`~_shared.bag_layout.is_valid_bag_dir` — the same predicate the upload
+    boundary uses — so "is this a real bag" cannot drift between the two halves of the pipeline
+    (Mira High, review 4752923085). It requires a real, non-symlink ``metadata.yaml`` (a planted
+    symlink would redirect the read outside the landing tree, whose writers are remote — Mira
+    Medium, review 4728294643) AND at least one real ``.mcap`` payload. The payload requirement is
+    the F-01 fix: without it, a dir holding only a plausible ``metadata.yaml`` + sidecar parses
+    cleanly through ``bag_reader``'s structured branch and lands a fully-populated manifest row for
+    an UNREPLAYABLE artifact — ingest deriving truth from a *description* of a bag that isn't there,
+    inverting the §3.4 premise. ``FileNotFoundError`` is an ``_INGEST_FAULTS`` member, so the watch
+    loop logs + skips.
     """
-    meta = bag_path / "metadata.yaml"
-    if meta.is_symlink() or not meta.is_file():
+    if not is_valid_bag_dir(bag_path):
         raise FileNotFoundError(
-            f"not a finalized bag dir (no metadata.yaml, or symlinked): {bag_path}"
+            f"not a valid bag dir (missing/symlinked metadata.yaml, or no real .mcap payload): "
+            f"{bag_path}"
         )
 
 
@@ -98,8 +107,9 @@ class IngestService:
         """Index ``bag_path`` (a finalized rosbag2 bag dir) using ``sidecar_path`` for identity.
 
         Guards (all before any manifest write, so a bad input is never silently half-indexed,
-        §4.4.5): ``_require_finalized_bag`` — real ``metadata.yaml`` present, symlink refused;
-        ``_load_valid_sidecar`` — real file, JSON object, identity schema, matching ``bag_uri``.
+        §4.4.5): ``_require_finalized_bag`` — the shared bag-layout validator (real ``metadata.yaml``
+        + a real ``.mcap`` payload, symlinks refused); ``_load_valid_sidecar`` — real file, JSON
+        object, identity schema, matching ``bag_uri``.
         Every guard raise is an ``_INGEST_FAULTS`` member, so the watch loop logs + skips.
         """
         _require_finalized_bag(bag_path)

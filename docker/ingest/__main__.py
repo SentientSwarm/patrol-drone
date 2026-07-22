@@ -22,6 +22,7 @@ from pathlib import Path
 
 import yaml
 
+from ingest.bag_layout import is_regular_file
 from ingest.bag_reader import read_bag_facts
 from ingest.bounded_seen import _BoundedSeen
 from ingest.ingest_service import IngestService
@@ -66,17 +67,6 @@ def _sidecar_for(bag: Path) -> Path:
     return bag.with_name(bag.name + ".meta.json")
 
 
-def _is_regular_file(path: Path) -> bool:
-    """True for a plain file that is NOT a symlink — the landing boundary refuses redirects.
-
-    The DGX landing dir's writers are remote by design, so a planted symlink redirecting the
-    metadata/sidecar reads outside the landing tree is refused here (Mira Medium, review
-    4728294643). Mirrors ``analysis/upload_daemon/upload_daemon._is_regular_file`` — the two loops
-    keep their documented symmetry (they cannot share code across the deploy boundary).
-    """
-    return path.is_file() and not path.is_symlink()
-
-
 def _iter_bag_dirs(watch_dir: Path) -> list[Path]:
     """Candidate bag directories under ``watch_dir`` (sorted; empty if the dir doesn't exist yet).
 
@@ -116,7 +106,10 @@ def _drain_once(service: IngestService, watch_dir: Path, indexed: _BoundedSeen) 
     """
     for bag in _iter_bag_dirs(watch_dir):
         sidecar = _sidecar_for(bag)
-        if bag in indexed or not _is_regular_file(sidecar):  # symlinked sidecar refused (Mira)
+        # The sidecar must be a real file: a planted symlink in the landing dir (whose writers are
+        # remote by design) would redirect the read outside the tree (Mira, review 4728294643). The
+        # bag dir's own layout is validated by IngestService.index's shared guard, not here.
+        if bag in indexed or not is_regular_file(sidecar):
             continue
         seen = _already_indexed_safe(service, bag)
         if seen is None:  # dedup check hit a caught fault → skip this poll, retry later

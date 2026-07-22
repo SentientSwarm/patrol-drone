@@ -141,6 +141,28 @@ def test_index_raises_on_unfinalized_bag_dir(tmp_path: Path) -> None:
     assert store.query_recent(10) == []  # nothing indexed
 
 
+# F-01 (Mira High, review 4752923085): a finalized-LOOKING bag dir with no REAL .mcap payload is
+# refused before any manifest write. Without this, the structured bag_reader branch parses the
+# metadata cleanly and lands a fully-populated manifest row for an UNREPLAYABLE artifact — ingest
+# deriving truth from a description of a bag that isn't there. Both shapes the review names: a
+# metadata-only dir, and a dir whose only payload is a symlink out of the landing tree.
+@pytest.mark.parametrize("payload", ["none", "symlink"], ids=["no-mcap", "symlinked-mcap"])
+def test_index_raises_on_bag_dir_without_real_mcap_payload(tmp_path: Path, payload: str) -> None:
+    bag = _make_bag_dir(tmp_path)
+    (bag / f"{bag.name}_0.mcap").unlink()  # strip the real payload _make_bag_dir wrote
+    if payload == "symlink":
+        redirect = tmp_path / "payload-elsewhere.mcap"
+        redirect.write_bytes(b"\x89MCAP0\r\n")
+        (bag / f"{bag.name}_0.mcap").symlink_to(redirect)
+    sidecar = _write_sidecar(tmp_path / (bag.name + ".meta.json"))
+    store = ManifestStore(tmp_path / "m.db")
+
+    with pytest.raises(FileNotFoundError, match="payload"):
+        IngestService(store, bag_facts=_fixed_facts()).index(bag, sidecar)
+
+    assert store.query_recent(10) == []  # nothing indexed for a payload-less bag
+
+
 # TS-11: a wholly absent bag path also fails loudly before any manifest write.
 def test_index_raises_on_missing_bag(tmp_path: Path) -> None:
     bag = tmp_path / "absent"  # never created
@@ -209,6 +231,9 @@ def test_index_raises_on_sidecar_bag_uri_mismatch(tmp_path: Path) -> None:
 def test_index_raises_on_symlinked_metadata_yaml(tmp_path: Path) -> None:
     bag = tmp_path / "patrol_symmeta_20260626_080740"
     bag.mkdir()
+    # A real payload: the SYMLINKED metadata.yaml must be the ONLY reason this is refused, or the
+    # shared validator's payload requirement (F-01) would silently take over this symlink regression.
+    (bag / f"{bag.name}_0.mcap").write_bytes(b"\x89MCAP0\r\n")
     real_meta = tmp_path / "redirect-target-metadata.yaml"
     real_meta.write_text("rosbag2_bagfile_information:\n")
     (bag / "metadata.yaml").symlink_to(real_meta)

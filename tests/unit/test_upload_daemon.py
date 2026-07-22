@@ -26,10 +26,13 @@ import pytest
 from upload_daemon.upload_daemon import (
     UploadDaemon,
     is_already_uploaded,
+    is_complete,
     iter_bag_dirs,
     sidecar_path_for,
     upload_marker_for,
 )
+
+_TARGET = "dgx:/data/bags/"
 
 
 class _FakeTransport:
@@ -47,17 +50,32 @@ class _FakeTransport:
         return True
 
 
-def _make_bag(tmp_path: Path, *, with_sidecar: bool, with_metadata: bool = True) -> Path:
+def _make_bag(
+    tmp_path: Path,
+    *,
+    with_sidecar: bool,
+    with_metadata: bool = True,
+    mcap: str = "real",
+) -> Path:
     """Create a rosbag2 bag directory under tmp_path; return the bag-directory path.
 
     The recorder writes each run as a directory ``<name>/`` (the ``ros2 bag record -o`` URI) holding
     a nested ``<name>_0.mcap`` and — only on a clean finalize — a ``metadata.yaml``. The sidecar is a
     *sibling* of the directory: ``<name>.meta.json``. ``with_metadata=False`` models a recorder
-    killed before finalize (no ``metadata.yaml`` ⇒ not a complete bag).
+    killed before finalize (no ``metadata.yaml`` ⇒ not a complete bag). ``mcap`` selects the payload
+    shape for the F-01 cases: ``"real"`` (the normal bag), ``"none"`` (a metadata-only directory —
+    recorder killed before the MCAP flushed, or a half-landed rsync) or ``"symlink"`` (a payload that
+    redirects outside the watched tree).
     """
     bag = tmp_path / "patrol_x_20260629_120000"
     bag.mkdir()
-    (bag / "patrol_x_20260629_120000_0.mcap").write_bytes(b"\x89MCAP0\r\n")
+    payload = bag / "patrol_x_20260629_120000_0.mcap"
+    if mcap == "real":
+        payload.write_bytes(b"\x89MCAP0\r\n")
+    elif mcap == "symlink":
+        redirect = tmp_path / "payload-elsewhere.mcap"
+        redirect.write_bytes(b"\x89MCAP0\r\n")
+        payload.symlink_to(redirect)
     if with_metadata:
         (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n")
     if with_sidecar:
@@ -213,7 +231,7 @@ def test_symlinked_upload_marker_is_not_already_uploaded(tmp_path: Path) -> None
     redirect_target.write_text("x")
     upload_marker_for(bag).symlink_to(redirect_target)
 
-    assert is_already_uploaded(bag) is False
+    assert is_already_uploaded(bag, _TARGET) is False
 
 
 # F-04 write side: the daemon only trusts markers it EXCLUSIVELY creates. A pre-planted file or
@@ -248,7 +266,7 @@ def test_confirmed_marker_is_seen_by_the_next_poll(tmp_path: Path) -> None:
 
     assert _daemon(transport).on_bag_complete(bag) is True
     assert not upload_marker_for(bag).is_symlink()
-    assert is_already_uploaded(bag) is True
+    assert is_already_uploaded(bag, _TARGET) is True
 
 
 # F-02 (review 4748505221) core: a stale/pre-planted EMPTY plain marker — a bare `touch` or a
@@ -258,27 +276,35 @@ def test_empty_stale_marker_is_not_already_uploaded(tmp_path: Path) -> None:
     bag = _make_bag(tmp_path, with_sidecar=True)
     upload_marker_for(bag).write_text("")  # a bare `touch` — real file, but no receipt
 
-    assert is_already_uploaded(bag) is False
+    assert is_already_uploaded(bag, _TARGET) is False
 
 
 # F-02: any marker that is not a well-formed receipt for THIS bag (empty, non-JSON, missing the
 # files list, or naming other files) reads as "not uploaded" so the bag retries — a stale/pre-planted
 # marker can no longer silently suppress the transfer, regardless of its exact bad shape.
+# NB: the two JSON bodies carry the CANONICAL target ("dgx:/data/bags", no trailing slash) on purpose.
+# The target gate now runs BEFORE the files gate, so a raw "dgx:/data/bags/" body would be rejected on
+# the target and these two rows would stop testing the `files` defect their ids name.
 @pytest.mark.parametrize(
     "body",
-    ["", "not json", '{"target": "dgx:/data/bags/"}', '{"target": "x", "files": ["other"]}'],
+    [
+        "",
+        "not json",
+        '{"target": "dgx:/data/bags"}',
+        '{"target": "dgx:/data/bags", "files": ["other"]}',
+    ],
     ids=["empty", "non-json", "missing-files", "wrong-files"],
 )
 def test_malformed_marker_is_not_already_uploaded(tmp_path: Path, body: str) -> None:
     bag = _make_bag(tmp_path, with_sidecar=True)
     upload_marker_for(bag).write_text(body)
 
-    assert is_already_uploaded(bag) is False
+    assert is_already_uploaded(bag, _TARGET) is False
 
 
-# F-02: a CONFIRMED transfer writes a valid, self-describing receipt — the transfer target plus the
-# sorted covered filenames (bag dir + sidecar) — so is_already_uploaded is bound to a real transfer,
-# not a bare sentinel. This is the write-side pair to the malformed-marker rejection above.
+# F-02: a CONFIRMED transfer writes a valid, self-describing receipt — the CANONICAL transfer target
+# plus the sorted covered filenames (bag dir + sidecar) — so is_already_uploaded is bound to a real
+# transfer, not a bare sentinel. This is the write-side pair to the malformed-marker rejection above.
 def test_confirmed_marker_is_a_valid_receipt(tmp_path: Path) -> None:
     transport = _FakeTransport()
     bag = _make_bag(tmp_path, with_sidecar=True)
@@ -286,5 +312,78 @@ def test_confirmed_marker_is_a_valid_receipt(tmp_path: Path) -> None:
     assert _daemon(transport, target="dgx:/data/bags/").on_bag_complete(bag) is True
 
     receipt = json.loads(upload_marker_for(bag).read_text())
-    assert receipt["target"] == "dgx:/data/bags/"
+    assert (
+        receipt["target"] == "dgx:/data/bags"
+    )  # canonicalized on the way in (trailing / stripped)
     assert receipt["files"] == sorted([bag.name, sidecar_path_for(bag).name])
+
+
+# F-01 (Mira High, review 4752923085): a finalized-LOOKING bag dir with no real MCAP payload must not
+# ship. Both shapes the review names are covered: a metadata+sidecar-only directory (a recorder killed
+# before the MCAP flushed, or a half-landed rsync) and a directory whose only .mcap is a symlink
+# redirecting outside the watched tree. Either would otherwise upload and then index as a
+# fully-populated manifest row for an unreplayable bag.
+@pytest.mark.parametrize("mcap", ["none", "symlink"], ids=["no-mcap", "symlinked-mcap"])
+def test_bag_without_a_real_mcap_payload_is_not_uploaded(tmp_path: Path, mcap: str) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=True, mcap=mcap)
+
+    assert is_complete(bag) is False
+    assert _daemon(transport).on_bag_complete(bag) is False
+    assert transport.sent == []
+
+
+# F-02 (review 4752923085), the destination-reconfiguration case the review names: a receipt written
+# for target A must NOT read as "already uploaded" once the operator repoints the daemon at target B,
+# or every bag already on disk at cutover is silently skipped forever.
+def test_receipt_for_a_different_target_is_not_already_uploaded(tmp_path: Path) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    assert _daemon(transport, target="dgx1:/data/bags/").on_bag_complete(bag) is True
+
+    assert is_already_uploaded(bag, "dgx2:/data/bags/") is False
+
+
+# F-02 inverse: the SAME target still reads as uploaded, so the H-09/F-05 durable-skip guarantee does
+# not silently regress into re-rsyncing every bag on every poll.
+def test_receipt_for_the_same_target_is_still_already_uploaded(tmp_path: Path) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    assert _daemon(transport, target="dgx1:/data/bags/").on_bag_complete(bag) is True
+
+    assert is_already_uploaded(bag, "dgx1:/data/bags/") is True
+
+
+# F-02: the comparison is CANONICAL, not literal — the same destination written with/without a
+# trailing slash or with stray whitespace must still match, or a cosmetic --target edit would
+# re-upload the entire retention window. The write and read sides share one normalizer, so they
+# cannot drift.
+@pytest.mark.parametrize(
+    "configured",
+    ["dgx:/data/bags", "dgx:/data/bags/", "dgx:/data/bags//", "  dgx:/data/bags/  "],
+    ids=["bare", "trailing-slash", "double-slash", "whitespace"],
+)
+def test_trailing_slash_variants_match_the_same_target(tmp_path: Path, configured: str) -> None:
+    transport = _FakeTransport()
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    assert _daemon(transport, target="dgx:/data/bags/").on_bag_complete(bag) is True
+
+    assert is_already_uploaded(bag, configured) is True
+
+
+# F-03 (Mira Medium, review 4752923085): a WEDGED transfer must be retried like any other recoverable
+# failure — the retry loop actually runs (it sits OUTSIDE the send that used to never return) and the
+# bag is left un-marked so a later poll tries again. The fake reports failure exactly the way
+# RsyncSshTransport reports an expired timeout (a False return, not a raise).
+def test_timed_out_transfer_is_retried_then_left_unmarked(tmp_path: Path) -> None:
+    transport = _FakeTransport(results=[False, False, False, False])
+    bag = _make_bag(tmp_path, with_sidecar=True)
+
+    assert _daemon(transport, max_retries=3, backoff_s=0).on_bag_complete(bag) is False
+
+    bag_attempts = [local for local, _ in transport.sent if local == str(bag)]
+    assert len(bag_attempts) >= 2  # retry/backoff ran rather than being parked inside one send
+    assert not upload_marker_for(bag).exists()  # no receipt → retried on a later poll

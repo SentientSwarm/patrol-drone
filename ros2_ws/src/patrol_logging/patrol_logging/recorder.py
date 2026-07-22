@@ -286,7 +286,7 @@ def read_sidecar_inputs(path: Path) -> tuple[RecordingRun, list[str]]:
 def _is_regular_file(path: Path) -> bool:
     """A real file at ``path``, not a symlink (mirrors the uploader's predicate, F-02).
 
-    The finalize boundary must agree with the uploader (``upload_daemon._is_regular_file``): a
+    The finalize boundary must agree with the uploader (``_shared.bag_layout.is_regular_file``): a
     symlinked ``metadata.yaml`` / staging / sidecar is NOT a finalizable artifact, so a planted
     symlink can neither drive a spurious "finalized" nor be written through. Following-``exists()``
     let a symlink pass the recorder while the uploader rejected the same bag — the two halves

@@ -230,7 +230,7 @@ print(f"wrote bag sidecar {written}" if written else "sidecar already present (o
     # must be a FAILURE, not a warning-then-success. Checking the artifact (not the command's exit
     # code) also catches a finalize that "succeeded" without writing (no staging crumb).
     # -f follows symlinks; require a REGULAR file (not a symlink) so a planted <bag>.meta.json
-    # symlink can't fake a finalized sidecar — parity with the uploader's _is_regular_file (F-02).
+    # symlink can't fake a finalized sidecar — parity with _shared.bag_layout.is_regular_file (F-02).
     if [[ ! -f "${bag_dir}.meta.json" || -L "${bag_dir}.meta.json" ]]; then
       warn "finalized bag ${bag_dir} has NO sidecar after finalize — not ingestable"
       missing=$((missing + 1))

@@ -5,8 +5,9 @@ its sidecar to the configured target via a :class:`~upload_daemon.transport.Tran
 nothing else — no indexing, no parsing, no fact derivation (the dumb-producer invariant, design
 §3.4); all of that happens DGX-side in the ingest service.
 
-"Completed" is an atomic marker: a finalized ``.mcap`` AND its ``<bag>.meta.json`` sidecar both
-present. A bag without its sidecar (recorder killed mid-run) is never shipped (§4.4.5). On transfer
+"Completed" is an atomic marker: a finalized bag dir carrying a real ``.mcap`` payload AND its
+``<bag>.meta.json`` sidecar (the shared ``_shared.bag_layout`` validator, also applied by ingest).
+A bag without its sidecar (recorder killed mid-run) is never shipped (§4.4.5). On transfer
 failure the daemon retries with backoff and leaves the bag on disk — the producer is the source of
 truth until a transfer is confirmed, so no data is ever lost to a flaky link.
 """
@@ -18,6 +19,7 @@ import os
 import time
 from pathlib import Path
 
+from _shared.bag_layout import is_regular_file, is_valid_bag_dir
 from upload_daemon.transport import Transport
 
 
@@ -26,34 +28,11 @@ def sidecar_path_for(bag_path: Path) -> Path:
     return bag_path.with_name(bag_path.name + ".meta.json")
 
 
-def _is_regular_file(path: Path) -> bool:
-    """True for a plain file that is NOT a symlink — the watch boundary refuses redirects.
-
-    A symlinked ``metadata.yaml``/sidecar planted in a writable watch dir would redirect reads (and
-    the rsync source) outside the watched tree (Mira Medium, review 4728294643), so every
-    completeness predicate insists on real files. Mirrored by the ingest counterpart
-    (``docker/ingest/__main__``) so the two loops keep their documented symmetry.
-    """
-    return path.is_file() and not path.is_symlink()
-
-
-def is_finalized_bag_dir(bag_path: Path) -> bool:
-    """True iff ``bag_path`` is a rosbag2 bag directory rosbag2 has finalized.
-
-    The M7 recorder writes each run as a directory ``<name>/`` (the ``ros2 bag record -o`` URI) with
-    the MCAP nested inside; rosbag2 drops ``metadata.yaml`` into it only on a clean finalize. So the
-    finalized-bag marker is the directory's ``metadata.yaml`` — not a flat ``<name>.mcap`` (which
-    never exists at the watch-dir top level). The marker must be a real file (a symlinked
-    ``metadata.yaml`` is refused). The same predicate is the ingest service's bag guard.
-    """
-    return _is_regular_file(bag_path / "metadata.yaml")
-
-
 def iter_bag_dirs(watch_dir: Path) -> list[Path]:
     """Return the candidate bag directories directly under ``watch_dir`` (sorted, deterministic).
 
     rosbag2 writes each run as its own directory; the upload + ingest loops both poll for these.
-    Completeness/finalization is decided per-dir by :func:`is_complete` / :func:`is_finalized_bag_dir`,
+    Completeness is decided per-dir by :func:`is_complete` (the shared bag-layout validator),
     not here — this only enumerates the candidates so both loops share one discovery rule. Returns
     empty if ``watch_dir`` doesn't exist yet (the daemon may start before the first recording run
     creates it), mirroring the ingest sibling ``docker/ingest/__main__._iter_bag_dirs``. Symlinked
@@ -72,14 +51,16 @@ def iter_bag_dirs(watch_dir: Path) -> list[Path]:
 
 
 def is_complete(bag_path: Path) -> bool:
-    """A bag is complete iff it is a finalized bag dir AND its sidecar both exist (upload marker).
+    """A bag is complete iff it is a VALID bag dir AND its sidecar is present (the upload marker).
 
-    Refuses symlinks at every component (the bag dir itself, ``metadata.yaml``, the sidecar) even
-    when called directly rather than via discovery — a symlinked bag is never shippable (Mira).
+    "Valid" is the shared :func:`~_shared.bag_layout.is_valid_bag_dir` predicate — a real directory
+    holding a real ``metadata.yaml`` AND at least one real ``.mcap`` payload, symlinks refused at
+    every component. Requiring the PAYLOAD, not just the finalize marker, is what stops a
+    metadata-only directory — a recorder killed before the MCAP flushed, or a half-landed rsync —
+    from shipping and then indexing as a manifest row for an unreplayable bag (Mira High, review
+    4752923085). The ingest boundary applies the same predicate, so the two cannot drift.
     """
-    if bag_path.is_symlink():
-        return False
-    return is_finalized_bag_dir(bag_path) and _is_regular_file(sidecar_path_for(bag_path))
+    return is_valid_bag_dir(bag_path) and is_regular_file(sidecar_path_for(bag_path))
 
 
 def upload_marker_for(bag_path: Path) -> Path:
@@ -95,16 +76,29 @@ _RECEIPT_TARGET_KEY = "target"
 _RECEIPT_FILES_KEY = "files"
 
 
+def _canonical_target(target: str) -> str:
+    """Normalize a transfer target so the write and read sides of the receipt cannot drift (F-02).
+
+    ``--target`` is raw operator input: ``dgx:/data/bags`` and ``dgx:/data/bags/`` name the SAME
+    destination but serialize differently, so a literal string compare would re-upload every bag on a
+    trailing-slash edit. Normalizing once — here, used by BOTH :func:`_receipt_bytes` and
+    :func:`_is_valid_receipt` — keeps the two in lockstep. Deliberately light (whitespace + trailing
+    separators): this is a comparison key, not a URL parser.
+    """
+    stripped = target.strip()
+    return stripped.rstrip("/") or stripped  # "/" normalizes to itself, not to ""
+
+
 def _receipt_bytes(bag_path: Path, target: str) -> bytes:
     """The JSON transfer receipt written into the marker on a confirmed transfer.
 
-    Records the transfer target and the covered file names (bag dir + sidecar) so
-    :func:`is_already_uploaded` can validate the marker describes *this* bag's transfer rather than
-    trusting a bare sentinel. Kept to structural fields (no digest) — enough to defeat an empty
-    ``touch``-ed or backup-restored marker while staying dependency-light.
+    Records the CANONICAL transfer target and the covered file names (bag dir + sidecar), so
+    :func:`is_already_uploaded` can validate the marker describes *this* bag's transfer *to this
+    destination* rather than trusting a bare sentinel. Kept to structural fields (no digest) — enough
+    to defeat an empty ``touch``-ed or backup-restored marker while staying dependency-light.
     """
     receipt = {
-        _RECEIPT_TARGET_KEY: target,
+        _RECEIPT_TARGET_KEY: _canonical_target(target),
         _RECEIPT_FILES_KEY: sorted([bag_path.name, sidecar_path_for(bag_path).name]),
     }
     return json.dumps(receipt, sort_keys=True).encode()
@@ -127,38 +121,47 @@ def _write_upload_marker(bag_path: Path, target: str) -> None:
         os.close(fd)
 
 
-def _is_valid_receipt(marker: Path, bag_path: Path) -> bool:
-    """True iff ``marker`` is a well-formed transfer receipt covering ``bag_path``.
+def _is_valid_receipt(marker: Path, bag_path: Path, target: str) -> bool:
+    """True iff ``marker`` is a well-formed receipt covering ``bag_path`` sent to ``target``.
 
-    A well-formed receipt names this bag dir and its sidecar under ``files`` and carries a ``target``
-    string. An empty, unparseable, or mismatched marker returns False → the bag is treated as NOT
-    uploaded (retry), so a stale/pre-planted plain sentinel can no longer suppress the transfer.
+    Three gates, all required: parseable JSON object; the recorded target equals the canonical form
+    of the CONFIGURED target (F-02, review 4752923085 — a receipt for a previous ``--target`` must
+    not suppress the transfer to a new one); and ``files`` names this bag dir plus its sidecar. Any
+    miss returns False → the bag reads as NOT uploaded and is retried, the same conservative
+    direction the existing malformed-receipt path already takes. A non-string ``target`` value simply
+    fails the equality, so no separate type check is needed.
     """
     try:
         receipt = json.loads(marker.read_text())
     except (OSError, ValueError):
         return False
-    if not isinstance(receipt, dict) or not isinstance(receipt.get(_RECEIPT_TARGET_KEY), str):
+    if not isinstance(receipt, dict):
         return False
-    expected = sorted([bag_path.name, sidecar_path_for(bag_path).name])
-    return receipt.get(_RECEIPT_FILES_KEY) == expected
+    if receipt.get(_RECEIPT_TARGET_KEY) != _canonical_target(target):
+        return False
+    return receipt.get(_RECEIPT_FILES_KEY) == sorted(
+        [bag_path.name, sidecar_path_for(bag_path).name]
+    )
 
 
-def is_already_uploaded(bag_path: Path) -> bool:
-    """True iff a VALID confirmed-upload receipt exists for ``bag_path`` (the durable skip).
+def is_already_uploaded(bag_path: Path, target: str) -> bool:
+    """True iff a VALID receipt for ``bag_path`` **and** ``target`` exists (the durable skip).
 
     Survives the in-memory LRU's eviction (F-05), so an old bag with its receipt is skipped forever
-    rather than re-rsynced every poll. Two gates, both required, closing the two false-success vectors
-    together (F-04 symlink + F-02 stale plain marker):
-      * symlink-strict — a planted symlink named ``<bag>.uploaded`` is refused (``_is_regular_file``),
-        so a symlink-following read can't mark a never-shipped bag "uploaded".
-      * receipt-validated — the marker body must be a well-formed JSON receipt naming *this* bag +
-        sidecar (``_is_valid_receipt``). An empty ``touch``-ed, backup-restored, or mismatched marker
-        fails the parse and reads as "not uploaded" (retry) — it no longer suppresses the transfer.
+    rather than re-rsynced every poll. Three gates, closing three false-success vectors together:
+      * symlink-strict — a planted symlink named ``<bag>.uploaded`` is refused (``is_regular_file``),
+        so a symlink-following read can't mark a never-shipped bag "uploaded" (F-04, review
+        4731322384).
+      * receipt-validated — the body must be a well-formed JSON receipt naming *this* bag + sidecar,
+        so an empty ``touch``-ed or backup-restored marker no longer suppresses the transfer (F-02,
+        review 4748505221).
+      * target-matched — the receipt's canonical target must equal the CONFIGURED one, so repointing
+        the daemon at a new DGX re-ships every bag still on disk instead of skipping it forever
+        (F-02, review 4752923085).
     The daemon trusts ONLY a real, non-symlink marker it wrote via ``_write_upload_marker``.
     """
     marker = upload_marker_for(bag_path)
-    return _is_regular_file(marker) and _is_valid_receipt(marker, bag_path)
+    return is_regular_file(marker) and _is_valid_receipt(marker, bag_path, target)
 
 
 class UploadDaemon:
@@ -177,12 +180,24 @@ class UploadDaemon:
         self._max_retries = max_retries
         self._backoff_s = backoff_s
 
+    def is_already_uploaded(self, bag_path: Path) -> bool:
+        """True iff a valid receipt for ``bag_path`` names THIS daemon's configured target (F-02).
+
+        The watch loop's durable skip, bound to ``self._target`` — the call site had no destination
+        to compare with before, which is why a receipt written for a previous ``--target``
+        suppressed the transfer to a new one forever (Mira Medium, review 4752923085). Delegates to
+        the module-level :func:`is_already_uploaded` (a method body resolves names at module scope,
+        so this is the free function, not recursion).
+        """
+        return is_already_uploaded(bag_path, self._target)
+
     def on_bag_complete(self, bag_path: Path) -> bool:
         """Ship ``bag_path`` (+ sidecar) if complete; return True only on a confirmed transfer.
 
-        Guard: both the .mcap and its sidecar must be present, else the bag is skipped (returns
-        False) and left untouched. On a complete bag, the bag then the sidecar are each sent with
-        retry/backoff; the bag stays on disk regardless (deletion is not this daemon's job).
+        Guard: a real MCAP payload, its finalize marker and the sidecar must all be present, else the
+        bag is skipped (returns False) and left untouched. On a complete bag, the bag then the
+        sidecar are each sent with retry/backoff; the bag stays on disk regardless (deletion is not
+        this daemon's job).
         """
         if not is_complete(bag_path):
             return False

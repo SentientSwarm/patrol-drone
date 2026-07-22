@@ -13,8 +13,10 @@ actual format (``Duration: <float>s`` / ``Topic: … | Count: N``; and the ``met
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
-from ingest.bag_reader import parse_bag_info, parse_bag_metadata
+from ingest.bag_reader import parse_bag_info, parse_bag_metadata, read_bag_facts
 
 _SAMPLE = """
 Files:             patrol_patrol_20260626_080740_0.mcap
@@ -154,3 +156,92 @@ def test_parse_metadata_topic_counts() -> None:
 def test_parse_metadata_raises_on_malformed(text: str, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         parse_bag_metadata(text)
+
+
+# --- Fix 13 / F-01 sub-clause (Mira High, review 4752923085): "validates metadata references where
+# available". The shared bag-layout validator proves *a* payload exists; read_bag_facts additionally
+# proves the payloads THIS document declares are the ones on disk, so facts are never derived from a
+# description of storage files that aren't there. Ingest-only by design: bag_reader already imports
+# yaml and already parses metadata.yaml, whereas the producer side is deliberately stdlib-pure.
+
+# The shared _METADATA_SAMPLE above deliberately omits relative_file_paths (it is a trimmed capture,
+# and the existing parse tests assert against it) — so the reference-declaring shape gets its own
+# constant rather than mutating one every other test depends on.
+_METADATA_WITH_PAYLOAD_REF = """
+rosbag2_bagfile_information:
+  version: 9
+  storage_identifier: mcap
+  relative_file_paths:
+    - patrol_ref_0.mcap
+  duration:
+    nanoseconds: 19991536152
+  message_count: 200
+  topics_with_message_count:
+    - topic_metadata:
+        name: /patrol/mission_state
+        type: std_msgs/msg/String
+      message_count: 200
+"""
+
+
+def _bag_declaring_a_payload(tmp_path: Path) -> Path:
+    """A bag dir whose metadata.yaml DECLARES patrol_ref_0.mcap; the payload itself is the variable."""
+    bag = tmp_path / "patrol_ref"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text(_METADATA_WITH_PAYLOAD_REF)
+    return bag
+
+
+# A declared payload that is missing (a half-landed rsync) or symlinked (a redirect out of the
+# landing tree) makes the structured branch fail loudly. ValueError is an _INGEST_FAULTS member, so
+# the watch loop logs + skips + retries rather than indexing facts nothing on disk backs.
+@pytest.mark.parametrize("payload", ["missing", "symlink"], ids=["missing", "symlinked"])
+def test_read_bag_facts_raises_when_a_declared_payload_is_not_a_real_file(
+    tmp_path: Path, payload: str
+) -> None:
+    bag = _bag_declaring_a_payload(tmp_path)
+    if payload == "symlink":
+        redirect = tmp_path / "payload-elsewhere.mcap"
+        redirect.write_bytes(b"\x89MCAP0\r\n")
+        (bag / "patrol_ref_0.mcap").symlink_to(redirect)
+
+    with pytest.raises(ValueError, match="declares payload"):
+        read_bag_facts(bag)
+
+
+# The happy path: a declared payload that IS on disk parses normally, so the guard costs nothing for
+# a genuine bag (this is the shape the checked-in LFS reference bag has).
+def test_read_bag_facts_accepts_a_declared_payload_that_exists(tmp_path: Path) -> None:
+    bag = _bag_declaring_a_payload(tmp_path)
+    (bag / "patrol_ref_0.mcap").write_bytes(b"\x89MCAP0\r\n")
+
+    facts = read_bag_facts(bag)
+
+    assert facts.topic_counts == {"/patrol/mission_state": 200}
+
+
+# The review's "where available" hedge: a metadata.yaml with NO relative_file_paths is a legitimate
+# no-op, not a fault — an older/trimmed document must not be newly rejected by this guard.
+def test_read_bag_facts_accepts_metadata_without_relative_file_paths(tmp_path: Path) -> None:
+    bag = tmp_path / "patrol_norefs"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text(_METADATA_SAMPLE)
+
+    facts = read_bag_facts(bag)
+
+    assert facts.topic_counts  # non-empty: the document still parsed
+
+
+# A non-list relative_file_paths is a SHAPE fault, normalized to ValueError like every other guard in
+# this module (never an uncaught AttributeError that would crash the whole ingest watcher).
+def test_read_bag_facts_raises_on_non_list_relative_file_paths(tmp_path: Path) -> None:
+    bag = tmp_path / "patrol_badrefs"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text(
+        _METADATA_WITH_PAYLOAD_REF.replace(
+            "  relative_file_paths:\n    - patrol_ref_0.mcap\n", "  relative_file_paths: 7\n"
+        )
+    )
+
+    with pytest.raises(ValueError, match="relative_file_paths has unexpected shape"):
+        read_bag_facts(bag)
