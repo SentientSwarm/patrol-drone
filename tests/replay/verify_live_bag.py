@@ -29,9 +29,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Self-bootstrap the dirs this script imports first-party modules from (mirrors
-# test_replay_regression.py): tests/replay → rate_report/replay_assertions ; docker → ingest.bag_reader.
+# tests/integration/test_upload_ingest_standin.py, the other ingest-importing entry point):
+#   tests/replay → rate_report/replay_assertions ; docker → ingest.bag_reader ;
+#   analysis → _shared, which ingest.bag_layout/bounded_seen/positive_interval re-export from.
+# analysis/ is NOT optional: the container image COPYs analysis/_shared onto /opt/ingest so the
+# `from _shared...` imports resolve there, but a host-side run has to put it on the path itself or
+# this script dies with ModuleNotFoundError before argparse ever runs.
 _HERE = Path(__file__).resolve().parent
-for _p in (_HERE, _HERE.parents[1] / "docker"):
+for _p in (_HERE, _HERE.parents[1] / "docker", _HERE.parents[1] / "analysis"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 

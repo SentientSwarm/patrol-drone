@@ -193,3 +193,37 @@ def test_dropped_topic_still_fails() -> None:
     result = evaluate_true_rates(_specs(), [_sample(_CAMERA, 150, _ramp(150, 15.0))])
     assert result.passed is False
     assert any(_STATE in f for f in result.failures)
+
+
+# A count-only topic: min_count, no expected_hz. Checkpoint captures are sparse and aperiodic, so a
+# real patrol can legitimately land a single one — the encoder must report it PRESENT, not absent.
+_CAPTURE = "/patrol/checkpoint_capture"
+
+
+@pytest.mark.parametrize(
+    ("n_stamps", "expected_count"),
+    [
+        (1, 1),  # a single capture spans no interval but is unambiguously present
+        (2, 1),  # 2 stamps → 1 interval; the N-1 rate convention is untouched above 1 stamp
+        (0, 0),  # genuinely absent stays absent
+    ],
+)
+def test_observed_count_only_topic_reports_presence(n_stamps: int, expected_count: int) -> None:
+    sample = _sample(_CAPTURE, n_stamps, _ramp(n_stamps, 1.0))
+    assert observed_true_rates([sample])[0].count == expected_count
+
+
+@pytest.mark.parametrize(("n_stamps", "passes"), [(1, True), (0, False)])
+def test_single_message_satisfies_count_only_spec(n_stamps: int, passes: bool) -> None:
+    # Encoding count=0 for a 1-message topic failed this spec spuriously and broke the live witness.
+    specs = [AssertionSpec(topic=_CAPTURE, min_count=1, expected_hz=None, tol=0.40)]
+    result = evaluate_true_rates(specs, [_sample(_CAPTURE, n_stamps, _ramp(n_stamps, 1.0))])
+    assert result.passed is passes
+
+
+def test_single_message_still_fails_a_rated_spec() -> None:
+    # The presence fix must not weaken rate checking: one stamp spans no time, so hz is 0.0 and a
+    # topic that is SUPPOSED to run at 10 Hz must still fail its band.
+    specs = [AssertionSpec(topic=_STATE, min_count=1, expected_hz=10.0, tol=0.40)]
+    result = evaluate_true_rates(specs, [_sample(_STATE, 1, _ramp(1, 10.0))])
+    assert result.passed is False

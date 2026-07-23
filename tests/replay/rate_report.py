@@ -142,7 +142,13 @@ def _observed(sample: TopicSample) -> ObservedTopic:
     """One ObservedTopic carrying the unique-stamp rate (count = unique stamps, dur = stamp span)."""
     unique = sorted(set(sample.rate_stamps_ns))
     if len(unique) < 2:
-        return ObservedTopic(sample.topic, count=0, duration_s=0.0)
+        # Fewer than 2 stamps spans no interval, so there is no rate to report — but the topic is
+        # still PRESENT, and count-only specs (min_count, no expected_hz) are evaluated on this
+        # count. Reporting 0 here read a legitimate single-message topic like
+        # /patrol/checkpoint_capture as "absent" and failed the live witness spuriously. Carrying
+        # the true stamp count is safe for rated specs too: ObservedTopic.hz is 0.0 whenever
+        # duration_s <= 0, so a 1-message topic still fails its rate band, as it should.
+        return ObservedTopic(sample.topic, count=len(unique), duration_s=0.0)
     span_s = (unique[-1] - unique[0]) / 1e9
     # count = N-1 intervals (not N stamps) so ObservedTopic.hz = intervals / span matches
     # unique_stamp_rate exactly — the off-by-one fix has to live in BOTH encoders (F-01).

@@ -56,11 +56,14 @@ Confirm the bag + sidecar appear under `/tmp/dgx_landing/` within ~30 s of missi
 # (a plain / uv-.venv shell fails with "skipping un-indexable bag"). Use python3, not python.
 source /opt/ros/jazzy/setup.bash
 # `--watch` is a DAEMON (infinite poll loop, no one-shot flag): run it, wait for the
-# "ingest ... indexed <bag>" line, then Ctrl-C. ingest lives under docker/ (PYTHONPATH, from repo root):
+# "ingest ... indexed <bag>" line, then Ctrl-C. Both dirs are required on PYTHONPATH (from repo
+# root): ingest lives under docker/, and its bag_layout/bounded_seen/positive_interval re-export
+# from `_shared`, which lives under analysis/. The container COPYs both onto /opt/ingest; a
+# host-side run must supply both or every command below dies with ModuleNotFoundError.
 mkdir -p /tmp/dgx_manifest   # ingest creates this too, but make the fresh path explicit in the doc
-PYTHONPATH=docker python3 -m ingest --watch /tmp/dgx_landing --db /tmp/dgx_manifest/bag_manifest.db
+PYTHONPATH=analysis:docker python3 -m ingest --watch /tmp/dgx_landing --db /tmp/dgx_manifest/bag_manifest.db
 #   → wait for:  ingest ... indexed patrol_<...>    then press Ctrl-C
-PYTHONPATH=docker python3 -m ingest.manifest_query --recent 1 --db /tmp/dgx_manifest/bag_manifest.db
+PYTHONPATH=analysis:docker python3 -m ingest.manifest_query --recent 1 --db /tmp/dgx_manifest/bag_manifest.db
 ```
 
 Confirm the query returns the bag's row with mission / time / **duration derived from the bag** /
