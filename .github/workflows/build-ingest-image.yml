@@ -1,0 +1,50 @@
+name: Build ingest image
+# Builds docker/ingest/Dockerfile from the manifest-generated build args and smoke-tests the CLI
+# (PR #16, Mira Medium F-04). The replay-lane image gets a build workflow; the ingest image — the
+# actual DGX-side deliverable — did not, so a stale apt pin or a COPY/PYTHONPATH regression would
+# ship unnoticed until a real DGX build. This is a build+smoke GATE (no GHCR publish), the runtime
+# twin of the static check_manifest_drift / check_ingest_pins pin check.
+#
+# Plain `docker build`/`docker run` on the runner's preinstalled docker — deliberately no
+# third-party build actions, matching build-replay-lane-image.yml's no-new-action-deps stance.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - docker/ingest/**
+      - analysis/_shared/**
+      - stack-manifest.toml
+      - scripts/gen_build_args.py
+      - .github/workflows/build-ingest-image.yml
+  push:
+    branches: [main]
+    paths:
+      - docker/ingest/**
+      - analysis/_shared/**
+      - stack-manifest.toml
+
+permissions:
+  contents: read
+
+jobs:
+  build_smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build the ingest image (manifest-pinned args)
+        shell: bash
+        run: |
+          args="$(python3 scripts/gen_build_args.py --section ingest)"
+          # shellcheck disable=SC2086  # $args is a space-separated list of --build-arg flags
+          docker build -f docker/ingest/Dockerfile ${args} -t patrol-ingest .
+
+      - name: Smoke — CLI imports under the ROS env
+        shell: bash
+        run: |
+          # The default CMD is `manifest_query --help`; running it proves the package imports, the
+          # ROS env is intact, and _shared/ COPY'd correctly (F-04). Non-zero here fails the gate.
+          docker run --rm patrol-ingest python3 -m ingest.manifest_query --help

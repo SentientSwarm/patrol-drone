@@ -1,0 +1,26 @@
+# Replay regression assertions (docset 05-logging-replay, M8 / T8.8, SWM-80).
+#
+# The curated "small and strict" subset (design §4.2.5, PRD tenet 4) the replay test asserts after
+# playing tests/replay/reference/patrol_reference. Presence/count for every topic; an optional
+# expected_hz + ±tol rate band for the steady-rate streams (OQ-5: ±40%). Expected rates were
+# MEASURED from the reference bag at generation time (tests/replay/README.md) — re-measure and
+# update here whenever the reference bag is regenerated, so the band tracks the baseline.
+#
+# checkpoint_capture is count-only (event-driven, not a steady rate); current_waypoint likewise.
+topics:
+  - topic: /patrol/mission_state
+    min_count: 1
+    expected_hz: 10.0
+    tol: 0.40
+  - topic: /patrol/current_waypoint
+    min_count: 1
+  - topic: /patrol/checkpoint_capture
+    min_count: 1
+  - topic: /drone/camera/image_raw/compressed
+    min_count: 1
+    expected_hz: 15.0
+    tol: 0.40
+  - topic: /fmu/out/vehicle_local_position_v1
+    min_count: 1
+    expected_hz: 50.0
+    tol: 0.40

@@ -140,3 +140,41 @@ def test_env_output_is_key_value_lines(capsys):
         parsed[key] = value
     # The emitted pairs must round-trip the generator's build_args verbatim — no drops, no mangling.
     assert parsed == gen.build_args(_manifest())
+
+
+# F-01: the ingest image uses a DIFFERENT base + apt pins from sim/dev, emitted via `--section ingest`.
+_INGEST_EXPECTED_KEYS = {
+    "ROS_DISTRO",
+    "ROS_BASE_DIGEST",
+    "ROSBAG2_APT_VERSION",
+    "ROSBAG2_MCAP_APT_VERSION",
+}
+
+
+def test_ingest_section_emits_base_digest_and_apt_pins():
+    # The ingest Dockerfile consumes exactly these four ARGs (base digest + two rosbag2 apt pins +
+    # the shared ROS_DISTRO); their values come straight from the manifest [ingest]/[middleware].
+    manifest = _manifest()
+    ingest = gen.ingest_build_args(manifest)
+    assert set(ingest) == _INGEST_EXPECTED_KEYS
+    assert ingest["ROS_BASE_DIGEST"] == manifest["ingest"]["ros_base_digest"]
+    assert ingest["ROSBAG2_APT_VERSION"] == manifest["ingest"]["rosbag2_apt_version"]
+    assert ingest["ROSBAG2_MCAP_APT_VERSION"] == manifest["ingest"]["rosbag2_mcap_apt_version"]
+    assert ingest["ROS_DISTRO"] == manifest["middleware"]["ros_distro"]
+
+
+def test_ingest_args_do_not_leak_into_the_sim_dev_set():
+    # Revision 3: keep the ingest base/apt pins OUT of the flat sim/dev --build-arg set, or they'd be
+    # forwarded to images that never declare them (noisy, and a drift-check could trip on it).
+    assert _INGEST_EXPECTED_KEYS.isdisjoint(set(gen.build_args(_manifest())) - {"ROS_DISTRO"})
+
+
+def test_section_flag_selects_the_ingest_emitter(capsys):
+    # `--section ingest --env` must round-trip ingest_build_args verbatim (the ingest build command
+    # feeds this into `docker build --build-arg`).
+    rc = gen.main(["--section", "ingest", "--env"])
+    assert rc == 0
+    parsed = dict(
+        ln.partition("=")[::2] for ln in capsys.readouterr().out.splitlines() if ln.strip()
+    )
+    assert parsed == gen.ingest_build_args(_manifest())

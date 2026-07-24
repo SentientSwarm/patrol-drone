@@ -11,6 +11,7 @@ CLAUDE.md). This guard enforces that contract in CI:
   4. README "Stack at a glance" carries no stale PX4 pin    (Hermes Low #1)
   5. CLAUDE.md summary table agrees with the manifest       (ADR-0004)
   6. Dockerfile command bodies carry no hardcoded version/distro literals (round-3 Medium #1)
+  7. docker/ingest/Dockerfile's base-digest + rosbag2 apt pins derive from [ingest] (PR #16 F-01)
 
 Exit 0 = clean; exit 1 = drift, with one line per problem.
 """
@@ -281,26 +282,115 @@ def check_vendor_provenance(repo_root: Path, manifest: dict) -> list[str]:
     return problems
 
 
-def check_workflow_distro(repo_root: Path, manifest: dict) -> list[str]:
-    """ROS CI's `target-ros2-distro` must equal the manifest ROS distro (Hermes round-3 Medium #1).
+# The ingest image's manifest-injected ARGs (F-01). Its base is a DIFFERENT image from the sim/dev
+# [container] base, so it has its own [ingest] section; these ARGs must be declared (no default,
+# injected from the manifest via `gen_build_args.py --section ingest`) in docker/ingest/Dockerfile.
+_INGEST_ARGS = ("ROS_BASE_DIGEST", "ROSBAG2_APT_VERSION", "ROSBAG2_MCAP_APT_VERSION")
+_INGEST_MANIFEST_KEYS = ("ros_base_digest", "rosbag2_apt_version", "rosbag2_mcap_apt_version")
 
-    The required ROS CI is a manifest consumer like the setup script and Dockerfiles: a distro bump
-    in stack-manifest.toml must flow here too, or CI would keep building the old distro while the
-    rest of the toolchain moved.
+# Per ingest ARG, the regex proving it is CONSUMED (not just declared) — a future edit that declares
+# the ARG but hardcodes a literal digest/version in FROM/install stays green otherwise (F-07, guide
+# §2.C). ROS_BASE_DIGEST must appear in the FROM line as @${...}; each ROSBAG2_* must appear as ${...}
+# inside an apt-get install package spec. Kept as a data table so the loop stays flat (health gate).
+_INGEST_ARG_CONSUMED = {
+    "ROS_BASE_DIGEST": r"^FROM\s+\S+@\$\{ROS_BASE_DIGEST\}",
+    "ROSBAG2_APT_VERSION": r"=\$\{ROSBAG2_APT_VERSION\}",
+    "ROSBAG2_MCAP_APT_VERSION": r"=\$\{ROSBAG2_MCAP_APT_VERSION\}",
+}
+
+
+def _ingest_manifest_key_problems(manifest: dict) -> list[str]:
+    """[ingest] keys `gen_build_args.py --section ingest` must resolve (missing = drift)."""
+    ingest = manifest.get("ingest", {})
+    return [
+        f"stack-manifest.toml [ingest] missing key {k!r}"
+        for k in _INGEST_MANIFEST_KEYS
+        if k not in ingest
+    ]
+
+
+def _ingest_arg_declaration_problems(text: str) -> list[str]:
+    """Each pin ARG must be declared with NO default, so the value is injected from the manifest."""
+    problems = []
+    for arg in _INGEST_ARGS:
+        if re.search(rf"^ARG {arg}=", text, re.MULTILINE):
+            problems.append(f"docker/ingest/Dockerfile pins ARG {arg} with a default; inject it")
+        elif not re.search(rf"^ARG {arg}\b", text, re.MULTILINE):
+            problems.append(f"docker/ingest/Dockerfile does not declare manifest ARG {arg}")
+    return problems
+
+
+def _ingest_arg_consumption_problems(text: str) -> list[str]:
+    """Each declared ARG must be CONSUMED in FROM/apt-install (F-07) — declared-but-unused is a hole."""
+    return [
+        f"docker/ingest/Dockerfile declares ARG {arg} but does not consume it "
+        f"(expected {consumed!r}); a hardcoded literal would silently bypass the pin"
+        for arg, consumed in _INGEST_ARG_CONSUMED.items()
+        if not re.search(consumed, text, re.MULTILINE)
+    ]
+
+
+def check_ingest_pins(repo_root: Path, manifest: dict) -> list[str]:
+    """The ingest Dockerfile's base digest + apt pins come from [ingest], never inlined (F-01).
+
+    Mirrors the sim/dev ARG-default guard for the ingest image (whose base differs, so it has its own
+    manifest section): each pin ARG must be declared with no default, so the value is injected from
+    the manifest and a bump can't silently reintroduce a duplicated literal. Also asserts the
+    [ingest] keys exist so `gen_build_args.py --section ingest` can resolve them, AND that each ARG is
+    actually CONSUMED where it must be (F-07, guide §2.C): declared-but-unused is a drift hole — a
+    future edit could declare the ARG yet hardcode a divergent digest/version in FROM/install and
+    stay green. `_INGEST_ARG_CONSUMED` pins the FROM/apt-install reference each ARG must appear in.
+    Each rule family is a small helper so this stays a flat aggregation (no bumpy-road nesting).
     """
-    path = repo_root / ".github" / "workflows" / "ros-ci.yml"
+    problems = _ingest_manifest_key_problems(manifest)
+    path = repo_root / "docker" / "ingest" / "Dockerfile"
     if not path.exists():
-        return [".github/workflows/ros-ci.yml is missing"]
-    expected = manifest["middleware"]["ros_distro"]
-    match = re.search(r"^\s*target-ros2-distro:\s*(\S+)", path.read_text(), re.MULTILINE)
+        return [*problems, "docker/ingest/Dockerfile is missing"]
+    text = path.read_text()
+    return [
+        *problems,
+        *_ingest_arg_declaration_problems(text),
+        *_ingest_arg_consumption_problems(text),
+    ]
+
+
+# Each required workflow that pins the ROS distro, and the regex capturing its pinned value. Both must
+# equal manifest middleware.ros_distro — a distro bump must flow to EVERY lane or its `ros-<distro>-*`
+# apt installs break as "unable to locate package" (Hermes round-3 ros-ci + round-4 replay lane).
+_DISTRO_WORKFLOWS = (
+    ("ros-ci.yml", r"^\s*target-ros2-distro:\s*(\S+)"),
+    ("replay-regression.yml", r"^\s*ROS_DISTRO:\s*(\S+)"),
+)
+
+
+def _check_one_workflow_distro(
+    repo_root: Path, expected: str, name: str, pattern: str
+) -> list[str]:
+    """Validate one workflow's ROS-distro pin (captured by ``pattern``) against ``expected``."""
+    path = repo_root / ".github" / "workflows" / name
+    if not path.exists():
+        return [f".github/workflows/{name} is missing"]
+    match = re.search(pattern, path.read_text(), re.MULTILINE)
     if not match:
-        return ["ros-ci.yml has no target-ros2-distro to validate against the manifest"]
+        return [f"{name} has no {pattern!r} distro pin to validate against the manifest"]
     actual = match.group(1).strip("\"'")
     if actual != expected:
-        return [
-            f"ros-ci.yml target-ros2-distro={actual!r} != manifest middleware.ros_distro={expected!r}"
-        ]
+        return [f"{name} distro={actual!r} != manifest middleware.ros_distro={expected!r}"]
     return []
+
+
+def check_workflow_distro(repo_root: Path, manifest: dict) -> list[str]:
+    """Every ROS-distro-pinning workflow must equal the manifest ROS distro (ros-ci + replay lane).
+
+    Each required workflow is a manifest consumer like the setup script and Dockerfiles: a distro bump
+    in stack-manifest.toml must flow to all of them, or a lane would keep installing the old distro
+    while the rest of the toolchain moved.
+    """
+    expected = manifest["middleware"]["ros_distro"]
+    problems: list[str] = []
+    for name, pattern in _DISTRO_WORKFLOWS:
+        problems += _check_one_workflow_distro(repo_root, expected, name, pattern)
+    return problems
 
 
 def _stale_px4_tokens(text: str, release_line: str) -> list[str]:
@@ -341,6 +431,7 @@ def run_checks(repo_root: Path) -> list[str]:
     problems += check_dockerfile_no_defaults(repo_root)
     problems += check_dockerfile_no_literals(repo_root, manifest)
     problems += check_dockerfile_hardcoded_alternatives(repo_root)
+    problems += check_ingest_pins(repo_root, manifest)
     problems += check_vendor_provenance(repo_root, manifest)
     problems += check_workflow_distro(repo_root, manifest)
     problems += check_readme(repo_root, manifest)

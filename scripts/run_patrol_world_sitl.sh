@@ -71,6 +71,15 @@ KEEP_UP=0
 SKIP_DOCTOR=0
 VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-300}"
 CAMERA_WAIT="${CAMERA_WAIT:-90}"
+# Seconds to wait for the mission launch to exit cleanly (SIGINT -> rosbag2 finalizes metadata.yaml)
+# before force-tearing the rest of the stack down. A ~100 MiB MCAP finalize is I/O-bound, so this is
+# deliberately generous — its job is to give rosbag2 a real flush window, not to police latency.
+# Coordinated with record.launch.py's _RECORDER_SIGTERM_TIMEOUT_S (60 s): this MUST be strictly
+# larger so the launch's clean SIGINT-mediated shutdown (recorder flush -> OnProcessExit sidecar)
+# finishes before stop_launch_group escalates to a group SIGTERM. Raised 45 -> 90 after a real RTF≈1
+# patrol showed the recorder needing >45 s to flush — the old 45 s forced the SIGTERM escalation that
+# killed `ros2 launch` before its sidecar handler ran (the missing-.meta.json bug). Keep in step.
+FINALIZE_WAIT="${FINALIZE_WAIT:-90}"
 
 AGENT_PID=""
 GZ_PID=""
@@ -79,15 +88,52 @@ PX4_PID=""
 QGC_PID=""
 BRIDGE_PID=""
 NODE_PID=""
+RUN_ROOT=""  # active patrol run root (set once recording starts), so shutdown() can finalize the
+             # staged sidecar on the interrupt / failed-verify paths, not just the happy path (F-02)
 
 log()  { printf '\033[1;34m[patrol-world]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m        %s\n' "$*" >&2; }
 err()  { printf '\033[1;31m[err]\033[0m         %s\n' "$*" >&2; }
 
-# Fail loud on a non-integer operator-supplied numeric env (CAMERA_WAIT / VERIFY_TIMEOUT) before it
-# reaches arithmetic, so a typo gives a clear message instead of a confusing $(( )) failure (F-04).
+# Fail loud on a non-integer operator-supplied numeric env (CAMERA_WAIT / VERIFY_TIMEOUT /
+# FINALIZE_WAIT) before it reaches arithmetic, so a typo gives a clear message instead of a confusing
+# $(( )) failure (F-04).
 require_uint() {  # require_uint NAME VALUE
   [[ "${2}" =~ ^[0-9]+$ ]] || { err "${1} must be a non-negative integer (got '${2}')"; exit 2; }
+}
+
+# Path to the recorder launch, whose _RECORDER_SIGTERM_TIMEOUT_S is the SINGLE SOURCE OF TRUTH for the
+# recorder's clean-shutdown budget. FINALIZE_WAIT must exceed it (see the coupling comment above L82).
+RECORD_LAUNCH="${REPO_ROOT}/ros2_ws/src/patrol_logging/launch/record.launch.py"
+
+# Read _RECORDER_SIGTERM_TIMEOUT_S out of record.launch.py by its stable constant name — a pure text
+# scrape (no ROS env needed, runs before source_ros), so the runner's lower bound tracks the launch
+# constant and a future bump to the recorder timeout can't silently invalidate this guard. Fails loud
+# if the constant can't be found (renamed?) so the coupling can never be validated against a stale 0.
+# shellcheck disable=SC2317,SC2329  # also driven directly by the unit test, not just from main
+recorder_sigterm_timeout() {
+  local val
+  val="$(grep -oE '_RECORDER_SIGTERM_TIMEOUT_S[[:space:]]*=[[:space:]]*"[0-9]+"' "${RECORD_LAUNCH}" \
+        | grep -oE '[0-9]+' | head -n1)"
+  [[ -n "${val}" ]] || { err "could not read _RECORDER_SIGTERM_TIMEOUT_S from ${RECORD_LAUNCH}"; exit 2; }
+  printf '%s\n' "${val}"
+}
+
+# FINALIZE_WAIT must be a non-negative integer (require_uint) AND strictly greater than the recorder's
+# SIGTERM timeout, or stop_launch_group escalates to a group SIGTERM before the launch's clean
+# SIGINT-mediated finalize completes and the <bag>.meta.json sidecar is lost (F-03 / the missing-
+# sidecar race). 0 is explicitly unsafe here: it makes wait_for_pgroup_exit's `seq 1 0` loop never run
+# and forces an immediate SIGTERM escalation — so the rejection message says WHY, not just "too small".
+# shellcheck disable=SC2317,SC2329  # also driven directly by the unit test, not just from main
+require_finalize_wait() {  # require_finalize_wait VALUE
+  require_uint FINALIZE_WAIT "${1}"
+  local min; min="$(recorder_sigterm_timeout)"
+  if (( ${1} <= min )); then
+    err "FINALIZE_WAIT (${1}s) must be strictly greater than the recorder SIGTERM timeout (${min}s):"
+    err "  a value <= ${min}s (or 0) forces stop_launch_group to escalate to a group SIGTERM before"
+    err "  the launch finalizes the bag, losing <bag>.meta.json. Raise it above ${min}s (default 90)."
+    exit 2
+  fi
 }
 
 usage() {
@@ -122,11 +168,183 @@ parse_args() {
   done
 }
 
+# Wait up to `timeout_s` for every member of process group `pgid` to exit. Returns 0 once the group
+# is empty, 1 on timeout. Probes the GROUP with `pgrep -g` (liveness only, no signal) rather than the
+# positive leader PID: `ros2 launch` (the group leader) can exit while its `ros2 bag record`
+# grandchild is still flushing a large MCAP, so a leader-only `kill -0 PGID` probe would report "gone"
+# and return early — recreating the finalization race this runner exists to close (Hermes High, F-01).
+# `pgrep` is in procps-ng (present on the dev host + CI ROS images). One helper shared by
+# stop_launch_group() (and thus graceful_stop_mission/shutdown) so the poll loop isn't duplicated.
+# shellcheck disable=SC2317,SC2329  # reached from stop_launch_group, not a direct call
+wait_for_pgroup_exit() {  # wait_for_pgroup_exit PGID TIMEOUT_S
+  local pgid="$1" timeout_s="$2"
+  for _ in $(seq 1 "${timeout_s}"); do
+    pgrep -g "${pgid}" >/dev/null 2>&1 || return 0
+    sleep 1
+  done
+  return 1
+}
+
+# Stop the mission launch's whole PROCESS GROUP so the `ros2 bag record` child finalizes, not just the
+# `ros2 launch` parent. The launch is started with `setsid` (own group, PGID == NODE_PID), so a
+# negative-PID `kill` (`kill -SIG -- -PGID`) delivers the signal to every member — the launch AND its
+# recorder grandchild. Without this, `kill -INT NODE_PID` signals only the launch parent and the
+# reparented-to-init recorder never gets its finalize (the orphaning bug this fixes). We SIGINT the
+# group first — that is the clean `ros2 launch` Shutdown record.launch.py's sigterm_timeout is built
+# around — and if the group is still alive after FINALIZE_WAIT, escalate to a group SIGTERM (this host
+# showed the orphaned recorder honoring SIGTERM even when it ignored SIGINT), giving it a second
+# bounded window. Returns 0 if the group exited, 1 if it is still alive after both waits. One helper
+# shared by graceful_stop_mission() and shutdown() so the group-signal + bounded-wait isn't duplicated.
+# shellcheck disable=SC2317,SC2329  # reached from graceful_stop_mission/shutdown, not a direct call
+stop_launch_group() {  # stop_launch_group PGID
+  local pgid="$1"
+  kill -INT -- "-${pgid}" 2>/dev/null || true
+  if wait_for_pgroup_exit "${pgid}" "${FINALIZE_WAIT}"; then return 0; fi
+  warn "mission launch group still running after ${FINALIZE_WAIT}s (SIGINT) — escalating to SIGTERM"
+  kill -TERM -- "-${pgid}" 2>/dev/null || true
+  wait_for_pgroup_exit "${pgid}" "${FINALIZE_WAIT}"
+}
+
+# True iff BAG_DIR holds at least one REAL (non-symlink) *.mcap payload — the shell half of
+# _shared.bag_layout.has_mcap_payload. A no-match glob stays literal and fails -f, so no nullglob.
+# shellcheck disable=SC2317,SC2329  # reached from find_finalized_bags, not a direct call
+bag_dir_has_mcap_payload() {  # bag_dir_has_mcap_payload BAG_DIR
+  local payload
+  for payload in "$1"/*.mcap; do
+    [[ -f "${payload}" && ! -L "${payload}" ]] && return 0
+  done
+  return 1
+}
+
+# Emit each REAL finalized bag dir under RUN_ROOT: a non-symlink metadata.yaml AND a non-symlink
+# *.mcap payload — the shell twin of _shared.bag_layout.is_valid_bag_dir, which the upload and ingest
+# boundaries already use. Keying on metadata.yaml ALONE let a metadata-only bag (recorder killed
+# before the MCAP flushed) report "finalized" here while the uploader skipped it forever — stranded
+# silently (Mira Medium, review 4754192970). One helper, so the three call sites below cannot drift
+# apart again (and the triplicated `find … -name metadata.yaml` literal is gone).
+# shellcheck disable=SC2317,SC2329  # reached from graceful_stop_mission/assert_bag_*, not directly
+find_finalized_bags() {  # find_finalized_bags RUN_ROOT
+  local run_root="$1" bag_dir
+  while IFS= read -r bag_dir; do
+    [[ -n "${bag_dir}" ]] || continue
+    [[ -f "${bag_dir}/metadata.yaml" && ! -L "${bag_dir}/metadata.yaml" ]] || continue
+    bag_dir_has_mcap_payload "${bag_dir}" || continue
+    printf '%s\n' "${bag_dir}"
+  done < <(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null)
+  # Pin the status explicitly: "no bags found" is a legitimate EMPTY result reported via stdout,
+  # never via exit status. assert_bag_has_compressed_imagery calls this in a plain assignment
+  # (`bag_dir="$(find_finalized_bags … | head -n1)"`), which under `set -eo pipefail` would abort the
+  # whole run rather than reach its own "no finalized bag" error branch if a non-zero ever leaked out.
+  # A `while` body ending in `continue` does NOT currently leak one (bash reports 0), so this is
+  # belt-and-braces against a future edit adding a trailing command whose status would — cheap
+  # insurance on a path whose failure mode is an aborted SITL run. Asserted in the unit test.
+  return 0
+}
+
+# Write <bag>.meta.json for every finalized bag under run_root, from the record-start staging file the
+# launch dropped (<bag>.sidecar-inputs.json) — CALLER-INDEPENDENT of how the launch died. The launch's
+# OnProcessExit sidecar handler only runs if `ros2 launch`'s asyncio loop survives shutdown, which a
+# group SIGTERM tears down before the handler fires (metadata.yaml survives via rosbag2's own signal
+# handler, but the sidecar was lost — the missing-.meta.json bug). Finalizing here, after the launch is
+# gone, makes the sidecar independent of that fragile exit-event timing. finalize_sidecar_from_staging
+# is idempotent: a no-op when the handler already wrote the sidecar (happy SIGINT path), or when there
+# is no finalized bag / no staging crumb. Runs in the ROS-sourced env so patrol_logging is importable.
+# shellcheck disable=SC2317,SC2329  # reached from graceful_stop_mission, not a direct call
+finalize_bag_sidecars() {  # finalize_bag_sidecars RUN_ROOT
+  local run_root="$1" bag_dir missing=0
+  while IFS= read -r bag_dir; do
+    [[ -n "${bag_dir}" ]] || continue
+    python3 -c '
+import sys
+from pathlib import Path
+from patrol_logging.recorder import finalize_sidecar_from_staging
+written = finalize_sidecar_from_staging(Path(sys.argv[1]))
+print(f"wrote bag sidecar {written}" if written else "sidecar already present (or nothing to finalize)")
+' "${bag_dir}" || warn "sidecar finalize failed for ${bag_dir} (patrol_logging importable?)"
+    # Outcome gate (Mira Medium, review 4728294643): a finalized bag (metadata.yaml) that still has
+    # no <bag>.meta.json is stranded — upload_daemon.is_complete() will refuse it forever — so this
+    # must be a FAILURE, not a warning-then-success. Checking the artifact (not the command's exit
+    # code) also catches a finalize that "succeeded" without writing (no staging crumb).
+    # -f follows symlinks; require a REGULAR file (not a symlink) so a planted <bag>.meta.json
+    # symlink can't fake a finalized sidecar — parity with _shared.bag_layout.is_regular_file (F-02).
+    if [[ ! -f "${bag_dir}.meta.json" || -L "${bag_dir}.meta.json" ]]; then
+      warn "finalized bag ${bag_dir} has NO sidecar after finalize — not ingestable"
+      missing=$((missing + 1))
+    fi
+  done < <(find_finalized_bags "${run_root}")
+  [[ ${missing} -eq 0 ]]
+}
+
+# Stop the mission launch CLEANLY so the recorder finalizes its MCAP (writes metadata.yaml) before the
+# stack is torn down. `ros2 launch` under SIGTERM cancels its asyncio task and orphans children (the
+# launch code warns "using SIGTERM can result in orphaned processes"), leaving a non-finalized bag;
+# under SIGINT it emits a clean Shutdown that SIGINTs `ros2 bag record` so rosbag2 flushes the bag —
+# exactly the "the launch system SIGINT-finalizes the MCAP at shutdown" contract record.launch.py
+# documents. We signal the launch's whole GROUP (via stop_launch_group, so the recorder child — not
+# just the launch parent — gets the finalize) and wait HERE, while PX4/gz are still up, so the recorder
+# finalizes against live data sources; then blank NODE_PID so shutdown() doesn't re-signal a reaped group.
+graceful_stop_mission() {
+  [[ -n "${NODE_PID}" ]] || return 0
+  local run_root="$1"
+  log "stopping the mission launch cleanly (SIGINT group) so the recorder finalizes its MCAP..."
+  if stop_launch_group "${NODE_PID}"; then
+    log "mission launch exited cleanly within the finalize window (recorder had its flush window)"
+    NODE_PID=""  # confirmed group exit — shutdown() must not re-signal a reaped group
+  else
+    # Group still alive after BOTH the SIGINT and escalated-SIGTERM waits. Do NOT blank NODE_PID:
+    # leaving it set lets shutdown()'s existing branch perform the final SIGKILL reap, instead of
+    # silently skipping a live `ros2 launch` + `ros2 bag record` group while PX4/gz are torn down
+    # around it (Mira High, F-01). The bag may not have finalized either way, but the group must
+    # not survive teardown.
+    warn "mission launch group still running after the finalize window — leaving it for shutdown() to reap"
+  fi
+  # A finalized bag has metadata.yaml AND an .mcap payload; its absence means the record path did NOT
+  # finalize a real bag — surface that as the real failure here rather than as a confusing "no
+  # finalized bag" from assert_bag below. A metadata-only bag now FAILS here instead of silently
+  # succeeding and being stranded at the uploader (F-02): fail at the producer, not the consumer.
+  if [[ -z "$(find_finalized_bags "${run_root}" | head -n1)" ]]; then
+    err "no finalized bag (metadata.yaml + .mcap payload) under ${run_root} after clean stop — recorder did not finalize"
+    return 1
+  fi
+  # Finalize the JSON sidecar from the launch's staging file now that the launch is gone (no-op if its
+  # OnProcessExit handler already wrote it on the clean SIGINT path). This is what makes the bag
+  # ingestable (upload_daemon.is_complete() requires <bag>.meta.json) regardless of how launch exited
+  # — so a bag left sidecar-less is a HARD failure here (Mira Medium, review 4728294643), exactly
+  # like the missing-metadata.yaml gate above, not a warning the run then reports success over.
+  if ! finalize_bag_sidecars "${run_root}"; then
+    err "sidecar finalize left >=1 finalized bag without <bag>.meta.json under ${run_root} — bag(s) not ingestable (upload_daemon requires the sidecar)"
+    return 1
+  fi
+  return 0
+}
+
 # shellcheck disable=SC2317,SC2329  # reached via `trap shutdown ...` in main(), not a direct call
 shutdown() {
   trap '' INT TERM
   log "tearing down (logs kept in ${LOG_DIR})"
-  if [[ -n "${NODE_PID}" ]]; then kill -TERM "${NODE_PID}" 2>/dev/null || true; fi
+  # Signal the mission launch's GROUP (SIGINT, escalating to SIGTERM) and WAIT for it to exit before
+  # killing its data sources (px4/gz): a fly-and-verify pass already stopped it via
+  # graceful_stop_mission (NODE_PID blanked), so this covers the interrupt / failed-verify / camera-only
+  # paths, where a clean finalize still matters if a bag was being recorded. The group signal reaches
+  # the `ros2 bag record` child (not just the launch parent) so the recorder actually finalizes here.
+  if [[ -n "${NODE_PID}" ]]; then
+    if ! stop_launch_group "${NODE_PID}"; then
+      # Survived SIGINT + SIGTERM (F-01): last-resort SIGKILL the whole group and reap, so no live
+      # `ros2 launch`/`ros2 bag record` group is left running as we kill its data sources below.
+      warn "mission launch group still alive after SIGINT+SIGTERM — SIGKILL reaping group ${NODE_PID}"
+      kill -KILL -- "-${NODE_PID}" 2>/dev/null || true
+      wait_for_pgroup_exit "${NODE_PID}" 5 \
+        || warn "mission launch group ${NODE_PID} still present after SIGKILL"
+    fi
+    NODE_PID=""
+  fi
+  # Fallback sidecar finalize for the interrupt / failed-verify paths: graceful_stop_mission only
+  # runs on a passing verify, so on those paths <bag>.meta.json would otherwise never be written and
+  # the bag is silently non-ingestable (upload_daemon.is_complete() requires the sidecar). Idempotent:
+  # a no-op if the OnProcessExit handler already wrote it, or if no bag/staging crumb exists (F-02).
+  if [[ -n "${RUN_ROOT}" ]]; then
+    finalize_bag_sidecars "${RUN_ROOT}" || warn "shutdown sidecar finalize failed for ${RUN_ROOT}"
+  fi
   if [[ -n "${BRIDGE_PID}" ]]; then kill -TERM "${BRIDGE_PID}" 2>/dev/null || true; fi
   if [[ -n "${QGC_PID}" ]]; then kill -TERM "${QGC_PID}" 2>/dev/null || true; fi
   if [[ -n "${PX4_PID}" ]]; then kill -TERM -- "-${PX4_PID}" 2>/dev/null || true; fi  # PX4 proc group
@@ -342,13 +560,22 @@ fly_and_verify_patrol() {
   # shared run_id tags both 04's captures and the bag, co-located under output_root (OQ-4). The
   # recorder include is resilient — a missing/over-shadowed patrol_logging still flies the patrol.
   local run_root="${PATROL_OUTPUT_ROOT:-${LOG_DIR}/run}"
+  RUN_ROOT="${run_root}"  # publish for shutdown()'s fallback sidecar finalize (F-02)
   log "flying the M4 patrol over the stage (mission_patrol.launch.py, checkpoints=${CHECKPOINTS_YAML}, record:=true, output_root=${run_root})"
-  ros2 launch patrol_bringup mission_patrol.launch.py record:=true \
+  # setsid: give the launch its OWN process group (PGID == NODE_PID), mirroring start_px4. A clean stop
+  # then signals the whole group (kill -INT -- -NODE_PID), so the `ros2 bag record` grandchild gets the
+  # finalize instead of being orphaned to init when only the launch parent is signalled.
+  setsid ros2 launch patrol_bringup mission_patrol.launch.py record:=true \
     "checkpoints_yaml:=${CHECKPOINTS_YAML}" \
     "output_root:=${run_root}" >"${LOG_DIR}/node.log" 2>&1 &
   NODE_PID=$!
   log "verifying patrol acceptance (timeout ${VERIFY_TIMEOUT}s)..."
   python3 "${SCRIPT_DIR}/verify_patrol.py" --timeout "${VERIFY_TIMEOUT}" || return 1
+  # verify_patrol.py returns the instant the patrol is observably complete (landed/disarmed) — it does
+  # NOT wait for the recorder to flush. Stop the mission launch cleanly HERE (SIGINT the launch, wait
+  # for it to exit + metadata.yaml to appear) so the bag is finalized before we assert its contents,
+  # making assert_bag's "finalized bag exists" precondition true by construction.
+  graceful_stop_mission "${run_root}" || return 1
   # The patrol passed AND it recorded (record:=true) — assert the bag captured imagery, not just
   # that the live topic existed before flight. Skippable for a deliberately recordless run.
   if [[ "${PATROL_ASSERT_BAG:-1}" -ne 0 ]]; then
@@ -362,10 +589,18 @@ fly_and_verify_patrol() {
 assert_bag_has_compressed_imagery() {
   local run_root="$1"
   local bag_dir
-  # The recorder writes one bag DIRECTORY (patrol_<id>_<ts>/ holding metadata.yaml) under run_root.
-  bag_dir="$(find "${run_root}" -maxdepth 2 -name metadata.yaml -printf '%h\n' 2>/dev/null | head -n1)"
+  # The recorder writes one bag DIRECTORY (patrol_<id>_<ts>/ holding metadata.yaml + the .mcap
+  # payload) under run_root; find_finalized_bags applies the same predicate as the upload/ingest side.
+  bag_dir="$(find_finalized_bags "${run_root}" | head -n1)"
   if [[ -z "${bag_dir}" ]]; then
-    err "no finalized bag (metadata.yaml) found under ${run_root} — recorder produced no ingestable bag"
+    err "no finalized bag (metadata.yaml + .mcap payload) found under ${run_root} — recorder produced no ingestable bag"
+    return 1
+  fi
+  # A bag is only INGESTABLE with its JSON sidecar (upload_daemon.is_complete() requires <bag>.meta.json).
+  # graceful_stop_mission just finalized it from the staging file, so its absence is a real regression —
+  # fail loudly here rather than ship a silently non-ingestable bag (the bug this fix closes).
+  if [[ ! -f "${bag_dir}.meta.json" ]]; then
+    err "bag ${bag_dir} has no sidecar (${bag_dir}.meta.json) — bag is not ingestable (upload_daemon skips it)"
     return 1
   fi
   local info count
@@ -384,14 +619,16 @@ assert_bag_has_compressed_imagery() {
 report_keep_up() {
   trap - EXIT INT TERM
   log "stack left running (--keep-up):"
-  log "  PIDs: agent=${AGENT_PID} gz=${GZ_PID} gui=${GZ_GUI_PID:-none} px4=${PX4_PID} qgc=${QGC_PID:-none} bridge=${BRIDGE_PID} node=${NODE_PID:-none}"
-  log "  tear down: kill -- -${PX4_PID}; kill ${AGENT_PID} ${GZ_PID} ${GZ_GUI_PID:-} ${QGC_PID:-} ${BRIDGE_PID} ${NODE_PID:-}"
+  log "  PIDs: agent=${AGENT_PID} gz=${GZ_PID} gui=${GZ_GUI_PID:-none} px4=${PX4_PID} qgc=${QGC_PID:-none} bridge=${BRIDGE_PID} node=${NODE_PID:-none} (px4/node are process groups)"
+  # node is a setsid group too (holds the recorder child): -INT the group so it finalizes cleanly.
+  log "  tear down: kill -INT -- -${NODE_PID:-0}; kill -- -${PX4_PID}; kill ${AGENT_PID} ${GZ_PID} ${GZ_GUI_PID:-} ${QGC_PID:-} ${BRIDGE_PID}"
 }
 
 main() {
   parse_args "$@"
   require_uint CAMERA_WAIT "${CAMERA_WAIT}"        # validate operator env before any arithmetic (F-04)
   require_uint VERIFY_TIMEOUT "${VERIFY_TIMEOUT}"  # (also covers a --timeout override, parsed above)
+  require_finalize_wait "${FINALIZE_WAIT}"         # bounded wait must exceed the recorder finalize budget
   if [[ -n "${LOG_DIR}" ]]; then
     mkdir -p "${LOG_DIR}"
   else
@@ -429,4 +666,9 @@ main() {
   exit "${verdict}"
 }
 
-main "$@"
+# Run main only when executed directly, not when sourced (the shell unit test sources this file to
+# drive stop_launch_group / wait_for_pgroup_exit in isolation). Mirrors env_doctor.sh, which this
+# runner already sources side-effect-free (L43) relying on the same guard.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

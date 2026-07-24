@@ -97,6 +97,20 @@ ros_base_digest = "sha256:2ce9a0e3e9abd4dd804cd044d279f411d31074f165670e010dfdb4
                                                 #   pin the base by digest for reproducibility — the consumed
                                                 #   reference is ros_base_image@ros_base_digest (gen_build_args.py).
 
+[ingest]
+# The DGX-side ingest container (docker/ingest/Dockerfile, M8 / F-01). It uses a DIFFERENT, smaller
+# base than [container]'s sim/dev image — the plain `ros:jazzy-ros-base` (no desktop/Gazebo) — so it
+# needs its OWN digest, resolved for THAT image (do NOT reuse [container].ros_base_digest). Pinned by
+# digest for the same reproducibility discipline the sim base gets; the two rosbag2 apt packages are
+# version-pinned too. The two carry DIFFERENT apt candidates on the pinned base, so they are two keys.
+# Re-resolve on a bump: `docker buildx imagetools inspect ros:jazzy-ros-base` (RepoDigest) and
+# `apt-cache policy ros-jazzy-rosbag2[-storage-mcap]` on the pinned base. NB: no CI lane builds this
+# image, so these pins are locally-validated only (design §4.2.4; PR #16 F-01).
+ros_base_image        = "ros:jazzy-ros-base"
+ros_base_digest       = "sha256:31daab66eef9139933379fb67159449944f4e2dcf2e22c2d12cc715f29873e0f"
+rosbag2_apt_version   = "0.26.11-1noble.20260616.084050"  # apt candidate for ros-jazzy-rosbag2
+rosbag2_mcap_apt_version = "0.26.11-1noble.20260616.074830"  # apt candidate for ros-jazzy-rosbag2-storage-mcap
+
 [tools]
 uv_version         = "0.11.18"                  # Python manager
 uv_tarball_sha256  = "588f3e360f69ce02b6982aa99f2240e803933a6b7e176ac01617830adf955add"

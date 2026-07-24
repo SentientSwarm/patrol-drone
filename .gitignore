@@ -18,12 +18,21 @@ htmlcov/
 build/
 install/
 log/
+# ...including local backups of those trees renamed out of the way during
+# isolated-vs-merged install testing (see ADR-0012); the .bak suffix dodges the
+# bare build/ install/ rules above, so match any suffix on the same names.
+build.*/
+install.*/
+log.*/
 .colcon_install_layout
 .colcon_workspace
 
 # Bags — these are huge and don't belong in git
 # Store in object storage or DGX bag pipeline instead
 *.mcap
+# ...except the small replay regression reference bag, which IS committed (via Git LFS — see
+# .gitattributes). Operator bags (~/patrol_bags, anywhere else) stay ignored.
+!tests/replay/reference/**/*.mcap
 *.bag
 *.db3
 bags/
