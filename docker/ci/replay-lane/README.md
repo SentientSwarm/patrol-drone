@@ -26,8 +26,18 @@ The job summary prints the published **digest** — that digest, not a tag, is w
 Once a digest is published (first build runs when this lands on `main`, or on demand via
 dispatch), a small reviewable PR flips `.github/workflows/replay-regression.yml`:
 
-1. Point the job container at the image and add pull credentials (the GHCR package is
-   repo-linked, so `GITHUB_TOKEN` can read it):
+1. Grant the workflow `packages: read` so `GITHUB_TOKEN` can pull the (private, repo-linked) image
+   — **required**: without it the token pulls anonymously and GHCR returns `manifest unknown`, not
+   a clear auth error. Add it to the top-level `permissions:` block:
+
+   ```yaml
+   permissions:
+     contents: read
+     packages: read
+   ```
+
+2. Point the job container at the image and add pull credentials (with the scope above,
+   `GITHUB_TOKEN` can read the repo-linked package):
 
    ```yaml
    container:
@@ -37,7 +47,7 @@ dispatch), a small reviewable PR flips `.github/workflows/replay-regression.yml`
        password: ${{ secrets.github_token }}
    ```
 
-2. Delete the two job-time apt steps (**Install git-lfs** and **Install the ROS runtime …**) —
+3. Delete the two job-time apt steps (**Install git-lfs** and **Install the ROS runtime …**) —
    everything they install is baked in. The env probe, overlay cache/build, and test steps are
    unchanged (`ROS_DISTRO` is baked into the image but the job env keeps it manifest-synced).
 

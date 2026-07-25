@@ -14,6 +14,10 @@ on:
     branches: [main]
 permissions:
   contents: read
+  packages: read # pull the digest-pinned replay-lane image from GHCR via GITHUB_TOKEN (SWM-84):
+  # the job container credentials below authenticate with secrets.github_token, whose GHCR read
+  # scope comes from THIS block — without packages:read the private, repo-linked package reads back
+  # as "manifest unknown" (an anonymous pull), not a clear auth error.
 concurrency:
   group: replay-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true

@@ -69,7 +69,6 @@ def _low_battery_msg() -> BatteryStatus:
 
 def _spin_injecting_low_battery(
     watcher: PatrolWatcher,
-    injector: Node,
     bat_pub,
     predicate,
     *,
@@ -79,13 +78,14 @@ def _spin_injecting_low_battery(
 
     Republishing every iteration keeps the node's cached reading both low and unstale (the node
     forwards "unknown" once a reading ages past its 10 s budget), so the guard is guaranteed a fresh
-    sub-threshold sample to fire on; once the abort latches, continued injection is harmless.
+    sub-threshold sample to fire on; once the abort latches, continued injection is harmless. Only the
+    watcher is spun — the injector node just publishes (a publisher needs no spin; it has no
+    subscriptions), so it is not passed here.
     """
     msg = _low_battery_msg()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline and not predicate(watcher):
         bat_pub.publish(msg)
-        rclpy.spin_once(injector, timeout_sec=0.0)
         rclpy.spin_once(watcher, timeout_sec=0.1)
 
 
@@ -108,7 +108,6 @@ def test_low_battery_mid_patrol_drives_observable_rth() -> None:
         # settle at home, and a disarm after arming.
         _spin_injecting_low_battery(
             watcher,
-            injector,
             bat_pub,
             lambda w: w.abort_then_rth and w.settled_near_home and w.disarmed_after_arm,
         )

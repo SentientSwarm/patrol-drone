@@ -77,19 +77,19 @@ def test_summarize_aggregates_runs_max_mean_and_flake():
     assert summary.flake_rate == pytest.approx(0.2)
 
 
-# (fail count over 5 runs, max_seconds, budget_s) -> (over_budget, quarantine)
+# inputs (fail count over 5 runs, max_seconds, budget_s) -> expected (over_budget, quarantine)
 _QUARANTINE_CASES = [
-    pytest.param(1, 50.0, 100.0, False, False, id="clean-within-budget"),
-    pytest.param(2, 50.0, 100.0, False, True, id="flaky-40pct->quarantine"),
-    pytest.param(1, 150.0, 100.0, True, False, id="over-budget-but-not-2x"),
-    pytest.param(1, 250.0, 100.0, True, True, id="over-2x-budget->quarantine"),
+    pytest.param((1, 50.0, 100.0), (False, False), id="clean-within-budget"),
+    pytest.param((2, 50.0, 100.0), (False, True), id="flaky-40pct->quarantine"),
+    pytest.param((1, 150.0, 100.0), (True, False), id="over-budget-but-not-2x"),
+    pytest.param((1, 250.0, 100.0), (True, True), id="over-2x-budget->quarantine"),
 ]
 
 
-@pytest.mark.parametrize(
-    ("fails", "max_s", "budget_s", "over_budget", "quarantine"), _QUARANTINE_CASES
-)
-def test_over_budget_and_quarantine_thresholds(fails, max_s, budget_s, over_budget, quarantine):
+@pytest.mark.parametrize(("inputs", "expected"), _QUARANTINE_CASES)
+def test_over_budget_and_quarantine_thresholds(inputs, expected):
+    fails, max_s, budget_s = inputs
+    over_budget, quarantine = expected
     # 5 runs for one scenario: `fails` failures among the first four, the fifth carries max_s (passing)
     results = [msb.CaseResult("S", 10.0, i >= fails) for i in range(4)]
     results.append(msb.CaseResult("S", max_s, True))
