@@ -110,3 +110,36 @@ Deliver the mission orchestration layer: a Python ROS 2 node driving PX4 offboar
 - **Exit-checklist items owned:** 2, 3, 4, 12 (primary). Shared/integrative: 1 (mission-flight behavior; this docset owns the patrol logic and the launch entry-point, but the full end-to-end claim depends on 01/03/04/05).
 - **Packages / dirs:** `ros2_ws/src/patrol_mission/`, `ros2_ws/src/patrol_bringup/` (launch files, configs, params); consumes `ros2_ws/src/external/px4_msgs/`; mission-state types may live in `ros2_ws/src/patrol_interfaces/` (owned by 04). Tests in `tests/unit/` (state machine) and `tests/integration/` (SITL mission).
 - **Lifecycle:** dod.md (this) → prd.md (via /drive) → design.md (via /drive)
+
+## 10. Phase 1 close-out reconciliation (2026-07-24)
+
+Reconciles this docset against what actually shipped (SWM-33). **All 9 acceptance criteria are
+green** and the M3/M4 deliverables merged to `main` match §2/§3/§5. Notable design-time → landed
+resolutions and additions:
+
+- **Return-to-home semantics (§7 open decision) — resolved: explicit home-waypoint offboard
+  sequence, NOT PX4 RTL** (`state_machine.py` `RTH` state, "OQ-8"). A latched abort pre-empts to
+  `ABORT → RTH`; a basic (no-waypoint) mission routes `HOVER → RTH` directly.
+- **`/patrol/dwell` shipped** as the atomic once-per-checkpoint capture-trigger event (reliable +
+  volatile QoS), alongside the §5 `/patrol/{mission_state,current_waypoint,abort}` surface — this is
+  the capture-trigger semantic 04 keys off (and 05 records). Names/QoS finalized (closes the §7
+  "mission topic names/types/QoS" open decision); all plain `std_msgs`, so 05 records and Foxglove
+  renders them with no custom plugin.
+- **Abort split as-built (AC-6/7/8):** external-signal + low-battery guards are **live** (external
+  observable in SITL, low-battery unit-tested); manual-takeover + timeout are **scaffolded**
+  state transitions (unit-tested, not fired in SITL) per the P2 capability and the "abort
+  transitions exist from day one" constraint.
+- **Mission YAML + checkpoint resolution (AC-3, OQ-2):** `checkpoint_id` waypoints resolve against
+  `sim/config/checkpoints.yaml`; the loader accepts **both** the canonical top-level `checkpoints:`
+  keyed form (03) and the interim bare-list stand-in. The checkpoints path is a required launch
+  argument (`checkpoints_yaml:=`, no CWD-relative default).
+- **Dwell-capture framing (ADR-0012):** the dwell stand-off hover was raised
+  `standoff_m*tan(camera_pitch_rad)` above the tag to center the camera boresight — a full patrol
+  now records `/patrol/checkpoint_capture` **Count 9 (was 0)**. No `state_machine.py` change; the
+  fix is in the approach-pose config.
+- **Still deferred by design:** **OQ-5** (canonical SITL scenarios + runtime/flakiness budget) — the
+  provisional ≤8 min/scenario figure is measured against 01's landed SITL by the **SWM-31**
+  measurement harness (this wrap-up); the measured numbers are gated on the human-owned live runs
+  and are flagged as the blocking input, not invented.
+- **Human-owned exit verification** (run separately): AC-2/AC-5/AC-6 SITL runs (full patrol, canonical
+  mission, mid-patrol external abort) are confirmed by the live/manual exit-checklist pass.

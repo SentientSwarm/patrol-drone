@@ -134,6 +134,30 @@ Abort/waypoint/RTH transitions are all unit-tested (including the scaffolded man
 guards); the patrol + mid-patrol-abort run against live SITL is exercised by the nightly job. See
 [`docs/uat/m4.md`](docs/uat/m4.md) for the one-command UAT runbook (`run_sitl_mission.sh --patrol`).
 
+## Setup → running mission: the command budget (exit-checklist item 10)
+
+Phase 1 exit-checklist item 10 requires the documented path from a **clean machine to a running
+mission** to stay **under 20 commands**, with the platform bring-up **spine ≤ 12** — 01-platform
+owns the spine (it is the integrative bring-up document); each sibling docset appends only its
+per-mission run step. The canonical **containerized** path is the numbered M2 quickstart above,
+continued into one mission launch:
+
+| # | Command (from the quickstarts above) | Owner |
+|---|---|---|
+| 1–2 | `git clone … && cd patrol-drone` | 01 |
+| 3 | `scripts/gen_build_args.py --env > .env.build` | 01 |
+| 4 | `docker compose --env-file .env.build build sim dev` | 01 |
+| 5 | `docker compose --env-file .env.build up -d sim` | 01 |
+| 6 | `… exec sim … ros2 topic list \| grep fmu` *(bridge check)* | 01 |
+| 7 | `… exec sim … ros2 topic hz /fmu/out/vehicle_local_position_v1` *(rate check)* | 01 |
+| 8 | `docker compose … run --rm dev colcon build` *(dev overlay; the sim image already built the ws)* | 01 |
+| 9 | `… exec sim … ros2 launch patrol_bringup mission_patrol.launch.py checkpoints_yaml:=…` | 02 |
+
+**Platform spine (steps 1–8): 8 ≤ 12.** **Total to a running patrol (steps 1–9): 9 ≤ 20.** Steps
+6–8 are verification/dev conveniences; the minimal setup-to-flying path is steps 1–5 + 9 = **6
+commands**. The host-shell variant (M3/M4 quickstarts) is the same launch without the
+`docker compose exec sim` wrapper, run from a sourced host workspace — identical command count.
+
 ## Stack at a glance
 
 | Layer | Choice |
