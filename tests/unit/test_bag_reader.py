@@ -271,3 +271,41 @@ def test_read_bag_facts_raises_on_non_list_relative_file_paths(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="relative_file_paths has unexpected shape"):
         read_bag_facts(bag)
+
+
+# PR #16 round-16 Medium (review 4755855556): admission (`is_valid_bag_dir`) admits any dir with a
+# real metadata.yaml + a real .mcap, so a PRESENT-but-corrupt metadata.yaml on an otherwise-readable
+# MCAP used to hard-fail here on every retry — the documented `ros2 bag info` fallback (for missing/
+# unreadable/malformed metadata) was unreachable. read_bag_facts must now fall back and derive facts
+# FROM the bag. Both an unparseable-YAML doc and a valid-YAML/wrong-shape doc must route to it.
+@pytest.mark.parametrize(
+    "bad_metadata",
+    [
+        pytest.param("{ this is: broken: [", id="invalid-yaml"),
+        pytest.param("- not\n- a mapping\n", id="wrong-shape-root"),
+    ],
+)
+def test_read_bag_facts_falls_back_to_ros2_bag_info_on_unusable_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_metadata: str
+) -> None:
+    bag = tmp_path / "patrol_corrupt_meta"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text(bad_metadata)
+    (bag / "patrol_ref_0.mcap").write_bytes(b"\x89MCAP0\r\n")  # an otherwise-readable MCAP
+
+    calls: list[list[str]] = []
+
+    class _Completed:
+        stdout = _SAMPLE
+
+    def _fake_run(cmd: list[str], **_kwargs: object) -> _Completed:
+        calls.append(cmd)
+        return _Completed()
+
+    monkeypatch.setattr("ingest.bag_reader.subprocess.run", _fake_run)
+
+    facts = read_bag_facts(bag)
+
+    assert calls, "the ros2 bag info fallback was not invoked for the unusable metadata"
+    assert calls[0][:3] == ["ros2", "bag", "info"]
+    assert facts.topic_counts  # facts derived from the bag via ros2 bag info, not the corrupt doc

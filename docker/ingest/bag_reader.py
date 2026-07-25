@@ -170,24 +170,55 @@ def parse_bag_metadata(text: str) -> BagFacts:
     return _facts_from_info(_require_bag_information(text))
 
 
+def _facts_from_metadata(bag_path: Path) -> BagFacts | None:
+    """Facts from ``bag_path/metadata.yaml``, or ``None`` to signal the ``ros2 bag info`` fallback.
+
+    Returns ``None`` for the three cases the fallback exists to serve — a ``metadata.yaml`` that is
+    **missing**, **unreadable** (``OSError``), or **malformed** (invalid YAML, or valid YAML of the
+    wrong shape: a non-mapping root, a missing/ill-typed ``rosbag2_bagfile_information``). The
+    admission guard (:func:`~ingest.ingest_service._require_finalized_bag`) admits any dir with a real
+    ``metadata.yaml`` + a real ``.mcap``, so a **present-but-corrupt** ``metadata.yaml`` on an
+    otherwise-replayable MCAP used to dead-end here (hard-fail every retry) instead of reaching the
+    documented fallback — PR #16 round-16 Medium (review 4755855556). Deriving from ``ros2 bag info``
+    reads the actual bag, so the fallback is strictly the §3.4 dumb-producer intent, not a weakening.
+
+    The payload-declaration guards are deliberately NOT fallback signals — they RAISE (a hard ingest
+    fault), never route to the fallback: a ``metadata.yaml`` that parses but declares a payload not
+    backed by a real in-bag file (F-01), or a non-list ``relative_file_paths``, must reject the bag
+    rather than be laundered through ``ros2 bag info``. So the guard runs *after* the parse succeeds
+    and its ``ValueError`` propagates out of this function.
+    """
+    metadata = bag_path / "metadata.yaml"
+    if not metadata.is_file():
+        return None
+    try:
+        info = _require_bag_information(metadata.read_text())
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+    _require_declared_payloads(
+        bag_path, info
+    )  # payload guard: raises -> hard fault, never a fallback
+    return _facts_from_info(info)
+
+
 def read_bag_facts(bag_path: Path, timeout_s: float = _BAG_INFO_TIMEOUT_S) -> BagFacts:
     """Default reader: prefer the bag's structured ``metadata.yaml``; fall back to ``ros2 bag info``.
 
-    ``metadata.yaml`` is a stable structured contract that needs no ROS env; the ``ros2 bag info``
-    parse (which needs a sourced ROS env and is ``timeout_s``-bounded so a stuck ``ros2`` can't block
-    the serial ingest loop) is the fallback for a bag missing/with an unreadable metadata file. Both
-    paths derive facts *from the bag* — never the sidecar (the dumb-producer invariant, design §3.4).
+    ``metadata.yaml`` is a stable structured contract that needs no ROS env and is the primary
+    source. The ``ros2 bag info`` parse (which needs a sourced ROS env and is ``timeout_s``-bounded
+    so a stuck ``ros2`` can't block the serial ingest loop) is the fallback whenever that document is
+    **missing, unreadable, or malformed** — including the reachable case where admission passed on a
+    present-but-corrupt ``metadata.yaml`` and this reader would otherwise hard-fail on every retry
+    (see :func:`_facts_from_metadata`). Both paths derive facts *from the bag* — never the sidecar
+    (the dumb-producer invariant, design §3.4).
 
     The structured branch additionally cross-checks the payloads ``metadata.yaml`` DECLARES against
-    what is on disk (:func:`_require_declared_payloads`) — the review's "validates metadata
-    references where available" — so facts are never derived from a description of storage files
-    that aren't there. The document is parsed once and reused, so the guard costs no second YAML load.
+    what is on disk (:func:`_require_declared_payloads`) — a document that lies about its payloads is
+    a hard fault, never silently re-derived through the fallback.
     """
-    metadata = bag_path / "metadata.yaml"
-    if metadata.is_file():
-        info = _require_bag_information(metadata.read_text())
-        _require_declared_payloads(bag_path, info)
-        return _facts_from_info(info)
+    facts = _facts_from_metadata(bag_path)
+    if facts is not None:
+        return facts
     completed = subprocess.run(
         ["ros2", "bag", "info", str(bag_path)],
         check=True,
