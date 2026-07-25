@@ -61,6 +61,11 @@ PATROL_TIMEOUT_S = 300.0
 # jitter never trips it.
 MAX_PATROL_SAMPLE_GAP_S = 1.0
 
+# How long to wait for the patrol to get underway (arm + climb + reach the first leg) before
+# injecting a mid-patrol abort trigger. Well under PATROL_TIMEOUT_S; the abort then drives the
+# shorter return home. Shared by the external-abort and low-battery scenarios.
+UNDERWAY_TIMEOUT_S = 150.0
+
 
 def _patrol_mission_yaml() -> str:
     """The same checked-in YAML mission_patrol.launch.py feeds the node (via the installed share)."""
@@ -341,6 +346,72 @@ def spin_until(watcher: PatrolWatcher, predicate, *, timeout_s: float = PATROL_T
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline and not predicate(watcher):
         rclpy.spin_once(watcher, timeout_sec=0.5)
+
+
+def wait_until_underway(watcher: PatrolWatcher, *, timeout_s: float = UNDERWAY_TIMEOUT_S) -> None:
+    """Spin until the patrol is underway (armed + past takeoff / a waypoint active), or timeout.
+
+    The shared precondition for both mid-patrol abort scenarios: a trigger raised before the vehicle
+    is airborne would not exercise the observable ABORT -> RTH -> land recovery.
+    """
+    spin_until(
+        watcher,
+        lambda w: w.was_armed and ("HOVER" in w.states_seen or bool(w.waypoints_visited)),
+        timeout_s=timeout_s,
+    )
+
+
+def abort_recovery_checks(watcher: PatrolWatcher) -> list[Check]:
+    """The shared observable-recovery checks after a mid-patrol abort (AC-6): an observable
+    ABORT -> RTH, a settle within tolerance of the configured home, and a disarm after arming.
+
+    Reused verbatim by the external-abort (AC-6) and the low-battery scenarios so "the abort was
+    observable and the vehicle came home and landed" is defined in exactly one place — the abort
+    *trigger* differs between scenarios, the observable recovery does not.
+    """
+    return [
+        Check(
+            "abort_then_rth",
+            watcher.abort_then_rth,
+            f"observable ABORT -> RTH; states seen: {watcher.states_seen}",
+        ),
+        Check(
+            "settled_near_home",
+            watcher.settled_near_home,
+            f"abort-driven RTH settled within {watcher.home_tol_m} m of home_ned "
+            f"{watcher.home_ned}; closest approach {watcher.min_home_distance_m:.2f} m",
+        ),
+        Check(
+            "disarmed_after_arm",
+            watcher.disarmed_after_arm,
+            "vehicle disarmed after the abort-driven return home",
+        ),
+    ]
+
+
+def run_mid_patrol_abort_scenario(injector_name: str, inject) -> None:
+    """Run a mid-patrol abort scenario end to end: the shared rclpy lifecycle + watcher + underway
+    wait + observable-recovery assertions, defined once so the external-abort and low-battery
+    scenario files share everything but the *trigger* (and can't drift / duplicate scaffolding).
+
+    ``inject(watcher, injector)`` is the scenario's only difference: it publishes the abort trigger
+    on the ``injector`` node (an external ``/patrol/abort`` Bool, or a sub-threshold BatteryStatus on
+    ``/fmu/out/battery_status``) and spins the watcher until the recovery predicate holds. On return,
+    the observable ABORT -> RTH -> settle-at-home -> disarm is asserted via ``abort_recovery_checks``.
+    """
+    rclpy.init()
+    watcher = PatrolWatcher(expected_waypoint_count())
+    injector = rclpy.create_node(injector_name)
+    try:
+        wait_until_underway(watcher)
+        assert watcher.was_armed, "patrol never armed — cannot exercise the mid-patrol abort"
+        inject(watcher, injector)
+        for check in abort_recovery_checks(watcher):
+            assert check.passed, f"{check.name}: {check.detail}"
+    finally:
+        injector.destroy_node()
+        watcher.destroy_node()
+        rclpy.shutdown()
 
 
 def wait_for_subscription(node: Node, publisher, *, timeout_s: float = 10.0) -> bool:

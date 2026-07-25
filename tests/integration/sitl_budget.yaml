@@ -1,0 +1,23 @@
+# SITL runtime/flakiness budget (design OQ-5 / MZ.1 / SWM-31).
+#
+# The per-scenario runtime ceiling and the quarantine-not-expand thresholds, externalized from
+# design prose so scripts/measure_sitl_budget.py enforces DATA, not a hardcoded figure.
+#
+# per_scenario_budget_s is PROVISIONAL (≤8 min, design OQ-5) until the MEASURED wall-clock from 01's
+# landed SITL replaces it. That measurement is the blocking input: it comes from the human-owned
+# nightly/manual SITL runs (docs/ excludes them from the devloop). Feed their pytest JUnit XML to
+# measure_sitl_budget.py, then fold the observed max here and flip `provisional: false`. Do NOT
+# invent the measured number.
+version: 1
+provisional: true # flip to false when a measured figure replaces per_scenario_budget_s below
+
+per_scenario_budget_s: 480 # ≤8 min/scenario (design OQ-5 provisional). MEASURED value: TBD (SWM-31)
+
+quarantine: # quarantine-not-expand a scenario (design OQ-5), never expand the set to chase a flake
+  flake_rate_threshold: 0.2 # > 1-in-5 runs failing
+  budget_overrun_factor: 2.0 # or a run exceeding 2x per_scenario_budget_s
+
+# measured: filled once real nightly runs exist, e.g.
+#   measured:
+#     "tests.integration.test_mission_patrol::test_patrol_visits_all_waypoints_then_returns_home": 372.0
+measured: null

@@ -57,13 +57,16 @@ jobs:
           done
           echo "::error::/fmu/* bridge did not come up within 10 min"; exit 1
 
-      - name: Run the mission integration tests (basic + patrol; AC-5 / AC-2 / AC-6 / MC-10)
+      - name: Run the mission integration tests (basic + patrol + low-battery abort; AC-5 / AC-2 / AC-6 / AC-7 / MC-10)
         run: |
           CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
           # The sim image already carries the runtime + ROS + the built ws AND the pinned test
           # harness (python3-pytest + launch_pytest, baked into docker/sim/Dockerfile's runtime
           # stage) — nothing is installed live here. launch_pytest drives the launch file; pytest
-          # runs the assertions. Both -m ros scenarios collect: test_mission_basic + test_mission_patrol.
+          # runs the assertions. All -m ros scenarios collect: test_mission_basic + test_mission_patrol
+          # (nominal + external abort) + test_mission_patrol_low_battery (the low-battery abort, AC-7
+          # SITL-observed — the second live abort guard, exit item 12; injects a sub-threshold
+          # BatteryStatus in-band). New scenario files under tests/integration are auto-collected here.
           docker cp tests "$CID:/opt/tests"
           # The patrol route (patrol_mission.yaml) resolves checkpoint_ids against 03's interim
           # checkpoints.yaml (the 02 stand-in under sim/config/). The loader has NO CWD-relative
@@ -71,11 +74,32 @@ jobs:
           # path as parents[2]/sim/config/checkpoints.yaml, which is /opt/sim/config here. So ship
           # sim/ to /opt/sim and run pytest from /opt to make that absolute path resolve.
           docker cp sim "$CID:/opt/sim"
+          # scripts/ carries measure_sitl_budget.py (SWM-31); ship it so the measurement step below
+          # can run it in-container (where pyyaml + ROS are present). --junit-xml emits the per-scenario
+          # wall-clock the harness reads to replace the provisional OQ-5 budget with a measured figure.
+          docker cp scripts "$CID:/opt/scripts"
           docker exec "$CID" bash -lc '
             source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
             source /opt/ros2_ws/install/setup.bash
             cd /opt
-            python3 -m pytest /opt/tests/integration -m ros -o markers=ros -ra'
+            python3 -m pytest /opt/tests/integration -m ros -o markers=ros -ra \
+              --junit-xml=/opt/sitl-junit.xml'
+
+      # Non-gating (OQ-5 / SWM-31): measure the per-scenario wall-clock + flake verdict from THIS
+      # run's JUnit report and write it to the job summary — the deferred "measure once 01's SITL has
+      # landed" (design OQ-5). It never fails the job (no --fail-on-quarantine); accumulating multiple
+      # nights' reports is what replaces the provisional ≤8 min budget in tests/integration/sitl_budget.yaml.
+      - name: Measure the SITL runtime/flakiness budget (non-gating; OQ-5/SWM-31)
+        if: always()
+        run: |
+          CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
+          [ -n "$CID" ] || { echo "sim container gone; no JUnit to measure"; exit 0; }
+          {
+            echo '### SITL runtime/flakiness budget (this run)'
+            echo '```'
+            docker exec "$CID" bash -lc 'python3 /opt/scripts/measure_sitl_budget.py /opt/sitl-junit.xml' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Sim container logs (always)
         if: always()
