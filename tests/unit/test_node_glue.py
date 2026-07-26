@@ -449,6 +449,68 @@ def test_low_battery_telemetry_drives_abort(node: Any, node_mod: ModuleType):
     assert node._state is node_mod.MissionState.ABORT
 
 
+# --- /patrol/abort_reason (F-09) -------------------------------------------------
+# mission_state says ABORT but not WHY. The external and low-battery guards fly an identical profile
+# to the abort point, so from outside they are indistinguishable — which is why the low-battery SITL
+# scenario could not assert that its own injected sample caused the abort it observed. The node
+# mirrors the machine's latched AbortReason onto its own topic.
+
+
+def _arrange_external_abort(node: Any, node_mod: ModuleType) -> None:
+    _feed_abort(node, value=True)
+
+
+def _arrange_low_battery(node: Any, node_mod: ModuleType) -> None:
+    _feed_battery(node, node_mod, remaining=0.1)  # threshold is 0.20
+
+
+@pytest.mark.parametrize(
+    ("arrange", "expected_reason"),
+    [
+        (_arrange_external_abort, "EXTERNAL_SIGNAL"),
+        (_arrange_low_battery, "LOW_BATTERY"),
+    ],
+    ids=["external_signal", "low_battery"],
+)
+def test_abort_reason_distinguishes_the_two_live_guards(
+    node: Any, node_mod: ModuleType, arrange: Any, expected_reason: str
+):
+    arrange(node, node_mod)
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    # Both reach the SAME state — that is exactly the ambiguity the topic resolves.
+    assert node._state is node_mod.MissionState.ABORT
+    assert _pub(node, node_mod.topics.PATROL_ABORT_REASON).published[-1].data == expected_reason
+
+
+def test_abort_reason_is_none_on_a_nominal_run(node: Any, node_mod: ModuleType):
+    # Published every progressing tick, not only on the ABORT edge, so the topic always carries the
+    # machine's answer and a late subscriber never has to have been listening at the right instant.
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ARMING
+    assert _pub(node, node_mod.topics.PATROL_ABORT_REASON).published[-1].data == "NONE"
+
+
+def test_abort_reason_latches_through_the_rth_recovery(node: Any, node_mod: ModuleType):
+    # The reason sticks with the abort (it is latched in the machine's progress, not recomputed from
+    # live telemetry), so the cause survives after the triggering condition clears — a bag read
+    # afterwards still shows why the mission ended.
+    _arrange_low_battery(node, node_mod)
+    _feed_valid_fresh(node, node_mod)
+    node._on_tick()
+
+    _feed_battery(node, node_mod, remaining=0.95)  # battery "recovers" — the reason must not reset
+    _feed_valid_fresh(node, node_mod)
+    node._on_tick()
+
+    assert _pub(node, node_mod.topics.PATROL_ABORT_REASON).published[-1].data == "LOW_BATTERY"
+
+
 # T2.4: an ABSENT BatteryStatus must not fabricate a low-battery abort (defaults to full) — the
 # mission progresses normally (IDLE -> ARMING) when only pos+status are present.
 def test_absent_battery_does_not_abort(node: Any, node_mod: ModuleType):

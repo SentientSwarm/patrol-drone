@@ -218,6 +218,22 @@ class MissionStateMachine:
         self._enter_if_new(state, telem)
         return self._dispatch[state](telem)
 
+    @property
+    def abort_reason(self) -> AbortReason:
+        """The latched cause of this run's abort, or ``AbortReason.NONE`` if none has fired.
+
+        Read-only: the machine owns the decision, the node only observes it to publish
+        ``/patrol/abort_reason`` (F-09). The value latches with the ABORT transition and sticks
+        through RTH exactly like the abort itself, so a consumer that subscribes late — or reads the
+        recorded bag afterwards — still learns *why* the mission ended.
+
+        Without this, ``/patrol/mission_state`` carries the state but not the cause, so an observer
+        cannot distinguish an external-signal abort from a low-battery one. Both look identical from
+        the outside, which is precisely what made the low-battery SITL scenario unable to assert that
+        its own injected sample caused the abort it observed.
+        """
+        return self._p.abort_reason
+
     def reset_timing(self) -> None:
         """Restart the active state's time-based windows on the next ``tick()``.
 

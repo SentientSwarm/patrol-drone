@@ -24,6 +24,7 @@ import launch_pytest
 import pytest
 import rclpy
 from patrol_acceptance import (
+    AbortAttribution,
     PatrolWatcher,
     evaluate_nominal,
     expected_waypoint_count,
@@ -85,4 +86,12 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
             lambda w: w.abort_then_rth and w.settled_near_home and w.disarmed_after_arm,
         )
 
-    run_mid_patrol_abort_scenario("abort_injector", inject)
+    # Attribution (F-09): the mirror of the low-battery scenario — here exactly ONE external abort
+    # command is published, and the mission must name EXTERNAL_SIGNAL as the cause. Pinning both
+    # directions is what makes the pair meaningful: the two scenarios are otherwise behaviourally
+    # indistinguishable from outside (identical profile, identical wall-clock).
+    run_mid_patrol_abort_scenario(
+        "abort_injector",
+        inject,
+        AbortAttribution(reason="EXTERNAL_SIGNAL", external_cmds=1),
+    )

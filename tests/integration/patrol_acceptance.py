@@ -35,10 +35,10 @@ from dwell_tracker import DwellTracker
 from home_settle_tracker import HomeSettleTracker
 from mission_acceptance import Check  # reuse the one Check verdict shape
 from patrol_mission.frames import Point, to_ned_from_origin
-from patrol_mission.qos import patrol_event_qos, patrol_state_qos, px4_qos
+from patrol_mission.qos import patrol_abort_qos, patrol_event_qos, patrol_state_qos, px4_qos
 from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Bool, Int32, String
 
 from patrol_mission import topics
 
@@ -173,6 +173,15 @@ class PatrolWatcher(Node):
         self.dwell_events: list[int] = []  # waypoint indices from the atomic /patrol/dwell event
         self.was_armed = False
         self.disarmed_after_arm = False
+        # Abort ATTRIBUTION (F-09). mission_state says ABORT but not why, and the external and
+        # low-battery guards fly an identical profile to the abort point — so a scenario that merely
+        # observes an abort cannot claim its own trigger caused it. Two independent records:
+        #   abort_reasons_seen  the mission's own latched answer, off /patrol/abort_reason
+        #   external_abort_cmds inbound /patrol/abort commands, so a scenario that injects NO
+        #                       external abort can assert the count is zero (the negative evidence
+        #                       its docstring previously only argued for in prose)
+        self.abort_reasons_seen: list[str] = []
+        self.external_abort_cmds = 0
         # Return-home decision lives in a pure, Layer-A-tested tracker; the watcher feeds it timestamped
         # position samples gated on RTH having started, so the takeoff climb through the home altitude
         # can't falsely latch "returned home" before RTH runs, and only a continuous hold_time_s hold
@@ -193,6 +202,12 @@ class PatrolWatcher(Node):
         # single message carries the dwelled waypoint, so attribution is race-free without correlating
         # the two non-atomic state topics. Acceptance requires both this and the duration proof above.
         self.create_subscription(Int32, topics.PATROL_DWELL, self._on_dwell, patrol_event_qos())
+        # Latched, same profile as mission_state, so the reason is available even if the watcher
+        # matched after the abort fired.
+        self.create_subscription(String, topics.PATROL_ABORT_REASON, self._on_abort_reason, pqos)
+        # The inbound command, on its own reliable+volatile profile (matching what a `ros2 topic pub`
+        # or an injector node publishes with) — counted, never published, by the watcher.
+        self.create_subscription(Bool, topics.PATROL_ABORT, self._on_abort_cmd, patrol_abort_qos())
         self.create_subscription(VehicleStatus, topics.VEHICLE_STATUS, self._on_status, px4_qos())
         self.create_subscription(
             VehicleLocalPosition, topics.VEHICLE_LOCAL_POSITION, self._on_local_pos, px4_qos()
@@ -214,6 +229,27 @@ class PatrolWatcher(Node):
         # The atomic OQ-7 capture trigger: one event per DWELL entry carrying the dwelled waypoint
         # index. Race-free identity (a single message, no two-topic correlation), recorded in order.
         self.dwell_events.append(int(msg.data))
+
+    def _on_abort_reason(self, msg: String) -> None:
+        # Deduped-consecutive, like the mission_state history: the node republishes the latched
+        # reason every progressing tick, so raw appends would be thousands of identical strings.
+        if not self.abort_reasons_seen or self.abort_reasons_seen[-1] != msg.data:
+            self.abort_reasons_seen.append(msg.data)
+
+    def _on_abort_cmd(self, msg: Bool) -> None:
+        # Only True is an abort command; a False sample is not a request and must not be counted.
+        if msg.data:
+            self.external_abort_cmds += 1
+
+    @property
+    def latched_abort_reason(self) -> str:
+        """The mission's own answer for why it aborted; ``"NONE"`` if it never did.
+
+        The last non-NONE reason observed — the machine latches the cause with the ABORT transition
+        and it sticks through RTH, so this is stable once an abort has fired.
+        """
+        real = [r for r in self.abort_reasons_seen if r != "NONE"]
+        return real[-1] if real else "NONE"
 
     def _on_status(self, msg: VehicleStatus) -> None:
         if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED:
@@ -389,7 +425,54 @@ def abort_recovery_checks(watcher: PatrolWatcher) -> list[Check]:
     ]
 
 
-def run_mid_patrol_abort_scenario(injector_name: str, inject) -> None:
+@dataclass(frozen=True)
+class AbortAttribution:
+    """What a scenario expects the mission to say about *why* it aborted (F-09).
+
+    Observing an ABORT is not evidence that YOUR trigger caused it: the external-signal and
+    low-battery guards are both live, both latch, and both fly an identical profile to the abort
+    point (the two SITL scenarios even take the same wall-clock). A scenario therefore has to pin
+    the cause, not just the recovery.
+    """
+
+    reason: str  # the AbortReason name expected on /patrol/abort_reason
+    external_cmds: int = 0  # inbound /patrol/abort commands this scenario itself publishes
+
+
+def abort_attribution_checks(watcher: PatrolWatcher, attribution: AbortAttribution) -> list[Check]:
+    """The shared causal-attribution checks for a mid-patrol abort (F-09).
+
+    Two independent lines of evidence, so neither alone has to carry the claim:
+
+    * **positive** — the mission's own latched reason names the guard the scenario triggered;
+    * **negative** — the count of inbound external-abort commands is exactly what this scenario
+      published (zero for the low-battery scenario), so an external signal cannot be the cause.
+
+    The negative half is what the low-battery test's docstring used to argue in prose: "the only
+    live guards are external and low-battery, and this test injects no /patrol/abort, so the abort
+    is attributable to the battery reading." A fair argument — but it was never an assertion, so
+    the test would have passed had the abort come from anywhere else.
+    """
+    return [
+        Check(
+            "abort_reason_attributed",
+            watcher.latched_abort_reason == attribution.reason,
+            f"mission reported abort reason {watcher.latched_abort_reason!r}, expected "
+            f"{attribution.reason!r}; reasons seen: {watcher.abort_reasons_seen}",
+        ),
+        Check(
+            "external_abort_command_count",
+            watcher.external_abort_cmds == attribution.external_cmds,
+            f"observed {watcher.external_abort_cmds} inbound /patrol/abort command(s), expected "
+            f"{attribution.external_cmds} — a different count means the abort cannot be "
+            f"attributed to this scenario's trigger",
+        ),
+    ]
+
+
+def run_mid_patrol_abort_scenario(
+    injector_name: str, inject, attribution: AbortAttribution
+) -> None:
     """Run a mid-patrol abort scenario end to end: the shared rclpy lifecycle + watcher + underway
     wait + observable-recovery assertions, defined once so the external-abort and low-battery
     scenario files share everything but the *trigger* (and can't drift / duplicate scaffolding).
@@ -397,7 +480,9 @@ def run_mid_patrol_abort_scenario(injector_name: str, inject) -> None:
     ``inject(watcher, injector)`` is the scenario's only difference: it publishes the abort trigger
     on the ``injector`` node (an external ``/patrol/abort`` Bool, or a sub-threshold BatteryStatus on
     ``/fmu/out/battery_status``) and spins the watcher until the recovery predicate holds. On return,
-    the observable ABORT -> RTH -> settle-at-home -> disarm is asserted via ``abort_recovery_checks``.
+    the observable ABORT -> RTH -> settle-at-home -> disarm is asserted via ``abort_recovery_checks``,
+    and ``attribution`` pins that the abort had the *cause* this scenario triggered (F-09) rather
+    than merely that some abort occurred.
     """
     rclpy.init()
     watcher = PatrolWatcher(expected_waypoint_count())
@@ -406,7 +491,8 @@ def run_mid_patrol_abort_scenario(injector_name: str, inject) -> None:
         wait_until_underway(watcher)
         assert watcher.was_armed, "patrol never armed — cannot exercise the mid-patrol abort"
         inject(watcher, injector)
-        for check in abort_recovery_checks(watcher):
+        checks = [*abort_recovery_checks(watcher), *abort_attribution_checks(watcher, attribution)]
+        for check in checks:
             assert check.passed, f"{check.name}: {check.detail}"
     finally:
         injector.destroy_node()

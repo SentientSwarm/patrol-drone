@@ -26,7 +26,8 @@ topics:
   - /patrol/mission_state # std_msgs/String
   - /patrol/current_waypoint # std_msgs/Int32
   - /patrol/dwell # std_msgs/Int32 (atomic per-checkpoint capture trigger)
-  - /patrol/abort # std_msgs/Bool
+  - /patrol/abort # std_msgs/Bool (inbound external-abort command)
+  - /patrol/abort_reason # std_msgs/String (latched AbortReason name — why the mission ended, F-09)
   # Perception (04-perception) — LR-7: the CheckpointCapture stream + the detection feed
   - /patrol/checkpoint_capture # patrol_interfaces/msg/CheckpointCapture (image_path, not pixels)
   - /tag_detections # apriltag_msgs/msg/AprilTagDetectionArray

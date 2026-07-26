@@ -135,6 +135,12 @@ class PatrolMissionNode(Node):
         state_qos = patrol_state_qos()
         self._pub_state = self.create_publisher(String, topics.PATROL_MISSION_STATE, state_qos)
         self._pub_wp = self.create_publisher(Int32, topics.PATROL_CURRENT_WAYPOINT, state_qos)
+        # /patrol/abort_reason — the latched AbortReason NAME, on the same latched profile as
+        # mission_state so a late subscriber still learns why the mission ended (F-09). The machine
+        # owns the decision; the node only mirrors its read-only accessor onto the topic.
+        self._pub_abort_reason = self.create_publisher(
+            String, topics.PATROL_ABORT_REASON, state_qos
+        )
         # /patrol/dwell — the atomic OQ-7 capture trigger: one Int32 (the dwelled waypoint index) on
         # the rising edge into DWELL, so 04 never correlates the two non-atomic state topics above.
         self._pub_dwell = self.create_publisher(Int32, topics.PATROL_DWELL, patrol_event_qos())
@@ -287,6 +293,13 @@ class PatrolMissionNode(Node):
         wp_msg = Int32()
         wp_msg.data = cmd.current_waypoint
         self._pub_wp.publish(wp_msg)
+        # The cause, alongside the state (F-09). Published every progressing tick like the other two
+        # rather than only on the ABORT edge, so the topic always reflects the machine's latched
+        # answer — "NONE" on a nominal run — and a subscriber never has to have been listening at the
+        # exact moment the abort fired to learn why.
+        reason_msg = String()
+        reason_msg.data = self._sm.abort_reason.name
+        self._pub_abort_reason.publish(reason_msg)
 
     def _telemetry_stale(self, now_s: float) -> bool:
         """True if either required /fmu/out stream's latest sample is older than the freshness timeout."""

@@ -60,19 +60,28 @@ def test_patrol_topic_names_match_contract():
     assert topics.PATROL_CURRENT_WAYPOINT == "/patrol/current_waypoint"
     assert topics.PATROL_DWELL == "/patrol/dwell"
     assert topics.PATROL_ABORT == "/patrol/abort"
+    assert topics.PATROL_ABORT_REASON == "/patrol/abort_reason"
 
 
-# The aggregate tuple is exactly the four distinct /patrol/* names (no dupes, none missed) — the
-# atomic /patrol/dwell capture trigger joins the orchestration surface (Hermes High).
+# The aggregate tuple is exactly the five distinct /patrol/* names (no dupes, none missed) — the
+# atomic /patrol/dwell capture trigger joins the orchestration surface (Hermes High), and the
+# outbound /patrol/abort_reason carries the latched abort cause the state alone cannot express (F-09).
 def test_patrol_topics_aggregate_is_complete_and_unique():
     expected = {
         topics.PATROL_MISSION_STATE,
         topics.PATROL_CURRENT_WAYPOINT,
         topics.PATROL_DWELL,
         topics.PATROL_ABORT,
+        topics.PATROL_ABORT_REASON,
     }
     assert set(topics.PATROL_TOPICS) == expected
     assert len(topics.PATROL_TOPICS) == len(expected)
+
+
+# The inbound command and the outbound cause are distinct topics — a regression that collapsed them
+# would make the low-battery scenario's "no external abort was published" evidence meaningless.
+def test_abort_command_and_abort_reason_are_distinct_topics():
+    assert topics.PATROL_ABORT != topics.PATROL_ABORT_REASON
 
 
 # The aggregate tuple is exactly the six distinct names (no dupes, none missed).

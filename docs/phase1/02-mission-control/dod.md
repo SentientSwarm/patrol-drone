@@ -125,10 +125,20 @@ resolutions and additions:
   the capture-trigger semantic 04 keys off (and 05 records). Names/QoS finalized (closes the §7
   "mission topic names/types/QoS" open decision); all plain `std_msgs`, so 05 records and Foxglove
   renders them with no custom plugin.
-- **Abort split as-built (AC-6/7/8):** external-signal + low-battery guards are **live** (external
-  observable in SITL, low-battery unit-tested); manual-takeover + timeout are **scaffolded**
-  state transitions (unit-tested, not fired in SITL) per the P2 capability and the "abort
-  transitions exist from day one" constraint.
+- **`/patrol/abort_reason` added (F-09).** The one deliberate widening of the surface above:
+  `std_msgs/String` carrying the latched `AbortReason` name (`NONE` until an abort fires, then
+  `EXTERNAL_SIGNAL` / `LOW_BATTERY` / `MANUAL_TAKEOVER` / `TIMEOUT`), on the same latched QoS as
+  `mission_state` and recorded by 05. Distinct from `/patrol/abort`, which is the **inbound**
+  external-abort command. Added because `mission_state` carries the state but not the cause: the two
+  live guards fly an identical profile to the abort point, so from outside they were
+  indistinguishable — no observer (or SITL scenario, or recorded bag) could tell *why* a mission
+  ended. Still plain `std_msgs`, so the no-custom-plugin property above is preserved.
+- **Abort split as-built (AC-6/7/8):** external-signal + low-battery guards are **live** — **both
+  observable in SITL as of 2026-07-26** (F-10; the low-battery scenario passed on its first
+  execution anywhere, closing the SITL-observation gap this DoD previously flagged), and each now
+  asserts its own cause via `/patrol/abort_reason` rather than by exclusion. Manual-takeover +
+  timeout remain **scaffolded** state transitions (unit-tested, not fired in SITL) per the P2
+  capability and the "abort transitions exist from day one" constraint.
 - **Mission YAML + checkpoint resolution (AC-3, OQ-2):** `checkpoint_id` waypoints resolve against
   `sim/config/checkpoints.yaml`; the loader accepts **both** the canonical top-level `checkpoints:`
   keyed form (03) and the interim bare-list stand-in. The checkpoints path is a required launch

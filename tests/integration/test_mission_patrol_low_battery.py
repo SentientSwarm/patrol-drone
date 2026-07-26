@@ -15,18 +15,30 @@ subscribes with (best-effort + transient-local). PX4's own ~full sample interlea
 caches the latest reading and checks the guard every tick, so a fresh sub-threshold sample makes the
 guard fire; the abort then latches (sticks through RTH) exactly like the external abort.
 
-**Attribution.** The only *live* abort guards are external-signal and low-battery; this test injects
-neither an external ``/patrol/abort`` nor fires a scaffolded guard, so an observed ABORT is
-attributable to the low-battery reading alone. (The observable ``/patrol/mission_state`` surface
-carries the state, not the AbortReason, so attribution is by exclusion, not a reason field.)
+**Attribution (F-09).** This used to be argued in prose — "the only live guards are external-signal
+and low-battery, and this test injects no ``/patrol/abort``, so an observed ABORT is attributable to
+the battery reading alone." A fair argument, but it was never an *assertion*: the test would still
+have passed had the abort come from somewhere else, and the external and low-battery scenarios are
+behaviourally indistinguishable from outside (identical flight profile, identical 24.4 s wall-clock).
+
+It is now asserted, from two independent directions via ``AbortAttribution``:
+
+* **positive** — the mission publishes its latched ``AbortReason`` on ``/patrol/abort_reason``, and
+  this scenario requires it to read ``LOW_BATTERY``. ``mission_state`` carries the state but not the
+  cause; that gap was the real defect behind the weak assertion, so it was closed rather than
+  worked around.
+* **negative** — the inbound ``/patrol/abort`` command count must be exactly zero, so an external
+  signal is positively excluded rather than assumed absent.
 
 The launch wiring, the underway-wait, and the ABORT -> RTH -> land recovery PASS/FAIL are shared
 verbatim with the external-abort scenario (:mod:`patrol_launch`, :mod:`patrol_acceptance`) — only
 the abort *trigger* differs.
 
 Nightly SITL tier only — never a required per-PR check (OQ-5). Marked ``ros`` so the Layer-A unit
-runner (no ROS) skips it. **Live-run status: the trigger + drain timing are pending validation on
-01's landed SITL; the measured behaviour is the blocking input (SWM-31), not invented here.**
+runner (no ROS) skips it. **Live-run status: PASSED 2026-07-26 on its first execution anywhere
+(24.4 s) — the injection path works end to end and produces abort -> RTH -> settle -> disarm. Until
+then this scenario had never run in CI, locally, or in the nightly (which had never been green), so
+it shipped written-against-the-design and unproven.**
 """
 
 import time
@@ -36,6 +48,7 @@ import pytest
 import rclpy
 from patrol_acceptance import (
     PATROL_TIMEOUT_S,
+    AbortAttribution,
     PatrolWatcher,
     run_mid_patrol_abort_scenario,
     wait_for_subscription,
@@ -112,4 +125,11 @@ def test_low_battery_mid_patrol_drives_observable_rth() -> None:
             lambda w: w.abort_then_rth and w.settled_near_home and w.disarmed_after_arm,
         )
 
-    run_mid_patrol_abort_scenario("low_battery_injector", inject)
+    # Attribution (F-09): the mission must name LOW_BATTERY as the cause, AND no external abort
+    # command may have been published — this scenario injects only a BatteryStatus sample, so a
+    # non-zero /patrol/abort count would mean something else drove the transition.
+    run_mid_patrol_abort_scenario(
+        "low_battery_injector",
+        inject,
+        AbortAttribution(reason="LOW_BATTERY", external_cmds=0),
+    )
