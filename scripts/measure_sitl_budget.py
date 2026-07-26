@@ -112,6 +112,36 @@ def summarize(results: list[CaseResult], budget: Budget) -> list[ScenarioSummary
     return [_summarize_one(s, cases, budget) for s, cases in sorted(by_scenario.items())]
 
 
+def sample_size_note(summaries: list[ScenarioSummary], budget: Budget) -> list[str]:
+    """Say plainly when the sample is too small for the flake column to mean anything (F-08).
+
+    The quarantine rule trips on a flake rate above ``flake_rate_threshold`` (1-in-5 by default), a
+    ratio that N runs simply cannot express for small N: fed a single report, every scenario reports
+    ``runs 1, fails 0, flake 0%`` — which looks like a clean measurement and is in fact no
+    measurement at all. That is exactly how this ran for months, because the workflow handed the
+    harness only the current night's JUnit while its own guidance said multiple reports must
+    accumulate. The number is now stated, and an under-powered sample is labelled as such.
+    """
+    runs = max(s.runs for s in summaries)
+    min_runs = _min_runs_for_flake(budget)
+    if runs >= min_runs:
+        return ["", f"sample size: {runs} runs — flake rate is meaningful at this threshold."]
+    return [
+        "",
+        f"SAMPLE SIZE {runs} run(s) — NOT a flake measurement. The quarantine rule trips at "
+        f"flake > {budget.flake_rate_threshold:.0%} (1 in {min_runs}), which {runs} run(s) cannot "
+        f"express: every flake figure above is necessarily 0% or 100%. Accumulate >= {min_runs} "
+        f"nightly reports before reading the flake column, or acting on the budget line below.",
+    ]
+
+
+def _min_runs_for_flake(budget: Budget) -> int:
+    """Runs needed before the flake rate can express the quarantine threshold (1/threshold)."""
+    if budget.flake_rate_threshold <= 0:
+        return 1
+    return max(1, round(1 / budget.flake_rate_threshold))
+
+
 def format_report(summaries: list[ScenarioSummary], budget: Budget) -> str:
     """A human/Markdown-friendly table plus the measured-budget line to fold back into the config."""
     lines = [
@@ -130,6 +160,7 @@ def format_report(summaries: list[ScenarioSummary], budget: Budget) -> str:
             f"{s.scenario:<64} {s.runs:>4} {s.failures:>5} {s.flake_rate:>5.0%} "
             f"{s.max_seconds:>7.1f} {s.mean_seconds:>7.1f}  {verdict}"
         )
+    lines += sample_size_note(summaries, budget)
     observed_max = max(s.max_seconds for s in summaries)
     lines += [
         "",

@@ -12,6 +12,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  # `gh run list` / `gh run download` read prior runs' retained JUnit artifacts so the budget harness
+  # gets a multi-night sample instead of a single binary-flake input (F-08). Read-only.
+  actions: read
 concurrency:
   group: sitl-nightly-${{ github.ref }}
   cancel-in-progress: true
@@ -78,15 +81,73 @@ jobs:
           # can run it in-container (where pyyaml + ROS are present). --junit-xml emits the per-scenario
           # wall-clock the harness reads to replace the provisional OQ-5 budget with a measured figure.
           docker cp scripts "$CID:/opt/scripts"
+          # test_upload_ingest_standin.py is deliberately NOT collected here: it is an integration
+          # test that needs NO SITL (rsync + sqlite + the Git-LFS reference bag) and is owned by the
+          # required `replay-regression` lane, which materializes the LFS bag and puts analysis/ +
+          # docker/ on the path. This container has none of those, and because a bad import is a
+          # COLLECTION error (not a deselect), leaving it in aborts the entire `-m ros` run before a
+          # single SITL scenario executes — which is exactly how this lane went red.
           docker exec "$CID" bash -lc '
             source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
             source /opt/ros2_ws/install/setup.bash
             cd /opt
             python3 -m pytest /opt/tests/integration -m ros -o markers=ros -ra \
+              --ignore=/opt/tests/integration/test_upload_ingest_standin.py \
               --junit-xml=/opt/sitl-junit.xml'
 
-      # Non-gating (OQ-5 / SWM-31): measure the per-scenario wall-clock + flake verdict from THIS
-      # run's JUnit report and write it to the job summary — the deferred "measure once 01's SITL has
+      # F-08: the budget harness takes RUN1.xml RUN2.xml ... (one per night), but this workflow used
+      # to hand it ONLY the current run's report while its own guidance said multiple nights must
+      # accumulate before the provisional budget is replaced. With a single input the flake rate is
+      # binary — every scenario reads `runs 1, fails 0, flake 0%`, which looks like a clean
+      # measurement and measures nothing. So: retain each night's JUnit as an artifact, pull the last
+      # N back on the next run, and feed the whole set.
+      - name: Extract this run's JUnit report
+        if: always()
+        run: |
+          CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
+          mkdir -p junit-rolling
+          [ -n "$CID" ] || { echo "sim container gone; no JUnit to retain"; exit 0; }
+          # Name by run number so downloaded artifacts from prior nights never collide on merge.
+          docker cp "$CID:/opt/sitl-junit.xml" "junit-rolling/run-${{ github.run_number }}.xml" || true
+
+      # Retained well beyond the rolling window below so a longer look-back is possible by hand.
+      - name: Retain this run's JUnit report (rolling budget sample)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sitl-junit-${{ github.run_number }}
+          path: junit-rolling/
+          retention-days: 90
+          if-no-files-found: ignore
+
+      # Pull prior nights' reports into the same dir. Best-effort by design: a first run, a pruned
+      # artifact, or an API hiccup must not fail the nightly — it just means a smaller sample, which
+      # the harness now labels explicitly rather than passing off as a measurement.
+      - name: Fetch prior JUnit reports (rolling window)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROLLING_RUNS: "10"
+        run: |
+          mkdir -p junit-rolling
+          # Prior COMPLETED runs of this same workflow, newest first, excluding the current one.
+          gh run list --workflow "${{ github.workflow }}" --limit 40 \
+            --json databaseId,status \
+            --jq ".[] | select(.status==\"completed\") | .databaseId | select(. != ${{ github.run_id }})" \
+            > prior-runs.txt || true
+          count=0
+          while read -r rid; do
+            [ "$count" -ge "$ROLLING_RUNS" ] && break
+            if gh run download "$rid" --pattern 'sitl-junit-*' --dir "prior-$rid" 2>/dev/null; then
+              find "prior-$rid" -name '*.xml' -exec cp -n {} junit-rolling/ \; || true
+              count=$((count + 1))
+            fi
+          done < prior-runs.txt
+          echo "collected $(find junit-rolling -name '*.xml' | wc -l) JUnit report(s) across $((count + 1)) run(s)"
+
+      # Non-gating (OQ-5 / SWM-31): measure the per-scenario wall-clock + flake verdict across the
+      # ROLLING set and write it to the job summary — the deferred "measure once 01's SITL has
       # landed" (design OQ-5). It never fails the job (no --fail-on-quarantine); accumulating multiple
       # nights' reports is what replaces the provisional ≤8 min budget in tests/integration/sitl_budget.yaml.
       - name: Measure the SITL runtime/flakiness budget (non-gating; OQ-5/SWM-31)
@@ -94,10 +155,14 @@ jobs:
         run: |
           CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
           [ -n "$CID" ] || { echo "sim container gone; no JUnit to measure"; exit 0; }
+          reports=$(find junit-rolling -name '*.xml' | sort | tr '\n' ' ')
+          [ -n "$reports" ] || { echo "no JUnit reports collected; nothing to measure"; exit 0; }
+          # Ship the rolling set in and measure in-container, where pyyaml + the budget config live.
+          docker cp junit-rolling "$CID:/opt/junit-rolling"
           {
-            echo '### SITL runtime/flakiness budget (this run)'
+            echo "### SITL runtime/flakiness budget (rolling: $(echo "$reports" | wc -w) run report(s))"
             echo '```'
-            docker exec "$CID" bash -lc 'python3 /opt/scripts/measure_sitl_budget.py /opt/sitl-junit.xml' || true
+            docker exec "$CID" bash -lc 'python3 /opt/scripts/measure_sitl_budget.py /opt/junit-rolling/*.xml' || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

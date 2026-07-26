@@ -112,3 +112,43 @@ def test_format_report_flags_quarantine_and_measured_max():
     report = msb.format_report(summaries, _budget(budget_s=100.0))
     assert "QUARANTINE" in report  # the single-run failure is a 100% flake rate
     assert "observed max across scenarios): 42.5s" in report
+
+
+# --- sample-size honesty (F-08) -------------------------------------------------
+# Fed one report, every scenario reads `runs 1, fails 0, flake 0%` — which looks like a clean
+# measurement and is no measurement at all. The workflow handed the harness exactly one report for
+# months while its own guidance said multiple nights must accumulate. The report now says so.
+
+
+@pytest.mark.parametrize(
+    ("runs", "under_powered"),
+    [(1, True), (4, True), (5, False), (12, False)],
+    ids=["single-run", "just-under", "at-threshold", "well-powered"],
+)
+def test_sample_size_note_labels_an_under_powered_sample(runs: int, under_powered: bool):
+    # A clean scenario across `runs` runs; at a 0.2 threshold the flake rate needs 5 to be expressible.
+    results = [msb.CaseResult("S", 10.0, True) for _ in range(runs)]
+    summaries = msb.summarize(results, _budget())
+
+    note = "\n".join(msb.sample_size_note(summaries, _budget()))
+
+    assert ("NOT a flake measurement" in note) is under_powered
+    assert f"{runs} run" in note
+
+
+def test_format_report_carries_the_sample_size_warning_for_one_run():
+    summaries = msb.summarize(msb.parse_junit_xml(_JUNIT), _budget())
+
+    report = msb.format_report(summaries, _budget())
+
+    # The exact failure mode from the live 2026-07-26 run: a 1-sample verdict presented as measured.
+    assert "NOT a flake measurement" in report
+    assert "1 in 5" in report
+
+
+def test_min_runs_for_flake_tracks_the_configured_threshold():
+    # The needed sample size is derived from the quarantine threshold, not hard-coded, so retuning
+    # the rule keeps the warning honest.
+    assert msb._min_runs_for_flake(msb.Budget(100.0, 0.2, 2.0)) == 5
+    assert msb._min_runs_for_flake(msb.Budget(100.0, 0.1, 2.0)) == 10
+    assert msb._min_runs_for_flake(msb.Budget(100.0, 0.0, 2.0)) == 1  # no division by zero
