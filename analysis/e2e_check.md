@@ -118,3 +118,40 @@ Record the witnessed `$BAG` name + date here when run:
 > `ros2 bag info` (dumb-producer); `verify_live_bag.py` exit 0 (consistency OK, rate PASS); Foxglove
 > panels render. checkpoint_capture Count 3 (perception captured 3 of 4 checkpoints — witness requires
 > ≥1; the 4th-capture gap is a separate perception-timing follow-up).
+>
+> _Re-verified 2026-07-25 (Phase 1 wrap-up, PR #20): steps **2–4** re-run headlessly against that same
+> bag to confirm the pipeline still holds after the wrap-up changes — upload **2 s** to the stand-in
+> with a receipt listing bag + sidecar; `manifest_query` → `169s / 34 topics`, matching `ros2 bag info`
+> (168.81 s / 34 topics); `verify_live_bag.py` exit 0 (consistency OK, all five asserted topics at rate:
+> camera 15.15 Hz, `vehicle_local_position_v1` 50.00 Hz, mission_state / current_waypoint 10.00 Hz,
+> checkpoint_capture 3 msgs). Step 1 (a fresh patrol) and step 5 (the Foxglove visual) were **not**
+> re-run — they need the live GUI stack, so the 2026-07-03 witness above still stands for those._
+
+> **Witnessed: `patrol_20260726T110419Z_20260726_110419` on 2026-07-26 — Egemen Cankaya.**
+> A second, independent end-to-end pass on a **fresh** artifact, superseding the 2026-07-03 witness
+> above as the current AC-8 evidence. All five steps on one bag, no manual stitching:
+> - **step 1** — full patrol via `run_patrol_world_sitl.sh` at `PX4_SIM_SPEED_FACTOR=0.33` (RTF ≈ 1,
+>   camera 15.15 Hz): 170.68 s, 82,281 msgs, 46.4 MiB, `/patrol/dwell` **4** (all checkpoints),
+>   `metadata.yaml` + `.meta.json` sidecar both finalized.
+> - **step 2** — upload to the stand-in in **2 s** (budget 30 s), receipt listing bag + sidecar.
+> - **step 3** — `manifest_query` → `mission=20260726T110419Z 171s 34 topics`, matching
+>   `ros2 bag info` (170.68 s → 171, 34 topics) — facts derived from the bag, not the sidecar.
+> - **step 4** — `verify_live_bag.py` **exit 0**: consistency guard OK (no frame duplication), camera
+>   15.15 Hz, `vehicle_local_position_v1` 50.00 Hz, mission_state / current_waypoint 10.00 Hz.
+> - **step 5** — Foxglove: camera feed, mission state, and 3D pose history panels all render.
+>
+> **Note the bag path.** `run_patrol_world_sitl.sh` writes to `${PATROL_OUTPUT_ROOT:-$LOG_DIR/run}`,
+> where `LOG_DIR` is a **mktemp dir** — *not* `~/patrol_bags`. This bag was recovered from
+> `/tmp/patrol-world-uat.6dn6T1/run/` and copied to `~/patrol_bags/`. Pass
+> `PATROL_OUTPUT_ROOT=$HOME/patrol_bags` to land it durably in the first place.
+>
+> **Not an issue — `checkpoint_capture` Count 3 is the CORRECT count.** Investigated under F-01 and
+> closed as a false finding: there is no `cp_west`, in this bag or anywhere in the repo. The route
+> has **four waypoints but three checkpoints** — `sim/config/checkpoints.yaml` declares exactly 3
+> (`cp_north`, `cp_east`, `cp_south`), matched by 3 AprilTag models and 3 tag includes in
+> `patrol_world.sdf`. The fourth waypoint is an inline ENU overlook at (5.0, 5.0, 2.5) carrying no
+> `checkpoint_id` and standing near no tag, kept deliberately to exercise the inline-waypoint path.
+> So `/patrol/dwell` 4 with `checkpoint_capture` 3 is exactly right: dwell fires per waypoint, a
+> capture needs a tag. Perception behaves correctly at the overlook — no tag in view, ADR-A gate
+> skip, no latch. **The capture rate is 3/3 (100%), not 3/4.** Pinned by
+> `tests/unit/test_patrol_capture_expectation.py` so the arithmetic can't be misread again.

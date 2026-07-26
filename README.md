@@ -119,7 +119,8 @@ ros2 launch patrol_bringup mission_patrol.launch.py \
 
 The route is the checked-in [`patrol_mission.yaml`](ros2_ws/src/patrol_bringup/config/patrol_mission.yaml),
 whose `checkpoint_id` waypoints resolve against [`sim/config/checkpoints.yaml`](sim/config/checkpoints.yaml)
-(an interim 02 stand-in until 03 lands its own). The mission's observable surface is `/patrol/*`
+(03's canonical checkpoint-positions file since M5 — it replaced the interim 02-authored bare-list
+stand-in; the loader still accepts both forms). The mission's observable surface is `/patrol/*`
 (`mission_state`, `current_waypoint`, `abort` — plain `std_msgs`, so 05 records and Foxglove renders
 them with no custom plugin). An external abort is the safety floor:
 
