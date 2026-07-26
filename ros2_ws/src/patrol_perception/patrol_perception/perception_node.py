@@ -25,6 +25,7 @@ from geometry_msgs.msg import Point as PointMsg
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion
 from patrol_mission.qos import patrol_event_qos
 from px4_msgs.msg import VehicleLocalPosition
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -223,11 +224,20 @@ class PerceptionNode(Node):
 
 
 def main(args: list[str] | None = None) -> None:
+    """Spin the node until the context goes down, exiting 0 on any *clean* teardown (F-02).
+
+    Unlike the mission node, this teardown was already safe — ``try_shutdown`` is idempotent, so the
+    ``finally`` never raised. The exit 1 on a successful patrol came *purely* from the uncaught
+    ``ExternalShutdownException``: the runner group-SIGINTs the launch after the landing is
+    observed, ``spin`` raises because the context went down beneath it, and that propagated straight
+    out of ``main``. Same symptom as the mission node, different cause — so both are fixed, but
+    neither patch is a copy of the other.
+    """
     rclpy.init(args=args)
     node = PerceptionNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

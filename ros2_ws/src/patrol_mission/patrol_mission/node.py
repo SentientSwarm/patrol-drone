@@ -30,6 +30,7 @@ from px4_msgs.msg import (
     VehicleLocalPosition,
     VehicleStatus,
 )
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int32, String
 
@@ -382,15 +383,31 @@ class PatrolMissionNode(Node):
 
 
 def main(args: list[str] | None = None) -> None:
+    """Spin the node until the context goes down, exiting 0 on any *clean* teardown (F-02).
+
+    The runner group-SIGINTs the mission launch once ``verify_patrol.py`` observes the landing, so
+    the normal end of a *successful* patrol is an external shutdown, not a KeyboardInterrupt. Two
+    bugs made that happy path exit 1:
+
+    * ``ExternalShutdownException`` (raised by ``spin`` when the context is shut down out from under
+      it) was uncaught and propagated out of ``main``; and
+    * the ``finally`` then called the unguarded ``rclpy.shutdown()``, which raises ``RCLError:
+      rcl_shutdown already called`` precisely *because* the context is already down.
+
+    A launch that always exits non-zero on success trains you to ignore its exit code, so a genuine
+    crash during teardown looks identical to a clean run — and neither the runner nor any CI wrapper
+    can use exit status as a signal. ``try_shutdown`` is the idempotent form and is a no-op when the
+    context is already down.
+    """
     rclpy.init(args=args)
     node = PatrolMissionNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
