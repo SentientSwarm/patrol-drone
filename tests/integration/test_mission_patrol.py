@@ -80,7 +80,7 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
         # process with the publisher, so a count-only wait returns as soon as the WATCHER matches —
         # while the mission node may still be undiscovered (High #1).
         abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, patrol_abort_qos())
-        assert wait_for_subscription(injector, abort_pub, topics.PATROL_ABORT), (
+        assert wait_for_subscription(injector, abort_pub), (
             "mission node's /patrol/abort subscriber was not discovered; the volatile abort would "
             "be dropped"
         )

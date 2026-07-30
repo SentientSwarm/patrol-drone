@@ -114,7 +114,7 @@ def test_low_battery_mid_patrol_drives_observable_rth() -> None:
         # Confirm DDS matching before injecting — the node's battery subscriber must be discovered or
         # the sample is dropped (mirrors the external-abort test).
         bat_pub = injector.create_publisher(BatteryStatus, topics.BATTERY_STATUS, px4_qos())
-        assert wait_for_subscription(injector, bat_pub, topics.BATTERY_STATUS), (
+        assert wait_for_subscription(injector, bat_pub), (
             "mission node's /fmu/out/battery_status subscriber was not discovered; the reading "
             "would be dropped"
         )

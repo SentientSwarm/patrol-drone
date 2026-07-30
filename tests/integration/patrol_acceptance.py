@@ -492,16 +492,9 @@ def run_mid_patrol_abort_scenario(
         rclpy.shutdown()
 
 
-def wait_for_subscription(
-    node: Node,
-    publisher,
-    topic: str,
-    *,
-    subscriber_node: str = topics.MISSION_NODE_NAME,
-    timeout_s: float = 10.0,
-) -> bool:
-    """Spin ``node`` until ``subscriber_node`` holds a discovered subscriber on ``topic`` AND
-    ``publisher`` has matched at least one subscription, or timeout.
+def wait_for_subscription(node: Node, publisher, *, timeout_s: float = 10.0) -> bool:
+    """Spin ``node`` until the MISSION NODE holds a discovered subscriber on ``publisher``'s topic
+    AND ``publisher`` has matched at least one subscription, or timeout.
 
     Both halves are required and neither is sufficient alone:
 
@@ -517,11 +510,18 @@ def wait_for_subscription(
     Matching by node name asks the question the test actually means, and stays correct however many
     observers subscribe later — unlike an expected-count parameter, which encodes "exactly one other
     subscriber exists today" and silently breaks on the next one.
+
+    The topic is read off ``publisher`` rather than passed alongside it, so the two can never
+    disagree, and the mission node is the only subscriber this helper is ever asked about (both call
+    sites) — so it is named from the shared constant rather than taken as an argument.
     """
 
     def ready() -> bool:
         return (
-            has_subscriber(node.get_subscriptions_info_by_topic(topic), subscriber_node)
+            has_subscriber(
+                node.get_subscriptions_info_by_topic(publisher.topic_name),
+                topics.MISSION_NODE_NAME,
+            )
             and publisher.get_subscription_count() > 0
         )
 
