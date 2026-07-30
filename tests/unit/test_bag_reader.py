@@ -283,6 +283,25 @@ def test_read_bag_facts_raises_on_non_list_relative_file_paths(tmp_path: Path) -
     [
         pytest.param("{ this is: broken: [", id="invalid-yaml"),
         pytest.param("- not\n- a mapping\n", id="wrong-shape-root"),
+        # The two cases the first round of this fix missed: the ROOT parses and the payload
+        # declarations are honest, but a fact the document must supply is corrupt. _facts_from_info
+        # used to run outside the try, so these raised past the fallback and dead-ended the bag on
+        # every retry — the exact defect PR#16 round-16 was filed against (review re-raised it).
+        pytest.param(
+            _METADATA_WITH_PAYLOAD_REF.replace("  duration:\n    nanoseconds: 19991536152\n", ""),
+            id="root-parses-but-duration-missing",
+        ),
+        pytest.param(
+            _METADATA_WITH_PAYLOAD_REF.replace(
+                "  topics_with_message_count:\n"
+                "    - topic_metadata:\n"
+                "        name: /patrol/mission_state\n"
+                "        type: std_msgs/msg/String\n"
+                "      message_count: 200\n",
+                "  topics_with_message_count: 7\n",
+            ),
+            id="root-parses-but-topics-is-a-scalar",
+        ),
     ],
 )
 def test_read_bag_facts_falls_back_to_ros2_bag_info_on_unusable_metadata(
@@ -309,3 +328,24 @@ def test_read_bag_facts_falls_back_to_ros2_bag_info_on_unusable_metadata(
     assert calls, "the ros2 bag info fallback was not invoked for the unusable metadata"
     assert calls[0][:3] == ["ros2", "bag", "info"]
     assert facts.topic_counts  # facts derived from the bag via ros2 bag info, not the corrupt doc
+
+
+# The DELIBERATE other half of the taxonomy, paired with the fallback test above so a future
+# "simplification" that merges the two try blocks fails here: a metadata.yaml that LIES about its
+# payloads (declares a file that is not on disk, F-01) must stay a HARD fault. Widening the fallback
+# to cover corrupt facts must not launder a dishonest document through `ros2 bag info`.
+def test_read_bag_facts_still_hard_fails_when_a_declared_payload_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bag = tmp_path / "patrol_lying_meta"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text(_METADATA_WITH_PAYLOAD_REF)  # declares patrol_ref_0.mcap
+    # ... which is deliberately NOT created here.
+
+    def _must_not_run(cmd: list[str], **_kwargs: object) -> object:
+        raise AssertionError(f"the fallback must not be reached for a dishonest document: {cmd}")
+
+    monkeypatch.setattr("ingest.bag_reader.subprocess.run", _must_not_run)
+
+    with pytest.raises(ValueError, match="declares payload"):
+        read_bag_facts(bag)

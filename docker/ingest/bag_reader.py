@@ -198,7 +198,16 @@ def _facts_from_metadata(bag_path: Path) -> BagFacts | None:
     _require_declared_payloads(
         bag_path, info
     )  # payload guard: raises -> hard fault, never a fallback
-    return _facts_from_info(info)
+    try:
+        return _facts_from_info(info)
+    except ValueError:
+        # Same fallback signal as a malformed root: the document parsed and its payload declarations
+        # are honest, but a fact it must supply (duration / topics_with_message_count) is corrupt or
+        # absent. is_valid_bag_dir still ADMITS such a dir (real metadata.yaml + real .mcap), so
+        # raising here dead-ends the bag on every retry — the exact defect PR#16 round-16 filed.
+        # Deriving from the bag itself is the §3.4 dumb-producer intent. Kept as its own narrow try,
+        # AFTER the payload guard, so a document that lies about its payloads still hard-faults.
+        return None
 
 
 def read_bag_facts(bag_path: Path, timeout_s: float = _BAG_INFO_TIMEOUT_S) -> BagFacts:
