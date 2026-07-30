@@ -73,9 +73,16 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
         # patrol_abort_qos is reliable + *volatile*: a sample published before the node's subscriber
         # is discovered would be dropped, so wait for DDS matching first (Hermes Medium). Once
         # delivered the abort "sticks" through RTH via the state machine's latch.
+        #
+        # The wait establishes BOTH that the MISSION NODE specifically holds a subscriber on this
+        # topic and that this publisher has matched one. Counting matched subscriptions alone is not
+        # enough any more: since F-09 the watcher subscribes to /patrol/abort too, and it shares this
+        # process with the publisher, so a count-only wait returns as soon as the WATCHER matches —
+        # while the mission node may still be undiscovered (High #1).
         abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, patrol_abort_qos())
-        assert wait_for_subscription(injector, abort_pub), (
-            "node's /patrol/abort subscriber was not discovered; the volatile abort would be dropped"
+        assert wait_for_subscription(injector, abort_pub, topics.PATROL_ABORT), (
+            "mission node's /patrol/abort subscriber was not discovered; the volatile abort would "
+            "be dropped"
         )
         msg = Bool()
         msg.data = True
@@ -88,7 +95,7 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
 
     # Attribution (F-09): the mirror of the low-battery scenario — here exactly ONE external abort
     # command is published, and the mission must name EXTERNAL_SIGNAL as the cause. Pinning both
-    # directions is what makes the pair meaningful: the two scenarios are otherwise behaviourally
+    # directions is what makes the pair meaningful: the two scenarios are otherwise behaviorally
     # indistinguishable from outside (identical profile, identical wall-clock).
     run_mid_patrol_abort_scenario(
         "abort_injector",

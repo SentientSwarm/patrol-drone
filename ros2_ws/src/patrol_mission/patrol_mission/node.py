@@ -102,7 +102,7 @@ _VEHICLE_CMD_ID: dict[Px4CommandKind, int] = {
 
 class PatrolMissionNode(Node):
     def __init__(self) -> None:
-        super().__init__("patrol_mission")
+        super().__init__(topics.MISSION_NODE_NAME)
         mission_yaml = str(self.declare_parameter("mission_yaml", "").value)
         if not mission_yaml:
             raise ValueError("parameter 'mission_yaml' is required (path to the mission YAML)")

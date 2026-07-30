@@ -30,6 +30,10 @@ from dataclasses import dataclass
 
 import rclpy
 import yaml
+
+# AbortAttribution is re-exported: both scenario files import it from here, and it is used in this
+# module's own signatures below, so it is a live reference rather than a bare re-export.
+from abort_attribution import AbortAttribution, attribution_count_ok, latest_real_reason
 from ament_index_python.packages import get_package_share_directory
 from dwell_tracker import DwellTracker
 from home_settle_tracker import HomeSettleTracker
@@ -39,6 +43,7 @@ from patrol_mission.qos import patrol_abort_qos, patrol_event_qos, patrol_state_
 from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int32, String
+from subscription_match import has_subscriber
 
 from patrol_mission import topics
 
@@ -246,10 +251,11 @@ class PatrolWatcher(Node):
         """The mission's own answer for why it aborted; ``"NONE"`` if it never did.
 
         The last non-NONE reason observed — the machine latches the cause with the ABORT transition
-        and it sticks through RTH, so this is stable once an abort has fired.
+        and it sticks through RTH, so this is stable once an abort has fired. The rule itself lives
+        in the ROS-free ``abort_attribution`` module so it is Layer-A testable rather than reachable
+        only through an SITL lane that cannot currently run.
         """
-        real = [r for r in self.abort_reasons_seen if r != "NONE"]
-        return real[-1] if real else "NONE"
+        return latest_real_reason(self.abort_reasons_seen)
 
     def _on_status(self, msg: VehicleStatus) -> None:
         if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED:
@@ -425,20 +431,6 @@ def abort_recovery_checks(watcher: PatrolWatcher) -> list[Check]:
     ]
 
 
-@dataclass(frozen=True)
-class AbortAttribution:
-    """What a scenario expects the mission to say about *why* it aborted (F-09).
-
-    Observing an ABORT is not evidence that YOUR trigger caused it: the external-signal and
-    low-battery guards are both live, both latch, and both fly an identical profile to the abort
-    point (the two SITL scenarios even take the same wall-clock). A scenario therefore has to pin
-    the cause, not just the recovery.
-    """
-
-    reason: str  # the AbortReason name expected on /patrol/abort_reason
-    external_cmds: int = 0  # inbound /patrol/abort commands this scenario itself publishes
-
-
 def abort_attribution_checks(watcher: PatrolWatcher, attribution: AbortAttribution) -> list[Check]:
     """The shared causal-attribution checks for a mid-patrol abort (F-09).
 
@@ -462,7 +454,7 @@ def abort_attribution_checks(watcher: PatrolWatcher, attribution: AbortAttributi
         ),
         Check(
             "external_abort_command_count",
-            watcher.external_abort_cmds == attribution.external_cmds,
+            attribution_count_ok(watcher.external_abort_cmds, attribution.external_cmds),
             f"observed {watcher.external_abort_cmds} inbound /patrol/abort command(s), expected "
             f"{attribution.external_cmds} — a different count means the abort cannot be "
             f"attributed to this scenario's trigger",
@@ -500,14 +492,40 @@ def run_mid_patrol_abort_scenario(
         rclpy.shutdown()
 
 
-def wait_for_subscription(node: Node, publisher, *, timeout_s: float = 10.0) -> bool:
-    """Spin ``node`` until ``publisher`` has a matched subscription (DDS discovery), or timeout.
+def wait_for_subscription(
+    node: Node,
+    publisher,
+    topic: str,
+    *,
+    subscriber_node: str = topics.MISSION_NODE_NAME,
+    timeout_s: float = 10.0,
+) -> bool:
+    """Spin ``node`` until ``subscriber_node`` holds a discovered subscriber on ``topic`` AND
+    ``publisher`` has matched at least one subscription, or timeout.
 
-    Returns whether a subscriber was discovered. A *volatile* command publisher (e.g. /patrol/abort)
-    drops samples published before discovery completes, so a test must wait for the node's subscriber
-    to be matched rather than assume it — otherwise the abort can be silently lost (Hermes Medium).
+    Both halves are required and neither is sufficient alone:
+
+    * **counting alone is what broke.** Since F-09 the watcher itself subscribes to /patrol/abort to
+      count inbound commands, and it lives in THIS process while the mission node is separate — so it
+      matches first and ``get_subscription_count() > 0`` is satisfied while the mission node is still
+      undiscovered. The volatile Bool then publishes into nothing, no abort fires, and the scenario
+      fails as an opaque PATROL_TIMEOUT_S timeout.
+    * **graph presence alone is weaker than what it replaces.** An endpoint appears here as soon as
+      discovery reports it, which is not the instant this publisher matches it, and it says nothing
+      about QoS compatibility — precisely the guarantee an earlier review round added this wait for.
+
+    Matching by node name asks the question the test actually means, and stays correct however many
+    observers subscribe later — unlike an expected-count parameter, which encodes "exactly one other
+    subscriber exists today" and silently breaks on the next one.
     """
+
+    def ready() -> bool:
+        return (
+            has_subscriber(node.get_subscriptions_info_by_topic(topic), subscriber_node)
+            and publisher.get_subscription_count() > 0
+        )
+
     deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline and publisher.get_subscription_count() == 0:
+    while time.monotonic() < deadline and not ready():
         rclpy.spin_once(node, timeout_sec=0.1)
-    return publisher.get_subscription_count() > 0
+    return ready()

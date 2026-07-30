@@ -64,6 +64,12 @@ PATROL_TOPICS = (
     PATROL_ABORT_REASON,
 )
 
+# The mission node's ROS node name. Declared here with the rest of the node's contract surface (and
+# not only inside node.py) so a ROS-free consumer — notably the SITL acceptance helpers, which must
+# wait for THIS node's subscriber rather than any subscriber — can name it without importing rclpy.
+# No leading "/", so _NAMED_TOPICS below (which filters on that) correctly excludes it.
+MISSION_NODE_NAME = "patrol_mission"
+
 # Map of public constant name -> topic, derived from this module's own constants (never a hand-kept
 # second list). Lets a shell/CI step resolve a canonical topic name — incl. the version-sensitive
 # ``_v1`` suffix — from this one source instead of re-hardcoding the literal (Hermes Low). See the

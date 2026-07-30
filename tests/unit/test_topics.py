@@ -11,7 +11,12 @@ left LOITER; only a live SITL run caught it. This test pins the per-surface rule
 (or dropped) suffix fails in <5 s instead of at night against SITL.
 """
 
+from pathlib import Path
+
 from patrol_mission import topics
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+_MISSION_LAUNCH = REPO_ROOT / "ros2_ws/src/patrol_bringup/launch/mission_patrol.launch.py"
 
 # The contract split by version surface: outputs are MESSAGE_VERSION>=1 (suffixed); the offboard
 # input trio is unversioned / v0 (bare). See the module docstring for why the asymmetry matters.
@@ -108,3 +113,27 @@ def test_named_topic_unknown_returns_none():
 # topic constant is reachable from the CLI with no second list to keep in sync.
 def test_named_topic_map_covers_every_surface():
     assert set(topics._NAMED_TOPICS.values()) == {*topics.FMU_TOPICS, *topics.PATROL_TOPICS}
+
+
+# The mission node's ROS node name is a contract too: the SITL acceptance helper waits for THIS
+# node's subscriber by name (High #1), so a silent rename would turn a real abort-delivery failure
+# into an opaque timeout. It is deliberately NOT a "/"-prefixed value, so it stays out of
+# _NAMED_TOPICS above.
+def test_mission_node_name_matches_contract():
+    assert topics.MISSION_NODE_NAME == "patrol_mission"
+
+
+def test_mission_node_name_is_a_valid_ros_node_name():
+    name = topics.MISSION_NODE_NAME
+    assert name, "a ROS node name must be non-empty"
+    assert not name[0].isdigit(), "a ROS node name must not start with a digit"
+    assert "/" not in name, "a node name is not a topic — it must carry no '/' separator"
+
+
+# The launch file's `name=` is a __node remap and OVERRIDES the constructor, so it — not node.py — is
+# what names the node in the SITL lane the acceptance helper waits on (High #1). Pinning node.py
+# alone would leave the drift this constant guards against open in exactly the lane that consumes it.
+# Scanned as text rather than imported: launch/launch_ros are not installed on the Layer-A runner
+# (and pyproject excludes launch files from mypy for the same reason).
+def test_launch_file_names_the_mission_node_from_the_shared_constant():
+    assert f'name="{topics.MISSION_NODE_NAME}"' in _MISSION_LAUNCH.read_text()

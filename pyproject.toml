@@ -106,7 +106,9 @@ ignore_missing_imports = true
 # The shared M3 acceptance modules live under tests/integration/ (a live-ROS, mypy-EXCLUDED dir, so
 # they ship to the nightly container via `docker cp tests`). scripts/verify_mission.py and the
 # Layer-A test for the pure settle tracker — both mypy-checked — import them after a sys.path
-# bootstrap mypy can't follow, so treat them as missing-stubs.
+# bootstrap mypy can't follow, so treat them as missing-stubs. `subscription_match` and
+# `abort_attribution` join for the same reason: pure predicates split out of the rclpy-importing
+# `patrol_acceptance` so tests/unit can reach them (High #1 / Medium #8).
 [[tool.mypy.overrides]]
 module = [
     "mission_acceptance",
@@ -114,6 +116,8 @@ module = [
     "settle_tracker",
     "home_settle_tracker",
     "dwell_tracker",
+    "subscription_match",
+    "abort_attribution",
 ]
 ignore_missing_imports = true
 

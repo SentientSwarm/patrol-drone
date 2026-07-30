@@ -19,7 +19,7 @@ guard fire; the abort then latches (sticks through RTH) exactly like the externa
 and low-battery, and this test injects no ``/patrol/abort``, so an observed ABORT is attributable to
 the battery reading alone." A fair argument, but it was never an *assertion*: the test would still
 have passed had the abort come from somewhere else, and the external and low-battery scenarios are
-behaviourally indistinguishable from outside (identical flight profile, identical 24.4 s wall-clock).
+behaviorally indistinguishable from outside (identical flight profile, identical 24.4 s wall-clock).
 
 It is now asserted, from two independent directions via ``AbortAttribution``:
 
@@ -114,8 +114,9 @@ def test_low_battery_mid_patrol_drives_observable_rth() -> None:
         # Confirm DDS matching before injecting — the node's battery subscriber must be discovered or
         # the sample is dropped (mirrors the external-abort test).
         bat_pub = injector.create_publisher(BatteryStatus, topics.BATTERY_STATUS, px4_qos())
-        assert wait_for_subscription(injector, bat_pub), (
-            "node's /fmu/out/battery_status subscriber was not discovered; the reading would be dropped"
+        assert wait_for_subscription(injector, bat_pub, topics.BATTERY_STATUS), (
+            "mission node's /fmu/out/battery_status subscriber was not discovered; the reading "
+            "would be dropped"
         )
         # Inject the low battery until the full observable recovery is seen: an ABORT -> RTH, a
         # settle at home, and a disarm after arming.
