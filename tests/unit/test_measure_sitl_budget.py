@@ -136,6 +136,27 @@ def test_sample_size_note_labels_an_under_powered_sample(runs: int, under_powere
     assert f"{runs} run" in note
 
 
+# The headline sample size must be the WEAKEST scenario, not the best-sampled one. parse_junit_xml
+# drops <skipped> cases and the rolling window spans scenario-set changes, so a brand-new scenario
+# can sit at 2 nights beside a 10-night sibling. Reporting 10 would certify the newcomer off its
+# sibling's evidence — exactly the false confidence F-08 exists to remove.
+def test_sample_size_note_reports_the_weakest_scenario_not_the_best():
+    results = [msb.CaseResult("well_sampled", 10.0, True) for _ in range(10)]
+    results += [msb.CaseResult("brand_new", 10.0, True) for _ in range(2)]
+
+    note = "\n".join(msb.sample_size_note(msb.summarize(results, _budget()), _budget()))
+
+    assert "2 run(s)" in note, "the headline must be the weakest scenario's sample"
+    assert "10 runs" not in note
+    assert "NOT a flake measurement" in note
+
+
+# sample_size_note is module-public and directly unit-tested, so it must be total rather than relying
+# on format_report's own empty guard staying in place above the call.
+def test_sample_size_note_on_no_summaries_returns_nothing_and_does_not_raise():
+    assert msb.sample_size_note([], _budget()) == []
+
+
 def test_format_report_carries_the_sample_size_warning_for_one_run():
     summaries = msb.summarize(msb.parse_junit_xml(_JUNIT), _budget())
 

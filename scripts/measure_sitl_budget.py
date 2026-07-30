@@ -122,7 +122,13 @@ def sample_size_note(summaries: list[ScenarioSummary], budget: Budget) -> list[s
     harness only the current night's JUnit while its own guidance said multiple reports must
     accumulate. The number is now stated, and an under-powered sample is labelled as such.
     """
-    runs = max(s.runs for s in summaries)
+    if not summaries:
+        return []
+    # The WEAKEST scenario, not the best-sampled one: parse_junit_xml drops <skipped> cases and the
+    # rolling window spans scenario-set changes, so a scenario that ran on 2 of 10 nights sits beside
+    # a 10-night sibling. max() would report 10 and certify the newcomer off its sibling's evidence —
+    # the same false confidence, one level up, that this note exists to remove.
+    runs = min(s.runs for s in summaries)
     min_runs = _min_runs_for_flake(budget)
     if runs >= min_runs:
         return ["", f"sample size: {runs} runs — flake rate is meaningful at this threshold."]

@@ -139,7 +139,10 @@ jobs:
           count=0
           while read -r rid; do
             [ "$count" -ge "$ROLLING_RUNS" ] && break
-            if gh run download "$rid" --pattern 'sitl-junit-*' --dir "prior-$rid" 2>/dev/null; then
+            # </dev/null: gh runs inside `while read … < prior-runs.txt` and inherits the loop's
+            # stdin, so a gh that ever reads stdin would drain the run list and silently truncate
+            # the rolling window (the classic ssh/docker-in-while-read hazard).
+            if gh run download "$rid" --pattern 'sitl-junit-*' --dir "prior-$rid" </dev/null 2>/dev/null; then
               find "prior-$rid" -name '*.xml' -exec cp -n {} junit-rolling/ \; || true
               count=$((count + 1))
             fi
@@ -153,16 +156,24 @@ jobs:
       - name: Measure the SITL runtime/flakiness budget (non-gating; OQ-5/SWM-31)
         if: always()
         run: |
-          CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
-          [ -n "$CID" ] || { echo "sim container gone; no JUnit to measure"; exit 0; }
           reports=$(find junit-rolling -name '*.xml' | sort | tr '\n' ' ')
           [ -n "$reports" ] || { echo "no JUnit reports collected; nothing to measure"; exit 0; }
-          # Ship the rolling set in and measure in-container, where pyyaml + the budget config live.
-          docker cp junit-rolling "$CID:/opt/junit-rolling"
+          # Run on the RUNNER, not via `docker exec`. The harness is pure stdlib + pyyaml and
+          # tests/integration/sitl_budget.yaml is in the checkout, so it never needed the container —
+          # and the old `[ -n "$CID" ] || exit 0` threw away the rolling sample just fetched exactly
+          # when the SITL build had failed, i.e. when the flake history is most worth reading.
+          # (The identical-looking guard in the "Extract this run's JUnit report" step above is
+          # correct and stays: you genuinely cannot docker cp from a container that is gone.)
+          # The runner image does not guarantee PyYAML, and `import yaml` is module-scope in the
+          # harness, so install it only if missing rather than assuming either way.
+          python3 -c 'import yaml' 2>/dev/null \
+            || pip install --quiet --disable-pip-version-check --break-system-packages pyyaml
           {
             echo "### SITL runtime/flakiness budget (rolling: $(echo "$reports" | wc -w) run report(s))"
             echo '```'
-            docker exec "$CID" bash -lc 'python3 /opt/scripts/measure_sitl_budget.py /opt/junit-rolling/*.xml' || true
+            # $reports is intentionally unquoted (word-split into argv) and already sorted — do not
+            # re-glob here, which would lose the deterministic order.
+            python3 scripts/measure_sitl_budget.py $reports || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
