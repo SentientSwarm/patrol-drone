@@ -65,7 +65,7 @@ Sourced from M1 Exit, M2 Exit, the Containerization section, and exit-checklist 
 - [x] **AC-4** *(exit-checklist item 9)* GIVEN a checkout of the repo, WHEN `docker compose` builds the `dev` and `sim` containers, THEN both build successfully from the shared Ubuntu 24.04 + ROS 2 Jazzy base.
 - [x] **AC-5** *(exit-checklist item 9)* GIVEN a built container, WHEN a single `colcon build` is run inside it against `ros2_ws`, THEN the build succeeds with no errors.
 - [x] **AC-6** GIVEN the workspace, WHEN it is built, THEN `px4_msgs` is present under `ros2_ws/src/external/`, vendored and pinned to the chosen PX4 branch (not pulled at build time).
-- [x] **AC-7** *(exit-checklist item 10)* GIVEN a collaborator on a clean machine, WHEN they follow the README from setup to a running mission, THEN the path is fully documented and executable in fewer than 20 commands. *(Finalized: README "Setup → running mission: the command budget" — canonical containerized path is 9 commands to a running patrol; platform spine 8 ≤ 12; minimal path 6.)*
+- [ ] **AC-7** *(exit-checklist item 10)* GIVEN a collaborator on a clean machine, WHEN they follow the README from setup to a running mission, THEN the path is fully documented and executable in fewer than 20 commands. *(**Documented** — README "Setup → running mission: the command budget": canonical containerized path is 9 commands to a running patrol; platform spine 8 ≤ 12; minimal path 6. **Not yet walked** — the AC also requires the path be *executable*, and that clean-machine execution is exit-checklist item 10 / Check 5, still open: see `docs/phase1-wrapup-findings.md`. A command count is not a walk, so this stays unchecked until Check 5 runs.)*
 - [x] **AC-8** GIVEN the pinned stack manifest, WHEN any toolchain layer is referenced, THEN its version is explicitly pinned (OS, ROS 2 Jazzy, PX4 v1.17.0, Gazebo Harmonic, uXRCE-DDS, Python 3.12, colcon, Docker).
 - [x] **AC-9** GIVEN the integration test tier owned by siblings (exit-checklist item 4), WHEN it needs to spin up SITL in CI, THEN the `sim` container runs headless and provides a working simulation environment. *(Platform provides the environment; the test that exercises it is owned by 02/05.)*
 
@@ -132,15 +132,22 @@ Sourced from M1 Exit, M2 Exit, the Containerization section, and exit-checklist 
 - **Packages / dirs:** `ros2_ws/` (workspace + `colcon build`), `ros2_ws/src/external/px4_msgs`, `ros2_ws/src/external/px4_ros_com`, `ros2_ws/src/patrol_bringup` (shell), `ros2_ws/src/patrol_interfaces` (shell), `docker/sim/`, `docker/dev/`, top-level `README.md`, `docs/decisions/0001-distro-and-os.md`, `docs/decisions/0002-ci-architecture.md`.
 - **Lifecycle:** dod.md (this) → prd.md (via /drive) → design.md (via /drive).
 
-## 10. Phase 1 close-out reconciliation (2026-07-24)
+## 10. Phase 1 close-out reconciliation (2026-07-30)
 
-Reconciles this docset against what actually shipped (SWM-16). **All 9 acceptance criteria are
-green.** The deliverables merged to `main` match §2/§3/§5 with no scope drift.
+Reconciles this docset against what actually shipped (SWM-16). **8 of 9 acceptance criteria are
+green; AC-7 is documented but not yet walked.** The deliverables merged to `main` match §2/§3/§5
+with no scope drift.
 
-- **AC-7 / exit item 10 (README command budget) — closed.** The integrative ≤20-command budget is
-  finalized in the README "Setup → running mission: the command budget" table: platform **spine
-  8 ≤ 12**, total-to-running-patrol **9 ≤ 20**. This resolves the §7 "README command-budget
-  allocation" open decision and PRD/Design **OQ-6** (was deferred as integrative).
+- **AC-7 / exit item 10 (README command budget) — documented; execution still open.** The
+  integrative ≤20-command budget is finalized in the README "Setup → running mission: the command
+  budget" table: platform **spine 8 ≤ 12**, total-to-running-patrol **9 ≤ 20**. That closes the §7
+  "README command-budget allocation" open decision and PRD/Design **OQ-6** (was deferred as
+  integrative) — the *allocation* question is settled. What is **not** settled is the AC's other
+  half: it requires the path be *executable*, and no clean-machine walk has been performed. That
+  walk is exit-checklist item 10 / Check 5 and remains open, so AC-7 stays unchecked in §4.
+  *(This reconciliation was first written 2026-07-24 and asserted all 9 green; the 2026-07-26
+  exit-checklist pass recorded item 10 as pending, which contradicted it. Re-dated and corrected
+  2026-07-30 — the findings log is right and this section was ahead of the evidence.)*
 - **As-shipped deltas (design-time → landed), all compatible with §5–6:**
   - PX4 pin (OQ-3) settled at **v1.17.0** (`px4_msgs` release/1.17), proven by the green in-workspace
     `colcon build` + live bridge (M2). Topic versioning surfaces `_v1` on versioned `/fmu/out/*`

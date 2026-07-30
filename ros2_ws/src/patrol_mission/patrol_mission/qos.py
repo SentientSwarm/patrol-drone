@@ -32,10 +32,14 @@ def px4_qos() -> QoSProfile:
 
 
 def patrol_state_qos() -> QoSProfile:
-    """The /patrol/{mission_state,current_waypoint} QoS (reliable + transient-local, depth 1).
+    """The /patrol/{mission_state,current_waypoint,abort_reason} QoS (reliable + transient-local,
+    depth 1).
 
     Transient-local depth-1 latches the observable mission surface so a late subscriber (04/05
-    starting after the node) immediately sees the latest state/waypoint sample.
+    starting after the node) immediately sees the latest state/waypoint sample. abort_reason rides
+    the same profile deliberately (F-09): the latch is what lets a subscriber that attached after the
+    abort — or a bag replayed long afterwards — still learn *why* the mission ended, which
+    mission_state alone cannot express.
     """
     return QoSProfile(
         reliability=ReliabilityPolicy.RELIABLE,

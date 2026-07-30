@@ -26,7 +26,7 @@ Two sources feed this log:
 | [F-06](#f-06) | Pre-check | Low | 05-logging-replay DoD showed AC-3..AC-8 unproven despite the 7/03 witness | **Fixed** (docs) |
 | [F-07](#f-07) | Pre-check | Low | README calls `checkpoints.yaml` an interim 02 stand-in; canonical since M5 | **Fixed** (docs) |
 | [F-08](#f-08) | PR #20 review | **Medium** | Budget harness fed one JUnit → flake rate is binary, not multi-night | **Fixed** (`497c0bd`) |
-| [F-09](#f-09) | PR #20 review | **Medium** | Low-battery test doesn't prove the injected sample caused the abort | **Fixed** (`8de636b`) — option 2 + option 1 |
+| [F-09](#f-09) | PR #20 review | **Medium** | Low-battery test does not prove the injected sample caused the abort | **Fixed** (`8de636b`) — option 2 + option 1 |
 | [F-10](#f-10) | Check 4 | Low | Docs still say low-battery abort is "unit-tested", never SITL-observed | **Fixed** (docs) |
 | [F-11](#f-11) | Check 4 | **Medium** | `--keep-up --no-patrol` prints a teardown command that SIGINTs the operator's own shell | **Fixed** (`81a2756`) |
 
@@ -102,7 +102,7 @@ deliberately *not* being tracked as findings.
 > an investigation.
 >
 > **Process note worth keeping:** this was logged as a reproducible Medium defect on the strength of
-> two runs agreeing — but both runs agreeing is exactly what correct behaviour looks like too.
+> two runs agreeing — but both runs agreeing is exactly what correct behavior looks like too.
 > "Reproducible" distinguished a real effect from flake; it did not establish that the effect was a
 > *fault*. The expected value was never derived from the config before the observed value was called
 > wrong.
@@ -173,7 +173,7 @@ rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called
 `ExternalShutdownException` *means* the context is already shut down — the runner group-SIGINTs the
 launch after `verify_patrol.py` observes the landing.
 
-**The two nodes fail for different reasons** (same symptom, so fix both, but don't assume one patch
+**The two nodes fail for different reasons** (same symptom, so fix both, but do not assume one patch
 covers both):
 
 | Node | `except` clause | `finally` | Why it exits 1 |
@@ -305,7 +305,7 @@ own". It has been 03's canonical file since M5 — the file's own header says so
 > the intended multi-night measurement.
 
 **Accepted — this is correct, and now demonstrated.** The harness itself takes `RUN1.xml RUN2.xml
-...`, but the workflow only ever hands it one, so the flake-rate half of the quarantine rule can't
+...`, but the workflow only ever hands it one, so the flake-rate half of the quarantine rule cannot
 function. The 2026-07-26 live run shows it exactly — every scenario reports `runs 1, fails 0,
 flake 0%`, which is not a measurement of anything:
 
@@ -323,7 +323,7 @@ committed results dir), feed all of them, and report the sample count in the job
 
 ---
 
-### F-09 — Low-battery test doesn't prove causal attribution {#f-09}
+### F-09 — Low-battery test does not prove causal attribution {#f-09}
 
 **Severity:** Medium · **Source:** PR #20 review (jxstanford, 2026-07-25) · **Status:** **Fixed** (`8de636b`) — **option 2 then option 1**, per decision. `/patrol/abort_reason` publishes the latched `AbortReason` (option 2, the honest fix, closing the real observability gap) AND each scenario asserts the inbound `/patrol/abort` count (option 1's negative evidence). SITL assertions unverified live — needs a green nightly
 
@@ -332,12 +332,12 @@ committed results dir), feed all of them, and report the sample count in the job
 > another event on the shared status path, caused the transition.
 
 **Accepted with a caveat.** The test's docstring argues attribution *by exclusion* (only two live
-guards; no `/patrol/abort` is published). That's a fair argument but it is not an assertion — the
+guards; no `/patrol/abort` is published). That is a fair argument but it is not an assertion — the
 test would still pass if the abort came from somewhere else.
 
 **Fix options, cheapest first:**
 1. Assert the negative explicitly: subscribe to `/patrol/abort` and assert **zero** messages, so an
-   external-signal abort can't be the cause.
+   external-signal abort cannot be the cause.
 2. Publish an observable abort *reason* on the `/patrol/*` surface. Currently `mission_state` carries
    the state but not the `AbortReason` — this is the real gap and would also help field debugging.
 
@@ -392,7 +392,7 @@ expands to `0`. Under POSIX `kill`, a target of `-0` is **the caller's own proce
 copy-pasting the runner's own instruction sends SIGINT to the operator's shell and every job in it,
 while leaving the actual stack (agent, gz, PX4, bridge) running and still holding port 8888.
 
-Two failures in one: it does the wrong destructive thing, *and* it doesn't do the right thing. The
+Two failures in one: it does the wrong destructive thing, *and* it does not do the right thing. The
 leftover agent on 8888 then produces the classic stale-stack symptoms on the next run (QGC haywire /
 no GPS / mag failure), which read as sensor bugs.
 
@@ -412,7 +412,7 @@ signal targets.
 
 ## 4. Remaining checks
 
-Findings from these get appended above as they're found.
+Findings from these get appended above as they are found.
 
 - [x] **Check 1** — full patrol → F-01 (false finding, closed), F-02, F-03, F-04
 - [x] **Check 2** — Foxglove render → no findings
@@ -466,7 +466,7 @@ max with headroom rather than at this figure.
 
 ## 5. Observations (no fix planned)
 
-Seen during the checks, deliberately **not** tracked as findings — recorded so they aren't
+Seen during the checks, deliberately **not** tracked as findings — recorded so they are not
 re-investigated later. Promote to an F-number only if one starts costing time.
 
 - **`Warning: There is no current event loop` ×3** (Check 4, one per launch-based scenario). An

@@ -121,8 +121,11 @@ The route is the checked-in [`patrol_mission.yaml`](ros2_ws/src/patrol_bringup/c
 whose `checkpoint_id` waypoints resolve against [`sim/config/checkpoints.yaml`](sim/config/checkpoints.yaml)
 (03's canonical checkpoint-positions file since M5 — it replaced the interim 02-authored bare-list
 stand-in; the loader still accepts both forms). The mission's observable surface is `/patrol/*`
-(`mission_state`, `current_waypoint`, `abort` — plain `std_msgs`, so 05 records and Foxglove renders
-them with no custom plugin). An external abort is the safety floor:
+(`mission_state`, `current_waypoint`, `dwell`, `abort`, `abort_reason` — plain `std_msgs`, so 05
+records and Foxglove renders them with no custom plugin). `dwell` is the atomic once-per-checkpoint
+capture trigger; `abort` is the inbound external-abort command, while `abort_reason` is the mission's
+*latched answer* for why it ended — the two live guards fly an identical profile, so the state alone
+cannot tell them apart. An external abort is the safety floor:
 
 ```bash
 # /patrol/abort is reliable + volatile; `ros2 topic pub -1` waits for the node's subscription before

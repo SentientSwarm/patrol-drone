@@ -154,4 +154,4 @@ Record the witnessed `$BAG` name + date here when run:
 > So `/patrol/dwell` 4 with `checkpoint_capture` 3 is exactly right: dwell fires per waypoint, a
 > capture needs a tag. Perception behaves correctly at the overlook — no tag in view, ADR-A gate
 > skip, no latch. **The capture rate is 3/3 (100%), not 3/4.** Pinned by
-> `tests/unit/test_patrol_capture_expectation.py` so the arithmetic can't be misread again.
+> `tests/unit/test_patrol_capture_expectation.py` so the arithmetic cannot be misread again.
