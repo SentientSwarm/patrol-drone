@@ -71,8 +71,10 @@ deliberately *not* being tracked as findings.
 **Severity:** ~~Medium~~ **none** · **Owner:** — · **Exit item:** 11 (now unambiguously ✅)
 
 > **RESOLUTION (investigated before patching, as required).** This finding is **false**. There is no
-> `cp_west` — the string appears nowhere in the repo except this document and the one line in
-> `analysis/e2e_check.md` that repeated the claim (both now corrected).
+> `cp_west` — the string appears nowhere in the repo except this document (struck through in the
+> heading above, with the original text kept verbatim in the retained-for-the-record block below) and
+> the one line in `analysis/e2e_check.md` that repeated the claim, which now states the 3/3 rate in
+> place of it.
 >
 > The route has **four waypoints but three checkpoints**:
 >
@@ -225,10 +227,10 @@ Not ours to fix. Log it, confirm it stays teardown-only, and revisit if it ever 
 
 [`analysis/foxglove/README.md:13`](../analysis/foxglove/README.md) says the default output dir is
 `~/patrol_bags/`, and [`analysis/e2e_check.md`](../analysis/e2e_check.md) step 1 says "the run output
-dir" without resolving it. Both are misleading for the runner path:
+dir" without resolving it. Both are misleading for the runner path, which resolves at
+[`scripts/run_patrol_world_sitl.sh:562`](../scripts/run_patrol_world_sitl.sh):
 
 ```bash
-# scripts/run_patrol_world_sitl.sh:562
 local run_root="${PATROL_OUTPUT_ROOT:-${LOG_DIR}/run}"
 ```
 

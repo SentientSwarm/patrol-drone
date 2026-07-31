@@ -112,7 +112,10 @@ def low_battery_launch():
 def test_low_battery_mid_patrol_drives_observable_rth() -> None:
     def inject(watcher: PatrolWatcher, injector: Node) -> None:
         # Confirm DDS matching before injecting — the node's battery subscriber must be discovered or
-        # the sample is dropped (mirrors the external-abort test).
+        # the sample is dropped (mirrors the external-abort test). The required set is the DEFAULT
+        # (mission node only) and must stay that way: unlike /patrol/abort, this topic has exactly one
+        # subscriber — PatrolWatcher takes vehicle_status + vehicle_local_position, NOT battery_status
+        # — so requiring the watcher here would spin the full timeout and fail deterministically.
         bat_pub = injector.create_publisher(BatteryStatus, topics.BATTERY_STATUS, px4_qos())
         assert wait_for_subscription(injector, bat_pub), (
             "mission node's /fmu/out/battery_status subscriber was not discovered; the reading "

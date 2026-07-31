@@ -146,6 +146,11 @@ owns the spine (it is the integrative bring-up document); each sibling docset ap
 per-mission run step. The canonical **containerized** path is the numbered M2 quickstart above,
 continued into one mission launch:
 
+**Starting state (not counted):** a host with Docker Engine + Compose v2. `scripts/setup_phase1.sh`
+installs both — plus the rest of the Phase 1 toolchain — in one command, run once after the clone;
+counting it, the total below becomes **10 ≤ 20**. The table itself is measured from `git clone` on a
+host that already has them.
+
 | # | Command (from the quickstarts above) | Owner |
 |---|---|---|
 | 1–2 | `git clone … && cd patrol-drone` | 01 |

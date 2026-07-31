@@ -43,7 +43,11 @@ from patrol_mission.qos import patrol_abort_qos, patrol_event_qos, patrol_state_
 from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int32, String
-from subscription_match import has_subscriber
+
+# WATCHER_NODE_NAME is re-exported on the same terms as AbortAttribution above: it names THIS
+# module's watcher (its node_name default, below), and the abort scenario imports it from here to
+# say which subscribers its wait must see — a live reference, not a bare re-export.
+from subscription_match import WATCHER_NODE_NAME, subscriptions_ready
 
 from patrol_mission import topics
 
@@ -162,7 +166,7 @@ class PatrolWatcher(Node):
         expected_waypoints: int,
         *,
         thresholds: PatrolThresholds | None = None,
-        node_name: str = "patrol_acceptance_watcher",
+        node_name: str = WATCHER_NODE_NAME,
     ):
         super().__init__(node_name)
         self._expected = expected_waypoints
@@ -492,9 +496,15 @@ def run_mid_patrol_abort_scenario(
         rclpy.shutdown()
 
 
-def wait_for_subscription(node: Node, publisher, *, timeout_s: float = 10.0) -> bool:
-    """Spin ``node`` until the MISSION NODE holds a discovered subscriber on ``publisher``'s topic
-    AND ``publisher`` has matched at least one subscription, or timeout.
+def wait_for_subscription(
+    node: Node,
+    publisher,
+    *,
+    required_nodes: tuple[str, ...] = (topics.MISSION_NODE_NAME,),
+    timeout_s: float = 10.0,
+) -> bool:
+    """Spin ``node`` until EVERY node in ``required_nodes`` holds a discovered subscriber on
+    ``publisher``'s topic AND ``publisher`` has matched at least that many subscriptions, or timeout.
 
     Both halves are required and neither is sufficient alone:
 
@@ -508,21 +518,25 @@ def wait_for_subscription(node: Node, publisher, *, timeout_s: float = 10.0) -> 
       about QoS compatibility — precisely the guarantee an earlier review round added this wait for.
 
     Matching by node name asks the question the test actually means, and stays correct however many
-    observers subscribe later — unlike an expected-count parameter, which encodes "exactly one other
-    subscriber exists today" and silently breaks on the next one.
+    observers subscribe later — unlike an expected *count*, which encodes "exactly N subscribers
+    exist today" and silently breaks on the next one.
 
     The topic is read off ``publisher`` rather than passed alongside it, so the two can never
-    disagree, and the mission node is the only subscriber this helper is ever asked about (both call
-    sites) — so it is named from the shared constant rather than taken as an argument.
+    disagree. The required SET, by contrast, is per-call-site and cannot be a shared constant: the
+    two call sites have genuinely different subscriber populations — /patrol/abort is read by the
+    mission node AND this watcher, while /fmu/out/battery_status_v1 is read by the mission node
+    alone. Hence the argument, defaulted to the mission node (the one subscriber every call site
+    cares about) so only the abort site has to say more.
+
+    The rule itself lives in the ROS-free ``subscription_match`` module so BOTH halves are Layer-A
+    testable — this lane cannot be executed before merge, so that unit cover is the only gate.
     """
 
     def ready() -> bool:
-        return (
-            has_subscriber(
-                node.get_subscriptions_info_by_topic(publisher.topic_name),
-                topics.MISSION_NODE_NAME,
-            )
-            and publisher.get_subscription_count() > 0
+        return subscriptions_ready(
+            node.get_subscriptions_info_by_topic(publisher.topic_name),
+            required_nodes,
+            publisher.get_subscription_count(),
         )
 
     deadline = time.monotonic() + timeout_s

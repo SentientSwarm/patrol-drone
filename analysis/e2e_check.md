@@ -116,8 +116,9 @@ Record the witnessed `$BAG` name + date here when run:
 > Recorded at RTF ≈ 1 (`PX4_SIM_SPEED_FACTOR=0.33`, camera 15.16 Hz); metadata.yaml + `.meta.json`
 > sidecar both finalized (no reindex); upload `is_complete=True`; manifest `169s / 34 topics` matches
 > `ros2 bag info` (dumb-producer); `verify_live_bag.py` exit 0 (consistency OK, rate PASS); Foxglove
-> panels render. checkpoint_capture Count 3 (perception captured 3 of 4 checkpoints — witness requires
-> ≥1; the 4th-capture gap is a separate perception-timing follow-up).
+> panels render. checkpoint_capture Count 3 — that is ALL three checkpoints, not 3 of 4: the route's
+> 4th waypoint is a tagless inline overlook, so the capture rate is 3/3 (see the 2026-07-26 witness
+> below and F-01 in `docs/phase1-wrapup-findings.md`); witness requires ≥1.
 >
 > _Re-verified 2026-07-25 (Phase 1 wrap-up, PR #20): steps **2–4** re-run headlessly against that same
 > bag to confirm the pipeline still holds after the wrap-up changes — upload **2 s** to the stand-in

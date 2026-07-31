@@ -120,7 +120,7 @@ def sample_size_note(summaries: list[ScenarioSummary], budget: Budget) -> list[s
     ``runs 1, fails 0, flake 0%`` — which looks like a clean measurement and is in fact no
     measurement at all. That is exactly how this ran for months, because the workflow handed the
     harness only the current night's JUnit while its own guidance said multiple reports must
-    accumulate. The number is now stated, and an under-powered sample is labelled as such.
+    accumulate. The number is now stated, and an under-powered sample is labeled as such.
     """
     if not summaries:
         return []

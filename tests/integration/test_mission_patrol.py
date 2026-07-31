@@ -24,6 +24,7 @@ import launch_pytest
 import pytest
 import rclpy
 from patrol_acceptance import (
+    WATCHER_NODE_NAME,
     AbortAttribution,
     PatrolWatcher,
     evaluate_nominal,
@@ -74,15 +75,17 @@ def test_external_abort_mid_patrol_drives_observable_rth() -> None:
         # is discovered would be dropped, so wait for DDS matching first (Hermes Medium). Once
         # delivered the abort "sticks" through RTH via the state machine's latch.
         #
-        # The wait establishes BOTH that the MISSION NODE specifically holds a subscriber on this
-        # topic and that this publisher has matched one. Counting matched subscriptions alone is not
-        # enough any more: since F-09 the watcher subscribes to /patrol/abort too, and it shares this
-        # process with the publisher, so a count-only wait returns as soon as the WATCHER matches —
-        # while the mission node may still be undiscovered (High #1).
+        # BOTH subscribers must be matched before the single volatile Bool goes out, and each for its
+        # own reason: the MISSION NODE because an unmatched reliable+volatile sample is simply dropped
+        # and no abort fires (High #1), and the WATCHER because since F-09 it counts inbound commands
+        # — if the sample reaches the mission but not the watcher, the drone flies a correct recovery
+        # and the scenario still fails on external_abort_command_count (0 >= 1 is False).
         abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, patrol_abort_qos())
-        assert wait_for_subscription(injector, abort_pub), (
-            "mission node's /patrol/abort subscriber was not discovered; the volatile abort would "
-            "be dropped"
+        assert wait_for_subscription(
+            injector, abort_pub, required_nodes=(topics.MISSION_NODE_NAME, WATCHER_NODE_NAME)
+        ), (
+            "/patrol/abort subscribers were not both discovered (mission node + acceptance watcher); "
+            "the volatile abort would be dropped or go uncounted"
         )
         msg = Bool()
         msg.data = True

@@ -77,10 +77,6 @@ jobs:
           # path as parents[2]/sim/config/checkpoints.yaml, which is /opt/sim/config here. So ship
           # sim/ to /opt/sim and run pytest from /opt to make that absolute path resolve.
           docker cp sim "$CID:/opt/sim"
-          # scripts/ carries measure_sitl_budget.py (SWM-31); ship it so the measurement step below
-          # can run it in-container (where pyyaml + ROS are present). --junit-xml emits the per-scenario
-          # wall-clock the harness reads to replace the provisional OQ-5 budget with a measured figure.
-          docker cp scripts "$CID:/opt/scripts"
           # test_upload_ingest_standin.py is deliberately NOT collected here: it is an integration
           # test that needs NO SITL (rsync + sqlite + the Git-LFS reference bag) and is owned by the
           # required `replay-regression` lane, which materializes the LFS bag and puts analysis/ +
@@ -167,7 +163,7 @@ jobs:
           # The runner image does not guarantee PyYAML, and `import yaml` is module-scope in the
           # harness, so install it only if missing rather than assuming either way.
           python3 -c 'import yaml' 2>/dev/null \
-            || pip install --quiet --disable-pip-version-check --break-system-packages pyyaml
+            || pip install --quiet --disable-pip-version-check --break-system-packages pyyaml==6.0.3
           {
             echo "### SITL runtime/flakiness budget (rolling: $(echo "$reports" | wc -w) run report(s))"
             echo '```'
