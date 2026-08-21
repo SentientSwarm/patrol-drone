@@ -243,12 +243,16 @@ def test_main_with_no_reports_prints_the_provisional_budget(budget_file: Path, c
     ids=["report-only-is-non-gating", "flag-gates"],
 )
 def test_main_exits_non_zero_on_quarantine_only_with_the_flag(
-    tmp_path: Path, budget_file: Path, capsys, flag: list[str], expected_rc: int
+    tmp_path: Path, capsys, flag: list[str], expected_rc: int
 ):
+    # The budget is written inline rather than taken from the `budget_file` fixture: carrying both
+    # parametrize arguments puts this signature at the 4-argument ceiling, and the shared writer
+    # costs nothing here.
+    budget = _write_budget_yaml(tmp_path, _BUDGET_YAML)
     # 2 failures in 5 runs = 40% flake, over the 20% quarantine threshold.
     runs = _write_runs(tmp_path, [False, False, True, True, True])
 
-    rc = msb.main([*flag, *runs, "--budget", str(budget_file)])
+    rc = msb.main([*flag, *runs, "--budget", str(budget)])
 
     assert rc == expected_rc
     assert "QUARANTINE" in capsys.readouterr().out
