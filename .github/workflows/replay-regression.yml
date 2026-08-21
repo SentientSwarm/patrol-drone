@@ -94,12 +94,22 @@ jobs:
       # + patrol_interfaces (in-repo). Cached on their source hash so the ~8 min px4_msgs colcon
       # build is paid once per pin bump, not per run. Exact-key only (no restore-keys): a partial
       # overlay must never satisfy the gate.
+      #
+      # The cached artifact is a COMPILED overlay, so what it is depends on two inputs: the message
+      # sources AND the toolchain that compiled them. Hashing THIS workflow file carries the second:
+      # the lane image is pinned by digest as a literal in `container.image` above, so repinning it
+      # (the documented maintenance step — see the line-45 comment) changes this file and
+      # self-invalidates the overlay. Without that input the job restores an overlay built inside
+      # the PREVIOUS image and skips the rebuild, surfacing not as a clean miss but as an
+      # ABI/soname error deep in the replay test, where the cache is the last thing suspected.
+      # Over-invalidation (an unrelated edit here costs one ~8 min rebuild) is the safe direction;
+      # a stale hit is not. Do NOT "simplify" the workflow-file hash back out of this key.
       - name: Cache the message overlay (px4_msgs + patrol_interfaces)
         id: msg-overlay-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ros2_ws/install
-          key: replay-msg-overlay-${{ env.ROS_DISTRO }}-${{ hashFiles('ros2_ws/src/external/px4_msgs/**', 'ros2_ws/src/patrol_interfaces/**') }}
+          key: replay-msg-overlay-${{ env.ROS_DISTRO }}-${{ hashFiles('.github/workflows/replay-regression.yml', 'ros2_ws/src/external/px4_msgs/**', 'ros2_ws/src/patrol_interfaces/**') }}
 
       - name: Build the message overlay (cache miss only)
         if: steps.msg-overlay-cache.outputs.cache-hit != 'true'

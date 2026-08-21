@@ -132,12 +132,22 @@ def sample_size_note(summaries: list[ScenarioSummary], budget: Budget) -> list[s
     min_runs = _min_runs_for_flake(budget)
     if runs >= min_runs:
         return ["", f"sample size: {runs} runs — flake rate is meaningful at this threshold."]
+    # Every rate this sample can express is a multiple of 1/runs, and 1/runs > threshold for EVERY
+    # runs < min_runs (min_runs = round(1/threshold) <= 1/threshold + 0.5, so runs <= min_runs - 1
+    # < 1/threshold) — i.e. in this branch a SINGLE failure trips quarantine. Say exactly that, and
+    # say it of the WEAKEST-sampled scenario, which is what `runs` is (min across summaries). The
+    # old "cannot express / necessarily 0% or 100%" was true only at runs == 1 and was visibly false
+    # one line under the table for any larger N; a warning caught lying about something the reader
+    # can check is a warning they discount.
+    step = 1 / runs
     return [
         "",
         f"SAMPLE SIZE {runs} run(s) — NOT a flake measurement. The quarantine rule trips at "
-        f"flake > {budget.flake_rate_threshold:.0%} (1 in {min_runs}), which {runs} run(s) cannot "
-        f"express: every flake figure above is necessarily 0% or 100%. Accumulate >= {min_runs} "
-        f"nightly reports before reading the flake column, or acting on the budget line below.",
+        f"flake > {budget.flake_rate_threshold:.0%} (1 in {min_runs}), but the weakest-sampled "
+        f"scenario has only {runs} run(s), which resolve its rate to the nearest {step:.0%}: one "
+        f"failure there reads as {step:.0%} and trips it, zero failures read as a clean 0%. "
+        f"Accumulate >= {min_runs} nightly reports before reading the flake column, or acting on "
+        f"the budget line below.",
     ]
 
 

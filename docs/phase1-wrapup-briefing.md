@@ -28,7 +28,6 @@ Linear-only (not devloop work — just move the state):
 ## Source of truth
 - docs/phase1_simulation_plan.md — the 12-item Phase 1 exit checklist (§"Phase 1 exit checklist").
 - docs/phase1/README.md — exit-item → docset traceability.
-- docs/pr16-review-loop-briefing.md — read §9 before opening any PR (the merge-wall rules below).
 
 ## Constraints (these bit hard on PR #16 — respect them)
 - MERGE WALL: the `require-pr` ruleset makes the automated reviewer's approval structurally mandatory

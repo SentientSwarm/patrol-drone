@@ -143,7 +143,16 @@ jobs:
               count=$((count + 1))
             fi
           done < prior-runs.txt
-          echo "collected $(find junit-rolling -name '*.xml' | wc -l) JUnit report(s) across $((count + 1)) run(s)"
+          # `count` is prior runs only. This run contributes a report only if the extract step above
+          # actually produced one — it exits 0 without copying when the sim container never came up
+          # (a failed build or bridge wait), and its `docker cp ... || true` swallows a failed copy
+          # just as quietly. That is precisely when the rolling history is most worth reading, so a
+          # hard `+ 1` overstated the sample exactly where it is most consulted. The retained file is
+          # its own marker: prior runs carry other run numbers, and the current run's artifact is
+          # excluded from the download loop, so this path exists iff the copy succeeded.
+          this_run=0
+          if [ -f "junit-rolling/run-${{ github.run_number }}.xml" ]; then this_run=1; fi
+          echo "collected $(find junit-rolling -name '*.xml' | wc -l) JUnit report(s) across $((count + this_run)) run(s) ($count prior + $this_run from this run)"
 
       # Non-gating (OQ-5 / SWM-31): measure the per-scenario wall-clock + flake verdict across the
       # ROLLING set and write it to the job summary — the deferred "measure once 01's SITL has
@@ -169,7 +178,12 @@ jobs:
             echo '```'
             # $reports is intentionally unquoted (word-split into argv) and already sorted — do not
             # re-glob here, which would lose the deterministic order.
-            python3 scripts/measure_sitl_budget.py $reports || true
+            # 2>&1: the whole block redirects STDOUT to $GITHUB_STEP_SUMMARY, so without this a
+            # traceback from a broken harness goes only to the job log and the summary shows an
+            # empty code fence — indistinguishable from a night with nothing to measure, which is
+            # the failure mode `|| true` otherwise hides. The harness is deliberately fail-loud
+            # (tests/unit/test_measure_sitl_budget.py pins that); this makes it fail-VISIBLE too.
+            python3 scripts/measure_sitl_budget.py $reports 2>&1 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
