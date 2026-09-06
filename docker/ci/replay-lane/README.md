@@ -21,14 +21,15 @@ An auditable manifest of the exact frozen versions is baked at
 
 The job summary prints the published **digest** — that digest, not a tag, is what the lane pins.
 
-## Flipping the lane onto the image
+## How the lane was flipped onto the image (done — SWM-84, PR #20)
 
-Once a digest is published (first build runs when this lands on `main`, or on demand via
-dispatch), a small reviewable PR flips `.github/workflows/replay-regression.yml`:
+`.github/workflows/replay-regression.yml` now pulls this image and runs **zero** job-time apt
+installs. What the flip consisted of, kept as the rationale for the workflow's current shape — and
+as the recipe if another lane is ever moved onto a pinned image:
 
-1. Grant the workflow `packages: read` so `GITHUB_TOKEN` can pull the (private, repo-linked) image
+1. **`packages: read` on the workflow** so `GITHUB_TOKEN` can pull the (private, repo-linked) image
    — **required**: without it the token pulls anonymously and GHCR returns `manifest unknown`, not
-   a clear auth error. Add it to the top-level `permissions:` block:
+   a clear auth error. It lives in the top-level `permissions:` block:
 
    ```yaml
    permissions:
@@ -36,8 +37,8 @@ dispatch), a small reviewable PR flips `.github/workflows/replay-regression.yml`
      packages: read
    ```
 
-2. Point the job container at the image and add pull credentials (with the scope above,
-   `GITHUB_TOKEN` can read the repo-linked package):
+2. **The job container points at the digest**, with pull credentials (with the scope above,
+   `GITHUB_TOKEN` reads the repo-linked package):
 
    ```yaml
    container:
@@ -47,9 +48,11 @@ dispatch), a small reviewable PR flips `.github/workflows/replay-regression.yml`
        password: ${{ secrets.github_token }}
    ```
 
-3. Delete the two job-time apt steps (**Install git-lfs** and **Install the ROS runtime …**) —
-   everything they install is baked in. The env probe, overlay cache/build, and test steps are
-   unchanged (`ROS_DISTRO` is baked into the image but the job env keeps it manifest-synced).
+3. **The two job-time apt steps were deleted** (*Install git-lfs* and *Install the ROS runtime …*)
+   — everything they installed is baked in. The env probe, overlay cache/build, and test steps were
+   unchanged (`ROS_DISTRO` is baked into the image, but the job env keeps it manifest-synced). The
+   workflow file is also folded into the overlay cache key, so a digest repin self-invalidates a
+   stale compiled overlay.
 
 ## Updating the image
 

@@ -181,8 +181,11 @@ jobs:
             # 2>&1: the whole block redirects STDOUT to $GITHUB_STEP_SUMMARY, so without this a
             # traceback from a broken harness goes only to the job log and the summary shows an
             # empty code fence — indistinguishable from a night with nothing to measure, which is
-            # the failure mode `|| true` otherwise hides. The harness is deliberately fail-loud
-            # (tests/unit/test_measure_sitl_budget.py pins that); this makes it fail-VISIBLE too.
+            # the failure mode `|| true` otherwise hides. The harness stays fail-loud on a bad
+            # BUDGET CONFIG or a junit path that does not exist (tests/unit/test_measure_sitl_budget.py
+            # pins both); a present-but-corrupt run report is instead SKIPPED and named in the report,
+            # so one truncated artifact cannot discard the rest of the rolling window. This makes the
+            # remaining fail-loud paths fail-VISIBLE too.
             python3 scripts/measure_sitl_budget.py $reports 2>&1 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

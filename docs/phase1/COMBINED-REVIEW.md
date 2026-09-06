@@ -125,7 +125,7 @@ Reviewed the open questions in docsets 01 (Platform) and 02 (Mission Control). T
 - **02 OQ-3** — mission topics: `std_msgs`, QoS reliable/transient-local depth-1 (state/current), latched (abort).
 - **02 OQ-4** — waypoint completion `tolerance_m: 0.5`, `hold_time_s: 2.0` (overridable YAML; SITL-tunable).
 - **02 OQ-5** — integration scenarios: one basic + one 2-wp patrol, nightly SITL; ≤8 min/scenario, quarantine-not-expand on flake (runtime figure **provisional** until measured).
-- **02 OQ-6** — low-battery abort: `/fmu/out/battery_status.remaining` < `0.20` (YAML threshold; transition unit-tested).
+- **02 OQ-6** — low-battery abort: `/fmu/out/battery_status_v1.remaining` < `0.20` (YAML threshold; transition unit-tested).
 
 **Still genuinely open (cannot be settled on paper — left as tracked OQs):**
 - **01 OQ-3** — exact PX4 v1.16.x tag + matching `px4_msgs` branch → M1–M2 integration spike (single edit point: the stack manifest).

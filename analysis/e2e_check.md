@@ -116,9 +116,10 @@ Record the witnessed `$BAG` name + date here when run:
 > Recorded at RTF ≈ 1 (`PX4_SIM_SPEED_FACTOR=0.33`, camera 15.16 Hz); metadata.yaml + `.meta.json`
 > sidecar both finalized (no reindex); upload `is_complete=True`; manifest `169s / 34 topics` matches
 > `ros2 bag info` (dumb-producer); `verify_live_bag.py` exit 0 (consistency OK, rate PASS); Foxglove
-> panels render. checkpoint_capture Count 3 — that is ALL three checkpoints, not 3 of 4: the route's
-> 4th waypoint is a tagless inline overlook, so the capture rate is 3/3 (see the 2026-07-26 witness
-> below and F-01 in `docs/phase1-wrapup-findings.md`); witness requires ≥1.
+> panels render. checkpoint_capture Count 3 — the route has three tag-bearing checkpoints and a
+> tagless inline 4th waypoint, so the expectation is 3, not 4 (see the 2026-07-26 witness below and
+> F-01 in `docs/phase1-wrapup-findings.md`); the witness itself requires only ≥1, since this is a
+> message count rather than the capture tally.
 >
 > _Re-verified 2026-07-25 (Phase 1 wrap-up, PR #20): steps **2–4** re-run headlessly against that same
 > bag to confirm the pipeline still holds after the wrap-up changes — upload **2 s** to the stand-in
@@ -154,5 +155,8 @@ Record the witnessed `$BAG` name + date here when run:
 > `checkpoint_id` and standing near no tag, kept deliberately to exercise the inline-waypoint path.
 > So `/patrol/dwell` 4 with `checkpoint_capture` 3 is exactly right: dwell fires per waypoint, a
 > capture needs a tag. Perception behaves correctly at the overlook — no tag in view, ADR-A gate
-> skip, no latch. **The capture rate is 3/3 (100%), not 3/4.** Pinned by
-> `tests/unit/test_patrol_capture_expectation.py` so the arithmetic cannot be misread again.
+> skip, no latch. The route carries **3 tag-bearing checkpoints**, so the expected capture count is
+> 3: **a 3/3 rate (100%), not 3/4.** That is the *checkpoint* arithmetic, which
+> `tests/unit/test_patrol_capture_expectation.py` pins; the bag's `Count 3` is a message count
+> consistent with it, not the derivation, and not a claim that one message equals one capture —
+> ADR-0012's patrol read `Count 9` for three on-disk captures on this same route.

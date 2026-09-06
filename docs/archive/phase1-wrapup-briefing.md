@@ -1,3 +1,11 @@
+# Phase 1 wrap-up — devloop work order (closed 2026-09-06)
+
+> **Historical record, not a Diátaxis page and not a how-to.** This is the agent work order that
+> scoped the Phase 1 wrap-up devloop; every item below landed in PR #20. Kept for provenance — the
+> durable record of what the wrap-up found and decided is
+> [`../phase1-wrapup-findings.md`](../phase1-wrapup-findings.md). Archived unedited except this
+> header and the SWM-84 bullet, corrected to past tense.
+
 Phase 1 wrap-up: burn down the remaining Linear backlog for the patrol-drone Phase 1 close-out.
 All milestone deliverables (M1–M8) are merged to main via PR #16; this is the closing pass — no
 new milestone work, no Phase 2+ scope (VIO/YOLO/Isaac/multi-drone stay out).
@@ -5,12 +13,13 @@ new milestone work, no Phase 2+ scope (VIO/YOLO/Isaac/multi-drone stay out).
 ## Issues to close (SWM team, all currently Backlog)
 
 Real work (this is the devloop scope):
-- SWM-84 — Flip the `replay-regression` CI lane onto the published GHCR digest. NOW UNBLOCKED (the
-  #16 merge put docker/ci/replay-lane/** on main). Run build-replay-lane-image.yml, take the digest,
-  follow docker/ci/replay-lane/README.md §"Flipping the lane onto the image": point container.image
-  at ghcr.io/sentientswarm/patrol-drone/replay-lane@sha256:<digest>, add the credentials block, and
-  delete the two job-time apt steps. DoD: lane pulls the pinned image, zero job-time apt, stays green
-  + required.
+- SWM-84 — **Done in this PR.** Flipped the `replay-regression` CI lane onto the published GHCR
+  digest (unblocked once the #16 merge put `docker/ci/replay-lane/**` on main): ran
+  build-replay-lane-image.yml, pointed `container.image` at
+  `ghcr.io/sentientswarm/patrol-drone/replay-lane@sha256:<digest>`, added the credentials block, and
+  deleted the two job-time apt steps. DoD met: the lane pulls the pinned image, runs zero job-time
+  apt, and stays green + required. See
+  [`../../docker/ci/replay-lane/README.md`](../../docker/ci/replay-lane/README.md).
 - SWM-16 (01-platform) + SWM-33 (02-mission-control) — Documentation + test consolidation true-up:
   reconcile PRD/Design/DoD/README against what actually shipped. Specs: docs/phase1/01-platform/ and
   docs/phase1/02-mission-control/ (design.md/prd.md/dod.md).

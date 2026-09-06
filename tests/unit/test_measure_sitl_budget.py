@@ -12,6 +12,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 import pytest
 
@@ -168,12 +169,33 @@ def test_format_report_carries_the_sample_size_warning_for_one_run():
     assert "1 in 5" in report
 
 
-def test_min_runs_for_flake_tracks_the_configured_threshold():
+@pytest.mark.parametrize(
+    ("threshold", "expected"),
+    [
+        pytest.param(0.2, 5, id="shipped-exact-reciprocal"),
+        pytest.param(0.1, 10, id="exact-reciprocal"),
+        pytest.param(0.0, 1, id="zero-threshold-no-division"),
+        # The two that were invisible: every threshold asserted before this was an exact reciprocal,
+        # where round() and ceil() agree. These are where they diverge, and they were RED until the
+        # ceil() fix — round(1/0.3) == 3 and round(1/0.4) == 2.
+        pytest.param(0.3, 4, id="round-would-have-said-3"),
+        pytest.param(0.4, 3, id="round-would-have-said-2"),
+    ],
+)
+def test_min_runs_for_flake_tracks_the_configured_threshold(threshold: float, expected: int):
     # The needed sample size is derived from the quarantine threshold, not hard-coded, so retuning
     # the rule keeps the warning honest.
-    assert msb._min_runs_for_flake(msb.Budget(100.0, 0.2, 2.0)) == 5
-    assert msb._min_runs_for_flake(msb.Budget(100.0, 0.1, 2.0)) == 10
-    assert msb._min_runs_for_flake(msb.Budget(100.0, 0.0, 2.0)) == 1  # no division by zero
+    assert msb._min_runs_for_flake(msb.Budget(100.0, threshold, 2.0)) == expected
+
+
+@pytest.mark.parametrize("threshold", [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5])
+def test_one_failure_at_the_certified_sample_size_does_not_trip_quarantine(threshold: float):
+    # The CONTRACT, not a lookup table: at the sample size sample_size_note calls "meaningful", a
+    # SINGLE failure must not exceed the quarantine threshold. This is the property the round()
+    # version violated at 0.3 and 0.4, and stating it this way means a future refactor cannot
+    # reintroduce the same class of bug by picking another wrong-but-plausible operator.
+    budget = msb.Budget(100.0, threshold, 2.0)
+    assert 1 / msb._min_runs_for_flake(budget) <= threshold
 
 
 # --- the thin I/O shell (F-04) --------------------------------------------------
@@ -327,3 +349,60 @@ def test_sample_size_note_does_not_contradict_the_table_it_annotates():
     assert "0% or 100%" not in note
     assert "25%" in note
     assert "NOT a flake measurement" in note  # the warning itself still fires
+
+
+# --- corrupt run reports (F-09 / F-04) ------------------------------------------
+# The pure core stays STRICT: parse_junit_xml raises on a corrupt document, and main (below) is the
+# layer that decides a corrupt night is survivable. Pinning both halves separately is what makes the
+# skip in _read_run a deliberate policy rather than a swallowed error.
+
+
+@pytest.mark.parametrize(
+    "xml_text",
+    [
+        pytest.param('<?xml version="1.0"?><testsuites><testsuite', id="truncated"),
+        pytest.param("", id="empty-file"),
+        pytest.param(
+            '<?xml version="1.0"?><testsuites><testsuite name="pytest">'
+            '<testcase classname="c" name="n" time="N/A"/></testsuite></testsuites>',
+            id="non-numeric-time",
+        ),
+    ],
+)
+def test_parse_junit_xml_rejects_a_corrupt_report(xml_text: str):
+    # ParseError subclasses SyntaxError, NOT ValueError — a (OSError, ValueError) except tuple would
+    # let truncated XML straight through, which is why _read_run names it explicitly.
+    with pytest.raises((ElementTree.ParseError, ValueError)):
+        msb.parse_junit_xml(xml_text)
+
+
+def test_main_skips_a_corrupt_report_and_names_it(tmp_path: Path, budget_file: Path, capsys):
+    # The failure mode F-04 reproduced: an interrupted docker cp / gh run download leaves a partial
+    # XML in the rolling window. The other five nights must still be measured, and the dropped file
+    # must be NAMED — a silent skip recreates the "looks like a measurement, is no measurement"
+    # hazard sample_size_note exists to remove.
+    runs = _write_runs(tmp_path, [True] * 5)
+    corrupt = tmp_path / "run-corrupt.xml"
+    corrupt.write_text("<testsuites><testsuite")
+
+    rc = msb.main([*runs, str(corrupt), "--budget", str(budget_file)])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "SKIPPED 1 unreadable run report(s)" in out
+    assert "run-corrupt.xml" in out
+    assert "flake rate is meaningful" in out  # the 5 readable nights survived the bad file
+
+
+def test_main_does_not_call_an_all_corrupt_window_an_empty_one(
+    tmp_path: Path, budget_file: Path, capsys
+):
+    # "no run reports supplied" would be a lie here — reports WERE supplied and all were unreadable.
+    (tmp_path / "run-0.xml").write_text("")
+
+    rc = msb.main([str(tmp_path / "run-0.xml"), "--budget", str(budget_file)])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no run reports supplied" not in out
+    assert "SKIPPED 1 unreadable run report(s)" in out

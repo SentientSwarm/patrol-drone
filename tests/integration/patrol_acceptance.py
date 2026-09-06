@@ -475,7 +475,7 @@ def run_mid_patrol_abort_scenario(
 
     ``inject(watcher, injector)`` is the scenario's only difference: it publishes the abort trigger
     on the ``injector`` node (an external ``/patrol/abort`` Bool, or a sub-threshold BatteryStatus on
-    ``/fmu/out/battery_status``) and spins the watcher until the recovery predicate holds. On return,
+    ``/fmu/out/battery_status_v1``) and spins the watcher until the recovery predicate holds. On return,
     the observable ABORT -> RTH -> settle-at-home -> disarm is asserted via ``abort_recovery_checks``,
     and ``attribution`` pins that the abort had the *cause* this scenario triggered (F-09) rather
     than merely that some abort occurred.

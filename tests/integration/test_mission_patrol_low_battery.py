@@ -8,7 +8,7 @@ Exit-checklist item 12 asks for mission abort to be "observable in a SITL run"; 
 low-battery half observable too, closing the SITL-observation gap the DoD flagged for AC-7.
 
 **Trigger (in-band, no new deps, no PX4 param poking).** The node reads
-``/fmu/out/battery_status`` (``BatteryStatus.remaining``, a 0..1 fraction; -1/disconnected =
+``/fmu/out/battery_status_v1`` (``BatteryStatus.remaining``, a 0..1 fraction; -1/disconnected =
 unknown, which must NOT abort — Hermes High). We republish a fresh ``remaining = 0.05`` (well below
 0.20), ``connected = True`` sample at spin cadence on that topic, with the *same* px4_qos the node
 subscribes with (best-effort + transient-local). PX4's own ~full sample interleaves, but the node
@@ -118,7 +118,7 @@ def test_low_battery_mid_patrol_drives_observable_rth() -> None:
         # — so requiring the watcher here would spin the full timeout and fail deterministically.
         bat_pub = injector.create_publisher(BatteryStatus, topics.BATTERY_STATUS, px4_qos())
         assert wait_for_subscription(injector, bat_pub), (
-            "mission node's /fmu/out/battery_status subscriber was not discovered; the reading "
+            f"mission node's {topics.BATTERY_STATUS} subscriber was not discovered; the reading "
             "would be dropped"
         )
         # Inject the low battery until the full observable recovery is seen: an ABORT -> RTH, a

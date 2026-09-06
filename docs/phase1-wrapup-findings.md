@@ -9,7 +9,8 @@ gets hit as few times as possible.
 
 Two sources feed this log:
 1. **Manual exit-checklist checks** — the live/GUI runs the devloop explicitly excluded (see
-   [`phase1-wrapup-briefing.md`](phase1-wrapup-briefing.md) §"Out of scope for this loop").
+   [`archive/phase1-wrapup-briefing.md`](archive/phase1-wrapup-briefing.md) §"Out of scope for this
+   loop").
 2. **The PR #20 automated review** — findings not yet answered.
 
 ---

@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -133,7 +134,7 @@ def sample_size_note(summaries: list[ScenarioSummary], budget: Budget) -> list[s
     if runs >= min_runs:
         return ["", f"sample size: {runs} runs — flake rate is meaningful at this threshold."]
     # Every rate this sample can express is a multiple of 1/runs, and 1/runs > threshold for EVERY
-    # runs < min_runs (min_runs = round(1/threshold) <= 1/threshold + 0.5, so runs <= min_runs - 1
+    # runs < min_runs (min_runs = ceil(1/threshold) >= 1/threshold, so runs <= min_runs - 1
     # < 1/threshold) — i.e. in this branch a SINGLE failure trips quarantine. Say exactly that, and
     # say it of the WEAKEST-sampled scenario, which is what `runs` is (min across summaries). The
     # old "cannot express / necessarily 0% or 100%" was true only at runs == 1 and was visibly false
@@ -152,23 +153,86 @@ def sample_size_note(summaries: list[ScenarioSummary], budget: Budget) -> list[s
 
 
 def _min_runs_for_flake(budget: Budget) -> int:
-    """Runs needed before the flake rate can express the quarantine threshold (1/threshold)."""
+    """Runs needed before ONE failure stops tripping quarantine: ``ceil(1 / threshold)``.
+
+    ``ceil``, not ``round``: the bar this returns is the sample size at which the note above stops
+    warning, so it must satisfy ``1 / min_runs <= threshold``. ``round`` rounds DOWN whenever
+    ``1/threshold`` has a fractional part below .5 and certifies a sample where a single failure
+    still quarantines — at threshold 0.3 it returns 3, and 1-in-3 is 33% > 30%; at 0.4 it returns 2,
+    and 1-in-2 is 50% > 40%. Inert at the shipped 0.2 (1/5 = 20% is not > 0.2), live the moment
+    SWM-31's stated purpose — tuning the threshold — is carried out.
+    """
     if budget.flake_rate_threshold <= 0:
         return 1
-    return max(1, round(1 / budget.flake_rate_threshold))
+    return max(1, math.ceil(1 / budget.flake_rate_threshold))
 
 
-def format_report(summaries: list[ScenarioSummary], budget: Budget) -> str:
+def _read_run(path: Path) -> tuple[list[CaseResult], str | None]:
+    """One run report -> (results, skip note). A corrupt report is SKIPPED, not fatal.
+
+    The asymmetry with :func:`load_budget` is deliberate — do not "unify" them. A bad *budget* is a
+    bad rule and must fail loud (pinned by ``test_load_budget_fails_loudly_on_a_malformed_config``).
+    A bad *run report* is one night of a rolling window the nightly already fetches best-effort: a
+    truncated or 0-byte JUnit is what an interrupted upload leaves behind, and discarding the other
+    nine nights over it reports nothing where it could report nine. A path that does not exist is a
+    third thing — an argv error, not a window artifact — so it still raises.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"JUnit report not found: {path}")
+    try:
+        return parse_junit_xml(path.read_text()), None
+    except (OSError, ValueError, ElementTree.ParseError) as exc:
+        return [], f"{path.name}: {type(exc).__name__}: {exc}"
+
+
+def _read_runs(paths: list[Path]) -> tuple[list[CaseResult], list[str]]:
+    """Read every supplied run report into (results, skip notes) — see :func:`_read_run`."""
+    results: list[CaseResult] = []
+    skipped: list[str] = []
+    for path in paths:
+        run_results, note = _read_run(path)
+        results.extend(run_results)
+        if note:
+            skipped.append(note)
+    return results, skipped
+
+
+def _skipped_note(skipped: list[str] | None) -> list[str]:
+    """Name every report that could not be read. A SILENTLY dropped file would recreate the exact
+    hazard :func:`sample_size_note` exists to remove: a report that looks like N nights of evidence
+    while it measures fewer."""
+    if not skipped:
+        return []
+    return [
+        "",
+        f"SKIPPED {len(skipped)} unreadable run report(s) — NOT counted in the sample below:",
+        *[f"  - {s}" for s in skipped],
+    ]
+
+
+def _no_measurements_line(skipped: list[str] | None) -> str:
+    """The empty-table line, which must not call an all-corrupt window an empty one."""
+    if skipped:
+        return (
+            "(no READABLE run reports — every supplied report was skipped above; no measurements)"
+        )
+    return "(no run reports supplied — no measurements yet; provisional budget stands)"
+
+
+def format_report(
+    summaries: list[ScenarioSummary], budget: Budget, skipped: list[str] | None = None
+) -> str:
     """A human/Markdown-friendly table plus the measured-budget line to fold back into the config."""
     lines = [
         f"SITL budget: {budget.per_scenario_budget_s:.0f}s/scenario "
         f"(quarantine: flake > {budget.flake_rate_threshold:.0%} "
         f"or max > {budget.budget_overrun_factor:.0f}x budget)",
+        *_skipped_note(skipped),
         "",
         f"{'scenario':<64} {'runs':>4} {'fails':>5} {'flake':>6} {'max_s':>7} {'mean_s':>7}  verdict",
     ]
     if not summaries:
-        lines.append("(no run reports supplied — no measurements yet; provisional budget stands)")
+        lines.append(_no_measurements_line(skipped))
         return "\n".join(lines)
     for s in summaries:
         verdict = "QUARANTINE" if s.quarantine else ("OVER-BUDGET" if s.over_budget else "ok")
@@ -212,11 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     budget = load_budget(args.budget)
-    results: list[CaseResult] = []
-    for path in args.junit:
-        results.extend(parse_junit_xml(path.read_text()))
+    results, skipped = _read_runs(args.junit)
     summaries = summarize(results, budget)
-    print(format_report(summaries, budget))
+    print(format_report(summaries, budget, skipped))
 
     if args.fail_on_quarantine and any(s.quarantine for s in summaries):
         return 1
