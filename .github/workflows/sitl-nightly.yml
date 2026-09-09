@@ -12,6 +12,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  # `gh run list` / `gh run download` read prior runs' retained JUnit artifacts so the budget harness
+  # gets a multi-night sample instead of a single binary-flake input (F-08). Read-only.
+  actions: read
 concurrency:
   group: sitl-nightly-${{ github.ref }}
   cancel-in-progress: true
@@ -57,13 +60,16 @@ jobs:
           done
           echo "::error::/fmu/* bridge did not come up within 10 min"; exit 1
 
-      - name: Run the mission integration tests (basic + patrol; AC-5 / AC-2 / AC-6 / MC-10)
+      - name: Run the mission integration tests (basic + patrol + low-battery abort; AC-5 / AC-2 / AC-6 / AC-7 / MC-10)
         run: |
           CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
           # The sim image already carries the runtime + ROS + the built ws AND the pinned test
           # harness (python3-pytest + launch_pytest, baked into docker/sim/Dockerfile's runtime
           # stage) — nothing is installed live here. launch_pytest drives the launch file; pytest
-          # runs the assertions. Both -m ros scenarios collect: test_mission_basic + test_mission_patrol.
+          # runs the assertions. All -m ros scenarios collect: test_mission_basic + test_mission_patrol
+          # (nominal + external abort) + test_mission_patrol_low_battery (the low-battery abort, AC-7
+          # SITL-observed — the second live abort guard, exit item 12; injects a sub-threshold
+          # BatteryStatus in-band). New scenario files under tests/integration are auto-collected here.
           docker cp tests "$CID:/opt/tests"
           # The patrol route (patrol_mission.yaml) resolves checkpoint_ids against 03's interim
           # checkpoints.yaml (the 02 stand-in under sim/config/). The loader has NO CWD-relative
@@ -71,11 +77,141 @@ jobs:
           # path as parents[2]/sim/config/checkpoints.yaml, which is /opt/sim/config here. So ship
           # sim/ to /opt/sim and run pytest from /opt to make that absolute path resolve.
           docker cp sim "$CID:/opt/sim"
+          # test_upload_ingest_standin.py is deliberately NOT collected here: it is an integration
+          # test that needs NO SITL (rsync + sqlite + the Git-LFS reference bag) and is owned by the
+          # required `replay-regression` lane, which materializes the LFS bag and puts analysis/ +
+          # docker/ on the path. This container has none of those, and because a bad import is a
+          # COLLECTION error (not a deselect), leaving it in aborts the entire `-m ros` run before a
+          # single SITL scenario executes — which is exactly how this lane went red.
           docker exec "$CID" bash -lc '
             source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
             source /opt/ros2_ws/install/setup.bash
             cd /opt
-            python3 -m pytest /opt/tests/integration -m ros -o markers=ros -ra'
+            python3 -m pytest /opt/tests/integration -m ros -o markers=ros -ra \
+              --ignore=/opt/tests/integration/test_upload_ingest_standin.py \
+              --junit-xml=/opt/sitl-junit.xml'
+
+      # F-08: the budget harness takes RUN1.xml RUN2.xml ... (one per night), but this workflow used
+      # to hand it ONLY the current run's report while its own guidance said multiple nights must
+      # accumulate before the provisional budget is replaced. With a single input the flake rate is
+      # binary — every scenario reads `runs 1, fails 0, flake 0%`, which looks like a clean
+      # measurement and measures nothing. So: retain each night's JUnit as an artifact, pull the last
+      # N back on the next run, and feed the whole set.
+      - name: Extract this run's JUnit report
+        if: always()
+        run: |
+          CID=$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --env-file .env.build ps -q sim)
+          mkdir -p junit-rolling
+          [ -n "$CID" ] || { echo "sim container gone; no JUnit to retain"; exit 0; }
+          # Name by run number so downloaded artifacts from prior nights never collide on merge.
+          docker cp "$CID:/opt/sitl-junit.xml" "junit-rolling/run-${{ github.run_number }}.xml" || true
+
+      # Retained well beyond the rolling window below so a longer look-back is possible by hand.
+      #
+      # overwrite: v4+ artifacts are IMMUTABLE and `run_number` is re-run-invariant, so on a re-run
+      # the name `sitl-junit-<run_number>` already exists from attempt 1 and the upload FAILS
+      # (overwrite defaults false) — the night is then retained not at all, and the nightly goes red
+      # for a reason unrelated to SITL. Latest attempt wins, which is also the right semantics: a
+      # re-run supersedes the attempt it replaces. This keeps exactly ONE file per night, so the
+      # run_number naming key stays valid at every one of its three call sites (the filename above,
+      # this artifact name, and the `this_run` marker below) with no rename. Note `run_id` would fix
+      # nothing — GitHub documents it as re-run-invariant too, identical to run_number; and a
+      # `run_attempt` SUFFIX would instead contribute two files for one night and double-count it in
+      # the flake denominator. The action deletes the existing artifact only AFTER its file search,
+      # so a re-run that produces no JUnit leaves attempt 1's artifact standing rather than wiping it.
+      - name: Retain this run's JUnit report (rolling budget sample)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sitl-junit-${{ github.run_number }}
+          path: junit-rolling/
+          overwrite: true
+          retention-days: 90
+          if-no-files-found: ignore
+
+      # Pull prior nights' reports into the same dir. Best-effort by design: a first run, a pruned
+      # artifact, or an API hiccup must not fail the nightly — it just means a smaller sample, which
+      # the harness now labels explicitly rather than passing off as a measurement.
+      - name: Fetch prior JUnit reports (rolling window)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROLLING_RUNS: "10"
+        run: |
+          mkdir -p junit-rolling
+          # Prior COMPLETED runs of this same workflow, newest first, excluding the current one.
+          gh run list --workflow "${{ github.workflow }}" --limit 40 \
+            --json databaseId,status \
+            --jq ".[] | select(.status==\"completed\") | .databaseId | select(. != ${{ github.run_id }})" \
+            > prior-runs.txt || true
+          count=0
+          while read -r rid; do
+            [ "$count" -ge "$ROLLING_RUNS" ] && break
+            # </dev/null: gh runs inside `while read … < prior-runs.txt` and inherits the loop's
+            # stdin, so a gh that ever reads stdin would drain the run list and silently truncate
+            # the rolling window (the classic ssh/docker-in-while-read hazard).
+            if gh run download "$rid" --pattern 'sitl-junit-*' --dir "prior-$rid" </dev/null 2>/dev/null; then
+              find "prior-$rid" -name '*.xml' -exec cp -n {} junit-rolling/ \; || true
+              count=$((count + 1))
+            fi
+          done < prior-runs.txt
+          # `count` is prior runs only. This run contributes a report only if the extract step above
+          # actually produced one — it exits 0 without copying when the sim container never came up
+          # (a failed build or bridge wait), and its `docker cp ... || true` swallows a failed copy
+          # just as quietly. That is precisely when the rolling history is most worth reading, so a
+          # hard `+ 1` overstated the sample exactly where it is most consulted. The retained file is
+          # its own marker: prior runs carry other run numbers, and the current run's artifact is
+          # excluded from the download loop, so this path exists iff the copy succeeded.
+          this_run=0
+          if [ -f "junit-rolling/run-${{ github.run_number }}.xml" ]; then this_run=1; fi
+          echo "collected $(find junit-rolling -name '*.xml' | wc -l) JUnit report(s) across $((count + this_run)) run(s) ($count prior + $this_run from this run)"
+
+      # Non-gating (OQ-5 / SWM-31): measure the per-scenario wall-clock + flake verdict across the
+      # ROLLING set and write it to the job summary — the deferred "measure once 01's SITL has
+      # landed" (design OQ-5). It never fails the job (no --fail-on-quarantine); accumulating multiple
+      # nights' reports is what replaces the provisional ≤8 min budget in tests/integration/sitl_budget.yaml.
+      - name: Measure the SITL runtime/flakiness budget (non-gating; OQ-5/SWM-31)
+        if: always()
+        run: |
+          # A bash ARRAY, not a space-joined string. `tr '\n' ' '` destroyed the only delimiter that
+          # distinguished filenames, so EVERY consumer of $reports was already broken at the source —
+          # quoting the harness call alone would not have helped. Two consumers were affected: the
+          # header's `wc -w` over-reported the sample (a filename with one space counts as two run
+          # reports — an inflated sample count printed directly above the table whose sample size the
+          # harness exists to keep honest), and the harness argv split mid-path. -print0 / sort -z /
+          # `mapfile -d ''` keeps whitespace intact while preserving the deliberate sort order.
+          # Preferred over `find ... -print0 | xargs -0`, which may split a long list across SEVERAL
+          # harness invocations and emit several partial reports instead of one.
+          reports=()
+          mapfile -d '' -t reports < <(find junit-rolling -name '*.xml' -print0 | sort -z)
+          [ "${#reports[@]}" -gt 0 ] || { echo "no JUnit reports collected; nothing to measure"; exit 0; }
+          # Run on the RUNNER, not via `docker exec`. The harness is pure stdlib + pyyaml and
+          # tests/integration/sitl_budget.yaml is in the checkout, so it never needed the container —
+          # and the old `[ -n "$CID" ] || exit 0` threw away the rolling sample just fetched exactly
+          # when the SITL build had failed, i.e. when the flake history is most worth reading.
+          # (The identical-looking guard in the "Extract this run's JUnit report" step above is
+          # correct and stays: you genuinely cannot docker cp from a container that is gone.)
+          # The runner image does not guarantee PyYAML, and `import yaml` is module-scope in the
+          # harness, so install it only if missing rather than assuming either way.
+          python3 -c 'import yaml' 2>/dev/null \
+            || pip install --quiet --disable-pip-version-check --break-system-packages pyyaml==6.0.3
+          {
+            echo "### SITL runtime/flakiness budget (rolling: ${#reports[@]} run report(s))"
+            echo '```'
+            # The array is already sorted (sort -z above) — do not re-glob here, which would lose
+            # the deterministic order.
+            # 2>&1: the whole block redirects STDOUT to $GITHUB_STEP_SUMMARY, so without this a
+            # traceback from a broken harness goes only to the job log and the summary shows an
+            # empty code fence — indistinguishable from a night with nothing to measure, which is
+            # the failure mode `|| true` otherwise hides. The harness stays fail-loud on a bad
+            # BUDGET CONFIG or a junit path that does not exist (tests/unit/test_measure_sitl_budget.py
+            # pins both); a present-but-corrupt run report is instead SKIPPED and named in the report,
+            # so one truncated artifact cannot discard the rest of the rolling window. This makes the
+            # remaining fail-loud paths fail-VISIBLE too.
+            python3 scripts/measure_sitl_budget.py "${reports[@]}" 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Sim container logs (always)
         if: always()

@@ -12,30 +12,28 @@ Harmonic) over the uXRCE-DDS bridge, and asserts the observable patrol on ``/pat
 
 The simulator is never mocked (tests/README): real SITL + the agent are brought up by the nightly
 job before pytest runs; this test launches only the mission node and observes ``/patrol/*`` +
-``/fmu/out/vehicle_status``. The PASS/FAIL definition is shared verbatim with the host verifier via
-:mod:`patrol_acceptance` so the two can't drift.
+``/fmu/out/vehicle_status``. The launch wiring, the underway-wait, and the abort-recovery PASS/FAIL
+are shared verbatim with the low-battery scenario (:mod:`patrol_launch`, :mod:`patrol_acceptance`)
+so the scenarios can't drift — only the abort *trigger* differs.
 
 Nightly SITL tier only — never a required per-PR check (OQ-5). Marked ``ros`` so the Layer-A unit
 runner (no ROS) skips it.
 """
 
-from pathlib import Path
-
 import launch_pytest
 import pytest
 import rclpy
-from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution
-from launch_ros.substitutions import FindPackageShare
 from patrol_acceptance import (
+    WATCHER_NODE_NAME,
+    AbortAttribution,
     PatrolWatcher,
     evaluate_nominal,
     expected_waypoint_count,
+    run_mid_patrol_abort_scenario,
     spin_until,
     wait_for_subscription,
 )
+from patrol_launch import patrol_launch_description
 from patrol_mission.qos import patrol_abort_qos
 from std_msgs.msg import Bool
 
@@ -43,46 +41,17 @@ from patrol_mission import topics
 
 pytestmark = pytest.mark.ros
 
-# How long to wait for the patrol to get underway before injecting the abort (arm + climb + reach
-# the first leg). Well under the patrol timeout; the abort then drives the (shorter) return home.
-_UNDERWAY_TIMEOUT_S = 150.0
-
-# Absolute path to the interim checkpoints file, computed from this test's location so it resolves
-# regardless of the launched node's working directory (parents[2] is the repo root on the host and
-# /opt in the nightly container, where `docker cp sim /opt/sim` places it). Passed explicitly to the
-# launch so the patrol's checkpoint_id waypoints resolve without depending on CWD.
-_CHECKPOINTS_YAML = str(Path(__file__).resolve().parents[2] / "sim" / "config" / "checkpoints.yaml")
-
-
-def _patrol_launch(record: str) -> LaunchDescription:
-    return LaunchDescription(
-        [
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    PathJoinSubstitution(
-                        [FindPackageShare("patrol_bringup"), "launch", "mission_patrol.launch.py"]
-                    )
-                ),
-                launch_arguments={
-                    "record": record,
-                    "checkpoints_yaml": _CHECKPOINTS_YAML,
-                }.items(),
-            ),
-            launch_pytest.actions.ReadyToTest(),
-        ]
-    )
-
 
 @launch_pytest.fixture
-def patrol_launch() -> LaunchDescription:
+def patrol_launch():
     # Pass record:=true explicitly (launch default is false); 05 absent in CI -> resilient skip
     # (TS-I3), patrol still comes up.
-    return _patrol_launch("true")
+    return patrol_launch_description("true")
 
 
 @launch_pytest.fixture
-def patrol_launch_no_record() -> LaunchDescription:
-    return _patrol_launch("false")
+def patrol_launch_no_record():
+    return patrol_launch_description("false")
 
 
 @pytest.mark.launch(fixture=patrol_launch)
@@ -101,46 +70,38 @@ def test_patrol_visits_all_waypoints_then_returns_home() -> None:
 
 @pytest.mark.launch(fixture=patrol_launch_no_record)
 def test_external_abort_mid_patrol_drives_observable_rth() -> None:
-    rclpy.init()
-    watcher = PatrolWatcher(expected_waypoint_count())
-    injector = rclpy.create_node("abort_injector")
-    abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, patrol_abort_qos())
-    try:
-        # Wait until the patrol is underway (armed + past takeoff / reached a waypoint)...
-        spin_until(
-            watcher,
-            lambda w: w.was_armed and ("HOVER" in w.states_seen or bool(w.waypoints_visited)),
-            timeout_s=_UNDERWAY_TIMEOUT_S,
-        )
-        assert watcher.was_armed, "patrol never armed — cannot exercise the mid-patrol abort"
-
-        # ...then raise the external abort. patrol_abort_qos is reliable + *volatile*, so a sample
-        # published before the node's subscriber is discovered would be dropped on the floor. Wait
-        # for DDS matching first (Hermes Medium) rather than assume the patrol being underway implies
-        # it. Once delivered, the abort "sticks" through RTH via the state machine's latch.
-        assert wait_for_subscription(injector, abort_pub), (
-            "node's /patrol/abort subscriber was not discovered; the volatile abort would be dropped"
+    def inject(watcher: PatrolWatcher, injector) -> None:
+        # patrol_abort_qos is reliable + *volatile*: a sample published before the node's subscriber
+        # is discovered would be dropped, so wait for DDS matching first (Hermes Medium). Once
+        # delivered the abort "sticks" through RTH via the state machine's latch.
+        #
+        # BOTH subscribers must be matched before the single volatile Bool goes out, and each for its
+        # own reason: the MISSION NODE because an unmatched reliable+volatile sample is simply dropped
+        # and no abort fires (High #1), and the WATCHER because since F-09 it counts inbound commands
+        # — if the sample reaches the mission but not the watcher, the drone flies a correct recovery
+        # and the scenario still fails on external_abort_command_count (0 >= 1 is False).
+        abort_pub = injector.create_publisher(Bool, topics.PATROL_ABORT, patrol_abort_qos())
+        assert wait_for_subscription(
+            injector, abort_pub, required_nodes=(topics.MISSION_NODE_NAME, WATCHER_NODE_NAME)
+        ), (
+            "/patrol/abort subscribers were not both discovered (mission node + acceptance watcher); "
+            "the volatile abort would be dropped or go uncounted"
         )
         msg = Bool()
         msg.data = True
         abort_pub.publish(msg)
-
         # The mission must transition to an observable ABORT, then RTH, settle at home, then disarm.
         spin_until(
             watcher,
             lambda w: w.abort_then_rth and w.settled_near_home and w.disarmed_after_arm,
         )
-        assert watcher.abort_then_rth, (
-            f"no observable ABORT->RTH; states seen: {watcher.states_seen}"
-        )
-        assert watcher.settled_near_home, (
-            f"abort-driven RTH did not settle within {watcher.home_tol_m} m of home_ned "
-            f"{watcher.home_ned}; closest approach {watcher.min_home_distance_m:.2f} m"
-        )
-        assert watcher.disarmed_after_arm, (
-            "vehicle did not disarm after the abort-driven return home"
-        )
-    finally:
-        injector.destroy_node()
-        watcher.destroy_node()
-        rclpy.shutdown()
+
+    # Attribution (F-09): the mirror of the low-battery scenario — here exactly ONE external abort
+    # command is published, and the mission must name EXTERNAL_SIGNAL as the cause. Pinning both
+    # directions is what makes the pair meaningful: the two scenarios are otherwise behaviorally
+    # indistinguishable from outside (identical profile, identical wall-clock).
+    run_mid_patrol_abort_scenario(
+        "abort_injector",
+        inject,
+        AbortAttribution(reason="EXTERNAL_SIGNAL", external_cmds=1),
+    )

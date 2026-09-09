@@ -271,3 +271,118 @@ def test_read_bag_facts_raises_on_non_list_relative_file_paths(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="relative_file_paths has unexpected shape"):
         read_bag_facts(bag)
+
+
+def _bag_with_metadata(tmp_path: Path, metadata_text: str) -> Path:
+    """A dir the admission guard admits: a real metadata.yaml beside a real .mcap."""
+    bag = tmp_path / "patrol_corrupt_meta"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text(metadata_text)
+    (bag / "patrol_ref_0.mcap").write_bytes(b"\x89MCAP0\r\n")  # an otherwise-readable MCAP
+    return bag
+
+
+def _stub_bag_info(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Answer `ros2 bag info` with the sample output; returns the list of invocations."""
+    calls: list[list[str]] = []
+
+    class _Completed:
+        stdout = _SAMPLE
+
+    def _fake_run(cmd: list[str], **_kwargs: object) -> _Completed:
+        calls.append(cmd)
+        return _Completed()
+
+    monkeypatch.setattr("ingest.bag_reader.subprocess.run", _fake_run)
+    return calls
+
+
+# PR #16 round-16 Medium (review 4755855556): admission (`is_valid_bag_dir`) admits any dir with a
+# real metadata.yaml + a real .mcap, so a PRESENT-but-corrupt metadata.yaml on an otherwise-readable
+# MCAP used to hard-fail here on every retry — the documented `ros2 bag info` fallback (for missing/
+# unreadable/malformed metadata) was unreachable. read_bag_facts must now fall back and derive facts
+# FROM the bag. Both an unparseable-YAML doc and a valid-YAML/wrong-shape doc must route to it.
+@pytest.mark.parametrize(
+    "bad_metadata",
+    [
+        pytest.param("{ this is: broken: [", id="invalid-yaml"),
+        pytest.param("- not\n- a mapping\n", id="wrong-shape-root"),
+        # The two cases the first round of this fix missed: the ROOT parses and the payload
+        # declarations are honest, but a fact the document must supply is corrupt. _facts_from_info
+        # used to run outside the try, so these raised past the fallback and dead-ended the bag on
+        # every retry — the exact defect PR#16 round-16 was filed against (review re-raised it).
+        pytest.param(
+            _METADATA_WITH_PAYLOAD_REF.replace("  duration:\n    nanoseconds: 19991536152\n", ""),
+            id="root-parses-but-duration-missing",
+        ),
+        pytest.param(
+            _METADATA_WITH_PAYLOAD_REF.replace(
+                "  topics_with_message_count:\n"
+                "    - topic_metadata:\n"
+                "        name: /patrol/mission_state\n"
+                "        type: std_msgs/msg/String\n"
+                "      message_count: 200\n",
+                "  topics_with_message_count: 7\n",
+            ),
+            id="root-parses-but-topics-is-a-scalar",
+        ),
+    ],
+)
+def test_read_bag_facts_falls_back_to_ros2_bag_info_on_unusable_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_metadata: str
+) -> None:
+    bag = _bag_with_metadata(tmp_path, bad_metadata)
+    calls = _stub_bag_info(monkeypatch)
+
+    facts = read_bag_facts(bag)
+
+    assert calls, "the ros2 bag info fallback was not invoked for the unusable metadata"
+    assert calls[0][:3] == ["ros2", "bag", "info"]
+    assert facts.topic_counts  # facts derived from the bag via ros2 bag info, not the corrupt doc
+
+
+# The THIRD documented fallback case: a metadata.yaml that is present but UNREADABLE (OSError). A
+# chmod-based test is worse than useless here — the ingest container runs as root, where chmod 000
+# is still readable, so it would pass without exercising anything. The OSError is injected at the
+# read instead. Without this, narrowing that except tuple to (ValueError, yaml.YAMLError) would keep
+# the whole suite green while restoring the hard-fail-every-retry dead end PR #16 round-16 filed.
+def test_read_bag_facts_falls_back_when_metadata_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A VALID document, so the fallback is provably reached via the read failure, not bad content.
+    bag = _bag_with_metadata(tmp_path, _METADATA_WITH_PAYLOAD_REF)
+    calls = _stub_bag_info(monkeypatch)
+    real_read_text = Path.read_text
+
+    def _unreadable(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == "metadata.yaml":
+            raise OSError("simulated unreadable metadata.yaml")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", _unreadable)
+
+    facts = read_bag_facts(bag)
+
+    assert calls, "the ros2 bag info fallback was not invoked for an unreadable metadata.yaml"
+    assert facts.topic_counts
+
+
+# The DELIBERATE other half of the taxonomy, paired with the fallback test above so a future
+# "simplification" that merges the two try blocks fails here: a metadata.yaml that LIES about its
+# payloads (declares a file that is not on disk, F-01) must stay a HARD fault. Widening the fallback
+# to cover corrupt facts must not launder a dishonest document through `ros2 bag info`.
+def test_read_bag_facts_still_hard_fails_when_a_declared_payload_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bag = tmp_path / "patrol_lying_meta"
+    bag.mkdir()
+    (bag / "metadata.yaml").write_text(_METADATA_WITH_PAYLOAD_REF)  # declares patrol_ref_0.mcap
+    # ... which is deliberately NOT created here.
+
+    def _must_not_run(cmd: list[str], **_kwargs: object) -> object:
+        raise AssertionError(f"the fallback must not be reached for a dishonest document: {cmd}")
+
+    monkeypatch.setattr("ingest.bag_reader.subprocess.run", _must_not_run)
+
+    with pytest.raises(ValueError, match="declares payload"):
+        read_bag_facts(bag)

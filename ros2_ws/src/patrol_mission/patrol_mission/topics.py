@@ -49,13 +49,26 @@ PATROL_CURRENT_WAYPOINT = "/patrol/current_waypoint"  # std_msgs/Int32 — activ
 # never correlates the two separate, non-atomic mission_state + current_waypoint topics (Hermes High).
 PATROL_DWELL = "/patrol/dwell"
 PATROL_ABORT = "/patrol/abort"  # std_msgs/Bool — inbound external-abort (MC-6)
+# std_msgs/String — the OUTBOUND latched AbortReason name ("NONE" until an abort fires, then
+# EXTERNAL_SIGNAL / LOW_BATTERY / MANUAL_TAKEOVER / TIMEOUT). Distinct from PATROL_ABORT above, which
+# is the inbound external-abort *command*: this is the mission's answer to "why did it abort?".
+# mission_state carries the state but not the cause, so without this the external and low-battery
+# aborts are indistinguishable from outside — they fly an identical profile (F-09).
+PATROL_ABORT_REASON = "/patrol/abort_reason"
 
 PATROL_TOPICS = (
     PATROL_MISSION_STATE,
     PATROL_CURRENT_WAYPOINT,
     PATROL_DWELL,
     PATROL_ABORT,
+    PATROL_ABORT_REASON,
 )
+
+# The mission node's ROS node name. Declared here with the rest of the node's contract surface (and
+# not only inside node.py) so a ROS-free consumer — notably the SITL acceptance helpers, which must
+# wait for THIS node's subscriber rather than any subscriber — can name it without importing rclpy.
+# No leading "/", so _NAMED_TOPICS below (which filters on that) correctly excludes it.
+MISSION_NODE_NAME = "patrol_mission"
 
 # Map of public constant name -> topic, derived from this module's own constants (never a hand-kept
 # second list). Lets a shell/CI step resolve a canonical topic name — incl. the version-sensitive

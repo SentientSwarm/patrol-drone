@@ -30,6 +30,7 @@ from px4_msgs.msg import (
     VehicleLocalPosition,
     VehicleStatus,
 )
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int32, String
 
@@ -101,7 +102,7 @@ _VEHICLE_CMD_ID: dict[Px4CommandKind, int] = {
 
 class PatrolMissionNode(Node):
     def __init__(self) -> None:
-        super().__init__("patrol_mission")
+        super().__init__(topics.MISSION_NODE_NAME)
         mission_yaml = str(self.declare_parameter("mission_yaml", "").value)
         if not mission_yaml:
             raise ValueError("parameter 'mission_yaml' is required (path to the mission YAML)")
@@ -134,6 +135,12 @@ class PatrolMissionNode(Node):
         state_qos = patrol_state_qos()
         self._pub_state = self.create_publisher(String, topics.PATROL_MISSION_STATE, state_qos)
         self._pub_wp = self.create_publisher(Int32, topics.PATROL_CURRENT_WAYPOINT, state_qos)
+        # /patrol/abort_reason — the latched AbortReason NAME, on the same latched profile as
+        # mission_state so a late subscriber still learns why the mission ended (F-09). The machine
+        # owns the decision; the node only mirrors its read-only accessor onto the topic.
+        self._pub_abort_reason = self.create_publisher(
+            String, topics.PATROL_ABORT_REASON, state_qos
+        )
         # /patrol/dwell — the atomic OQ-7 capture trigger: one Int32 (the dwelled waypoint index) on
         # the rising edge into DWELL, so 04 never correlates the two non-atomic state topics above.
         self._pub_dwell = self.create_publisher(Int32, topics.PATROL_DWELL, patrol_event_qos())
@@ -286,6 +293,13 @@ class PatrolMissionNode(Node):
         wp_msg = Int32()
         wp_msg.data = cmd.current_waypoint
         self._pub_wp.publish(wp_msg)
+        # The cause, alongside the state (F-09). Published every progressing tick like the other two
+        # rather than only on the ABORT edge, so the topic always reflects the machine's latched
+        # answer — "NONE" on a nominal run — and a subscriber never has to have been listening at the
+        # exact moment the abort fired to learn why.
+        reason_msg = String()
+        reason_msg.data = self._sm.abort_reason.name
+        self._pub_abort_reason.publish(reason_msg)
 
     def _telemetry_stale(self, now_s: float) -> bool:
         """True if either required /fmu/out stream's latest sample is older than the freshness timeout."""
@@ -382,15 +396,31 @@ class PatrolMissionNode(Node):
 
 
 def main(args: list[str] | None = None) -> None:
+    """Spin the node until the context goes down, exiting 0 on any *clean* teardown (F-02).
+
+    The runner group-SIGINTs the mission launch once ``verify_patrol.py`` observes the landing, so
+    the normal end of a *successful* patrol is an external shutdown, not a KeyboardInterrupt. Two
+    bugs made that happy path exit 1:
+
+    * ``ExternalShutdownException`` (raised by ``spin`` when the context is shut down out from under
+      it) was uncaught and propagated out of ``main``; and
+    * the ``finally`` then called the unguarded ``rclpy.shutdown()``, which raises ``RCLError:
+      rcl_shutdown already called`` precisely *because* the context is already down.
+
+    A launch that always exits non-zero on success trains you to ignore its exit code, so a genuine
+    crash during teardown looks identical to a clean run — and neither the runner nor any CI wrapper
+    can use exit status as a signal. ``try_shutdown`` is the idempotent form and is a no-op when the
+    context is already down.
+    """
     rclpy.init(args=args)
     node = PatrolMissionNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

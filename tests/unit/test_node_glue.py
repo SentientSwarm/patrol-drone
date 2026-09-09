@@ -21,6 +21,12 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from rclpy_lifecycle import (
+    ExternalShutdownException,
+    FakeRclpy,
+    executors_module,
+    run_main_under,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MISSION_BASIC = REPO_ROOT / "ros2_ws/src/patrol_bringup/config/mission_basic.yaml"
@@ -151,6 +157,7 @@ def node_mod(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
     """Import patrol_mission.node against stubbed rclpy/px4_msgs; restored on teardown."""
     stubs = {
         "rclpy": _stub_module("rclpy"),
+        "rclpy.executors": executors_module(),
         "rclpy.node": _stub_module("rclpy.node", Node=_FakeNode),
         "rclpy.qos": _qos_module(),
         "px4_msgs": _stub_module("px4_msgs"),
@@ -442,6 +449,68 @@ def test_low_battery_telemetry_drives_abort(node: Any, node_mod: ModuleType):
     assert node._state is node_mod.MissionState.ABORT
 
 
+# --- /patrol/abort_reason (F-09) -------------------------------------------------
+# mission_state says ABORT but not WHY. The external and low-battery guards fly an identical profile
+# to the abort point, so from outside they are indistinguishable — which is why the low-battery SITL
+# scenario could not assert that its own injected sample caused the abort it observed. The node
+# mirrors the machine's latched AbortReason onto its own topic.
+
+
+def _arrange_external_abort(node: Any, node_mod: ModuleType) -> None:
+    _feed_abort(node, value=True)
+
+
+def _arrange_low_battery(node: Any, node_mod: ModuleType) -> None:
+    _feed_battery(node, node_mod, remaining=0.1)  # threshold is 0.20
+
+
+@pytest.mark.parametrize(
+    ("arrange", "expected_reason"),
+    [
+        (_arrange_external_abort, "EXTERNAL_SIGNAL"),
+        (_arrange_low_battery, "LOW_BATTERY"),
+    ],
+    ids=["external_signal", "low_battery"],
+)
+def test_abort_reason_distinguishes_the_two_live_guards(
+    node: Any, node_mod: ModuleType, arrange: Any, expected_reason: str
+):
+    arrange(node, node_mod)
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    # Both reach the SAME state — that is exactly the ambiguity the topic resolves.
+    assert node._state is node_mod.MissionState.ABORT
+    assert _pub(node, node_mod.topics.PATROL_ABORT_REASON).published[-1].data == expected_reason
+
+
+def test_abort_reason_is_none_on_a_nominal_run(node: Any, node_mod: ModuleType):
+    # Published every progressing tick, not only on the ABORT edge, so the topic always carries the
+    # machine's answer and a late subscriber never has to have been listening at the right instant.
+    _feed_valid_fresh(node, node_mod)
+
+    node._on_tick()
+
+    assert node._state is node_mod.MissionState.ARMING
+    assert _pub(node, node_mod.topics.PATROL_ABORT_REASON).published[-1].data == "NONE"
+
+
+def test_abort_reason_latches_through_the_rth_recovery(node: Any, node_mod: ModuleType):
+    # The reason sticks with the abort (it is latched in the machine's progress, not recomputed from
+    # live telemetry), so the cause survives after the triggering condition clears — a bag read
+    # afterwards still shows why the mission ended.
+    _arrange_low_battery(node, node_mod)
+    _feed_valid_fresh(node, node_mod)
+    node._on_tick()
+
+    _feed_battery(node, node_mod, remaining=0.95)  # battery "recovers" — the reason must not reset
+    _feed_valid_fresh(node, node_mod)
+    node._on_tick()
+
+    assert _pub(node, node_mod.topics.PATROL_ABORT_REASON).published[-1].data == "LOW_BATTERY"
+
+
 # T2.4: an ABSENT BatteryStatus must not fabricate a low-battery abort (defaults to full) — the
 # mission progresses normally (IDLE -> ARMING) when only pos+status are present.
 def test_absent_battery_does_not_abort(node: Any, node_mod: ModuleType):
@@ -503,3 +572,49 @@ def test_fresh_low_battery_within_window_still_aborts(node: Any, node_mod: Modul
     node._on_tick()
 
     assert node._state is node_mod.MissionState.ABORT
+
+
+# --- main() teardown (F-02) -----------------------------------------------------
+# A SUCCESSFUL patrol used to end `process has died [exit code 1]`: the runner group-SIGINTs the
+# launch once verify_patrol.py observes the landing, so `spin` raises ExternalShutdownException —
+# uncaught — and the `finally`'s unguarded rclpy.shutdown() then raised RCLError *because* the
+# context was already down. Shared fake + driver live in rclpy_lifecycle (the perception glue suite
+# drives the same contract against its own entrypoint).
+
+
+@pytest.fixture
+def mission_main(node_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``node_mod.main`` bound to a FakeRclpy, with the real node constructor stubbed out."""
+    fake = FakeRclpy()
+    monkeypatch.setattr(node_mod, "rclpy", fake.as_module())
+
+    def install(factory: Any) -> None:
+        monkeypatch.setattr(node_mod, "PatrolMissionNode", factory)
+
+    def run(spin_raises: BaseException | None) -> Any:
+        return run_main_under(node_mod.main, fake, install, spin_raises=spin_raises)
+
+    return SimpleNamespace(fake=fake, run=run)
+
+
+@pytest.mark.parametrize(
+    "spin_raises",
+    [None, KeyboardInterrupt(), ExternalShutdownException()],
+    ids=["spin_returns", "keyboard_interrupt", "external_shutdown"],
+)
+def test_main_exits_zero_on_every_clean_teardown(mission_main: Any, spin_raises: BaseException):
+    # Not raising IS the assertion: anything escaping main() is a non-zero process exit.
+    outcome = mission_main.run(spin_raises)
+
+    assert outcome.destroyed == 1  # the node is always destroyed, on every path
+    assert not outcome.context_up  # and the context is always brought down
+
+
+def test_main_never_calls_the_raising_shutdown(mission_main: Any):
+    # The mission node's *second* bug (the perception node never had this one): an unguarded
+    # rclpy.shutdown() in the `finally` raises RCLError on an already-down context — the idempotent
+    # try_shutdown() is what makes the teardown non-raising.
+    outcome = mission_main.run(ExternalShutdownException())
+
+    assert outcome.shutdown_calls == 0
+    assert outcome.try_shutdown_calls == 1

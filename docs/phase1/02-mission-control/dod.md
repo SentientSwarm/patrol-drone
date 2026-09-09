@@ -47,7 +47,7 @@ Deliver the mission orchestration layer: a Python ROS 2 node driving PX4 offboar
 - [x] **AC-2** — GIVEN a patrol mission YAML with 4+ waypoints, WHEN `ros2 launch patrol_bringup mission_patrol.launch.py` is invoked against SITL, THEN the drone visits each waypoint in order, dwells the configured time at each, returns home, and lands. *(M4 Exit; exit-checklist item 1 — mission-flight portion, integrative)*
 - [x] **AC-3** — GIVEN the patrol route definition, WHEN a run starts, THEN the mission config is read from a YAML file checked into the repo (no route data hardcoded in source). *(exit-checklist item 2)*
 - [x] **AC-4** — GIVEN the `MissionStateMachine` class, WHEN the unit suite runs, THEN it passes with ≥85% coverage on the mission state machine and completes in <5 s without ROS/Gazebo/PX4. *(M3 Exit; exit-checklist item 3; ADR-0002 enforces ≥85% as the CI floor)*
-- [x] **AC-5** — GIVEN CI, WHEN the integration suite runs, THEN ≥1 integration test spins up SITL, runs a canonical mission via the launch file, and passes. *(M3/M4 Exit; exit-checklist item 4)*
+- [ ] **AC-5** — GIVEN CI, WHEN the integration suite runs, THEN ≥1 integration test spins up SITL, runs a canonical mission via the launch file, and passes. *(M3/M4 Exit; exit-checklist item 4)* *(**Written and wired** — `tests/integration/test_mission_patrol.py` runs the canonical patrol via `mission_patrol.launch.py` in the nightly `-m ros` tier, joined this wrap-up by the low-battery and FMU-bridge-surface scenarios. **Not yet green in CI** — the AC names CI, and the nightly aborted at collection; the fix is in `.github/workflows/sitl-nightly.yml` in this PR and has not been exercised yet, so no nightly has run green. That is exit-checklist item 4 / Check 6, still open: see F-05 in [`docs/phase1-wrapup-findings.md`](../../phase1-wrapup-findings.md). A test that exists is not a lane that passed, so this stays unchecked until a nightly is green.)*
 - [x] **AC-6** — GIVEN a patrol in flight, WHEN an abort is requested via an external-signal ROS topic, THEN the state machine transitions to abort and the drone returns home; the transition is observable in the SITL run. *(M4 Exit; exit-checklist item 12 — external-signal half)*
 - [x] **AC-7** — GIVEN a low-battery condition crossing the configured threshold, WHEN the mission is running, THEN the state machine transitions to abort; this transition is covered by a unit test. *(exit-checklist item 12 — low-battery half)*
 - [x] **AC-8** — GIVEN the abort logic, WHEN the unit suite runs, THEN abort transitions (low-battery, external-signal, and scaffolded triggers) are covered by unit tests. *(M4 Exit; exit-checklist item 12)*
@@ -110,3 +110,57 @@ Deliver the mission orchestration layer: a Python ROS 2 node driving PX4 offboar
 - **Exit-checklist items owned:** 2, 3, 4, 12 (primary). Shared/integrative: 1 (mission-flight behavior; this docset owns the patrol logic and the launch entry-point, but the full end-to-end claim depends on 01/03/04/05).
 - **Packages / dirs:** `ros2_ws/src/patrol_mission/`, `ros2_ws/src/patrol_bringup/` (launch files, configs, params); consumes `ros2_ws/src/external/px4_msgs/`; mission-state types may live in `ros2_ws/src/patrol_interfaces/` (owned by 04). Tests in `tests/unit/` (state machine) and `tests/integration/` (SITL mission).
 - **Lifecycle:** dod.md (this) → prd.md (via /drive) → design.md (via /drive)
+
+## 10. Phase 1 close-out reconciliation (2026-09-06)
+
+Reconciles this docset against what actually shipped (SWM-33). **8 of 9 acceptance criteria are
+green; AC-5 is written and wired but not yet green in CI.** The M3/M4 deliverables merged to `main`
+match §2/§3/§5 with no scope drift. Notable design-time → landed resolutions and additions:
+
+- **Return-to-home semantics (§7 open decision) — resolved: explicit home-waypoint offboard
+  sequence, NOT PX4 RTL** (`state_machine.py` `RTH` state, "OQ-8"). A latched abort pre-empts to
+  `ABORT → RTH`; a basic (no-waypoint) mission routes `HOVER → RTH` directly.
+- **`/patrol/dwell` shipped** as the atomic once-per-checkpoint capture-trigger event (reliable +
+  volatile QoS), alongside the §5 `/patrol/{mission_state,current_waypoint,abort}` surface — this is
+  the capture-trigger semantic 04 keys off (and 05 records). Names/QoS finalized (closes the §7
+  "mission topic names/types/QoS" open decision); all plain `std_msgs`, so 05 records and Foxglove
+  renders them with no custom plugin.
+- **`/patrol/abort_reason` added (F-09).** The one deliberate widening of the surface above:
+  `std_msgs/String` carrying the latched `AbortReason` name (`NONE` until an abort fires, then
+  `EXTERNAL_SIGNAL` / `LOW_BATTERY` / `MANUAL_TAKEOVER` / `TIMEOUT`), on the same latched QoS as
+  `mission_state` and recorded by 05. Distinct from `/patrol/abort`, which is the **inbound**
+  external-abort command. Added because `mission_state` carries the state but not the cause: the two
+  live guards fly an identical profile to the abort point, so from outside they were
+  indistinguishable — no observer (or SITL scenario, or recorded bag) could tell *why* a mission
+  ended. Still plain `std_msgs`, so the no-custom-plugin property above is preserved.
+- **Abort split as-built (AC-6/7/8):** external-signal + low-battery guards are **live** — **both
+  observable in SITL as of 2026-07-26** (F-10; the low-battery scenario passed on its first
+  execution anywhere, closing the SITL-observation gap this DoD previously flagged), and each now
+  asserts its own cause via `/patrol/abort_reason` rather than by exclusion. Manual-takeover +
+  timeout remain **scaffolded** state transitions (unit-tested, not fired in SITL) per the P2
+  capability and the "abort transitions exist from day one" constraint.
+- **Mission YAML + checkpoint resolution (AC-3, OQ-2):** `checkpoint_id` waypoints resolve against
+  `sim/config/checkpoints.yaml`; the loader accepts **both** the canonical top-level `checkpoints:`
+  keyed form (03) and the interim bare-list stand-in. The checkpoints path is a required launch
+  argument (`checkpoints_yaml:=`, no CWD-relative default).
+- **Dwell-capture framing (ADR-0012):** the dwell stand-off hover was raised
+  `standoff_m*tan(camera_pitch_rad)` above the tag to center the camera boresight — a full patrol
+  now records `/patrol/checkpoint_capture` **Count 9 (was 0)**. No `state_machine.py` change; the
+  fix is in the approach-pose config.
+- **Still deferred by design:** **OQ-5** (canonical SITL scenarios + runtime/flakiness budget) — the
+  provisional ≤8 min/scenario figure is measured against 01's landed SITL by the **SWM-31**
+  measurement harness (this wrap-up); the measured numbers are gated on the human-owned live runs
+  and are flagged as the blocking input, not invented.
+- **Human-owned exit verification** (run separately): the AC-2/AC-6 SITL runs (full patrol,
+  mid-patrol external abort) are confirmed by the live/manual exit-checklist pass — exit items 1 and
+  12, both ✅ 2026-07-26 in [`docs/phase1-wrapup-findings.md`](../../phase1-wrapup-findings.md) §2.
+- **AC-5 / exit item 4 (SITL integration test in CI) — written; CI evidence still open.** The
+  scenarios exist and run locally, and this wrap-up grows them past the two canonical missions
+  (SWM-15/32). But AC-5 asks for the *integration suite in CI*, and the nightly `-m ros` job aborted
+  at collection before any scenario executed (findings-log F-05, fixed here but not yet exercised).
+  A manual run is live evidence, not the CI lane this AC names, so it does not close AC-5. The item
+  stays open until a nightly runs green.
+  *(This reconciliation was first written 2026-07-24 and asserted all 9 green; the findings log this
+  PR ships records exit item 4 as never-green, which contradicted it. Re-dated and corrected
+  2026-09-06 — the findings log is right and this section was ahead of its evidence. Same correction
+  `01-platform` §10 received for AC-7.)*

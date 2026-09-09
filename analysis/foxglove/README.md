@@ -9,14 +9,31 @@ Foxglove check (DoD AC-6 / LR-6).
 
 - Foxglove Studio installed (desktop app) — see the pinned stack in
   [`stack-manifest.toml`](../../stack-manifest.toml) / `CLAUDE.md`.
-- A recorded bag from a patrol run: the bag directory `patrol_<missionId>_<timestamp>/` (default
-  output dir `~/patrol_bags/`), containing `metadata.yaml` + `patrol_<missionId>_<timestamp>_0.mcap`.
-  Produce one with:
+- A recorded bag from a patrol run: the bag directory `patrol_<missionId>_<timestamp>/`, containing
+  `metadata.yaml` + `patrol_<missionId>_<timestamp>_0.mcap`.
+
+  **Where the bag lands depends on how you produced it** — this is a trap worth reading once
+  (F-04), because a bag that looks "missing" is usually just in the other place:
+
+  | Produced by | Output dir |
+  |---|---|
+  | `mission_patrol.launch.py` directly | `~/patrol_bags/` (the launch default) |
+  | `scripts/run_patrol_world_sitl.sh` | `${PATROL_OUTPUT_ROOT:-$LOG_DIR/run}`, where `LOG_DIR` is a **mktemp dir** (`/tmp/patrol-world-uat.XXXXXX`) |
+
+  So a runner-produced bag lands under `/tmp` by default and is **lost on reboot**. Pass
+  `PATROL_OUTPUT_ROOT=$HOME/patrol_bags` to get a durable location in the first place:
 
   ```bash
+  # Directly (bag -> ~/patrol_bags/)
   ros2 launch patrol_bringup mission_patrol.launch.py \
       checkpoints_yaml:=/abs/path/checkpoints.yaml          # record:=true is the default (M7)
+
+  # Via the SITL runner — set PATROL_OUTPUT_ROOT or the bag goes to a temp dir
+  PATROL_OUTPUT_ROOT=$HOME/patrol_bags scripts/run_patrol_world_sitl.sh --skip-doctor
   ```
+
+  Note also that the runner leaves a large `px4.log` (~1.2 GB per run) in its temp dir; clean up
+  `/tmp/patrol-world-uat.*` periodically.
 
 ## Inspect a bag from the CLI (`ros2 bag info`)
 

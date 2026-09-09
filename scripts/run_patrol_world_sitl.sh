@@ -618,10 +618,21 @@ assert_bag_has_compressed_imagery() {
 
 report_keep_up() {
   trap - EXIT INT TERM
+  # The node-group rung is emitted ONLY when a mission node was launched. --no-patrol never launches
+  # one, so NODE_PID is unset there; a `${NODE_PID:-0}` default would render `kill -INT -- -0`, and
+  # POSIX defines a target of -0 as THE CALLER'S OWN PROCESS GROUP. Copy-pasting the hint would then
+  # SIGINT the operator's shell and every job in it while leaving the real stack (agent still holding
+  # port 8888, gz, PX4, bridge) running — which resurfaces later as the classic stale-stack symptoms
+  # (QGC haywire / no GPS / mag failure) that read as sensor bugs. Never interpolate a `:-0` default
+  # into a signal target.
+  local node_kill=""
+  if [[ -n "${NODE_PID:-}" ]]; then
+    # node is a setsid group too (holds the recorder child): -INT the group so it finalizes cleanly.
+    node_kill="kill -INT -- -${NODE_PID}; "
+  fi
   log "stack left running (--keep-up):"
   log "  PIDs: agent=${AGENT_PID} gz=${GZ_PID} gui=${GZ_GUI_PID:-none} px4=${PX4_PID} qgc=${QGC_PID:-none} bridge=${BRIDGE_PID} node=${NODE_PID:-none} (px4/node are process groups)"
-  # node is a setsid group too (holds the recorder child): -INT the group so it finalizes cleanly.
-  log "  tear down: kill -INT -- -${NODE_PID:-0}; kill -- -${PX4_PID}; kill ${AGENT_PID} ${GZ_PID} ${GZ_GUI_PID:-} ${QGC_PID:-} ${BRIDGE_PID}"
+  log "  tear down: ${node_kill}kill -- -${PX4_PID}; kill ${AGENT_PID} ${GZ_PID} ${GZ_GUI_PID:-} ${QGC_PID:-} ${BRIDGE_PID}"
 }
 
 main() {

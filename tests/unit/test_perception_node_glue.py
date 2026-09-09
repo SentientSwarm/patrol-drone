@@ -23,6 +23,12 @@ from typing import Any, ClassVar
 
 import pytest
 from patrol_perception.capture_builder import CaptureRecord
+from rclpy_lifecycle import (
+    ExternalShutdownException,
+    FakeRclpy,
+    executors_module,
+    run_main_under,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINTS_YAML = REPO_ROOT / "sim/config/checkpoints.yaml"
@@ -137,6 +143,7 @@ def node_mod(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
     stubs = {
         "cv2": cv2_stub,
         "rclpy": _stub_module("rclpy", init=lambda **_k: None, spin=lambda _n: None),
+        "rclpy.executors": executors_module(),
         "rclpy.node": _stub_module("rclpy.node", Node=_FakeNode),
         "rclpy.qos": _stub_module(
             "rclpy.qos",
@@ -280,3 +287,50 @@ def test_capture_publisher_created_on_checkpoint_capture_topic(node_mod: ModuleT
 def test_ekf_origin_is_zero_in_sitl(node_mod: ModuleType) -> None:
     # VehicleLocalPosition is already EKF-origin-relative in this SITL setup (mission node agrees).
     assert node_mod._EKF_ORIGIN_NED == (0.0, 0.0, 0.0)
+
+
+# --- main() teardown (F-02) -----------------------------------------------------
+# A SUCCESSFUL patrol used to end `process has died [exit code 1]` here too, but for a DIFFERENT
+# reason than the mission node: this teardown was already safe (try_shutdown is idempotent, so the
+# `finally` never raised). The exit 1 was purely the uncaught ExternalShutdownException propagating
+# out of main() when the runner group-SIGINTs the launch. Same symptom, different cause — so the
+# shutdown-call assertion below is the *inverse* evidence of the mission node's.
+
+
+@pytest.fixture
+def perception_main(node_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``node_mod.main`` bound to a FakeRclpy, with the real node constructor stubbed out."""
+    fake = FakeRclpy()
+    monkeypatch.setattr(node_mod, "rclpy", fake.as_module())
+
+    def install(factory: Any) -> None:
+        monkeypatch.setattr(node_mod, "PerceptionNode", factory)
+
+    def run(spin_raises: BaseException | None) -> Any:
+        return run_main_under(node_mod.main, fake, install, spin_raises=spin_raises)
+
+    return SimpleNamespace(fake=fake, run=run)
+
+
+@pytest.mark.parametrize(
+    "spin_raises",
+    [None, KeyboardInterrupt(), ExternalShutdownException()],
+    ids=["spin_returns", "keyboard_interrupt", "external_shutdown"],
+)
+def test_main_exits_zero_on_every_clean_teardown(
+    perception_main: Any, spin_raises: BaseException
+) -> None:
+    # Not raising IS the assertion: anything escaping main() is a non-zero process exit.
+    outcome = perception_main.run(spin_raises)
+
+    assert outcome.destroyed == 1
+    assert not outcome.context_up
+
+
+def test_main_teardown_was_already_idempotent(perception_main: Any) -> None:
+    # Unlike the mission node, this one already used try_shutdown — pinned so a "consistency"
+    # refactor can't quietly swap it back to the raising rclpy.shutdown().
+    outcome = perception_main.run(ExternalShutdownException())
+
+    assert outcome.shutdown_calls == 0
+    assert outcome.try_shutdown_calls == 1

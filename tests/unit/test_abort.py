@@ -37,7 +37,9 @@ def test_abort_guard_transitions_to_abort_and_latches_reason(telem_kwargs, reaso
     )
     assert nxt is MissionState.ABORT
     assert cmd.setpoint_ned == HOME_NED
-    assert sm._p.abort_reason is reason
+    # Read through the PUBLIC accessor the node publishes /patrol/abort_reason from (F-09), not the
+    # private _Progress field — so this test covers the same surface an observer actually sees.
+    assert sm.abort_reason is reason
 
 
 # AC-8: abort pre-empts whichever normal state the mission is in — not just one.
@@ -149,3 +151,45 @@ def test_mid_patrol_abort_drives_full_return_home():
         MissionState.LANDING,
         MissionState.DONE,
     ]
+
+
+# --- the public abort_reason accessor (F-09) -------------------------------------
+# The machine owns the decision; the node only mirrors this onto /patrol/abort_reason so an
+# observer (or a recorded bag) can tell WHY a mission ended. mission_state carries the state but not
+# the cause, and the two live guards fly an identical profile to the abort point — so this accessor
+# is the only thing that distinguishes them from outside. Covered here, in the pure module's own
+# suite, rather than only through the node glue.
+
+
+def test_abort_reason_is_none_before_any_abort():
+    assert make_patrol_sm([WP0, WP1]).abort_reason is AbortReason.NONE
+
+
+def test_abort_reason_stays_none_through_a_nominal_tick():
+    # A healthy tick must not fabricate a cause — "NONE" is what a nominal run publishes.
+    sm = make_patrol_sm([WP0, WP1])
+    sm.tick(MissionState.WAYPOINT, make_telem(position_ned=WP0, battery_remaining=1.0))
+    assert sm.abort_reason is AbortReason.NONE
+
+
+# The cause LATCHES: it is fixed at the ABORT transition, not recomputed from live telemetry, so it
+# survives the triggering condition clearing — which is what makes it readable off a bag afterwards.
+def test_abort_reason_latches_and_survives_the_condition_clearing():
+    sm = make_patrol_sm([WP0, WP1])
+    sm.tick(MissionState.WAYPOINT, make_telem(position_ned=WP0, battery_remaining=0.05))
+    assert sm.abort_reason is AbortReason.LOW_BATTERY
+
+    # Battery "recovers" and the machine keeps ticking — the latched cause must not reset or change.
+    sm.tick(MissionState.ABORT, make_telem(now_s=0.1, position_ned=WP0, battery_remaining=1.0))
+    assert sm.abort_reason is AbortReason.LOW_BATTERY
+
+
+# Precedence is observable through the accessor too, not just the private guard helper: a
+# simultaneous external signal and low battery must report EXTERNAL_SIGNAL.
+def test_abort_reason_reports_the_highest_precedence_cause():
+    sm = make_patrol_sm([WP0, WP1])
+    sm.tick(
+        MissionState.WAYPOINT,
+        make_telem(position_ned=WP0, abort_requested=True, battery_remaining=0.05),
+    )
+    assert sm.abort_reason is AbortReason.EXTERNAL_SIGNAL
