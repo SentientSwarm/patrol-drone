@@ -15,6 +15,7 @@ from typing import Any
 from xml.etree import ElementTree
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _MODULE_PATH = REPO_ROOT / "scripts" / "measure_sitl_budget.py"
@@ -113,7 +114,9 @@ def test_format_report_flags_quarantine_and_measured_max():
     summaries = msb.summarize(results, _budget(budget_s=100.0))
     report = msb.format_report(summaries, _budget(budget_s=100.0))
     assert "QUARANTINE" in report  # the single-run failure is a 100% flake rate
-    assert "observed max across scenarios): 42.5s" in report
+    # `abort` is a separate scenario that never passes, so it is excluded from the recommendation and
+    # counted in the suffix; `nominal`'s 42.5 is the whole of the passing-run evidence.
+    assert "(1 scenario(s) had no passing run): 42.5s" in report
 
 
 # --- sample-size honesty (F-08) -------------------------------------------------
@@ -247,7 +250,7 @@ def test_main_reads_the_files_reports_and_exits_zero(tmp_path: Path, budget_file
     assert rc == 0
     assert "tests.integration.test_x::test_p" in out
     assert "flake rate is meaningful" in out  # 5 runs clears the 0.2 threshold
-    assert "observed max across scenarios): 10.0s" in out
+    assert "across PASSING runs only): 10.0s" in out
 
 
 def test_main_with_no_reports_prints_the_provisional_budget(budget_file: Path, capsys):
@@ -302,6 +305,60 @@ def test_load_budget_reads_thresholds_with_documented_defaults(
         budget.flake_rate_threshold,
         budget.budget_overrun_factor,
     ) == expected
+
+
+# --- the provisional flag reaches the reader (round-5 review, Medium #2) --------
+# `provisional:` was advertised in five places as THE mechanism ("flip provisional:false once
+# stable") and read by nothing, so the flip was a no-op. The only line that used the word at all was
+# the EMPTY-table one — the status was disclosed exactly when there was no measurement to confuse it
+# with, and hidden the moment there was one. It now sits in the header, beside the number it
+# qualifies. The paren in each expected fragment is load-bearing: "not yet measured" contains
+# "measured", so only "(measured;" discriminates the flipped config from the provisional one.
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "expected"),
+    [
+        pytest.param(
+            _BUDGET_YAML + "provisional: true\n",
+            "(PROVISIONAL — not yet measured;",
+            id="provisional-true",
+        ),
+        pytest.param(_BUDGET_YAML + "provisional: false\n", "(measured;", id="flipped-to-measured"),
+        pytest.param(_BUDGET_YAML, "(PROVISIONAL — not yet measured;", id="absent-defaults-true"),
+    ],
+)
+def test_the_report_header_carries_the_provisional_flag(
+    tmp_path: Path, yaml_text: str, expected: str
+):
+    budget = msb.load_budget(_write_budget_yaml(tmp_path, yaml_text))
+
+    assert expected in msb.format_report([], budget).splitlines()[0]
+
+
+# --- the SHIPPED config is round-tripped (round-5 review, Medium #3) ------------
+# Every other I/O test writes a tmp_path config, so tests/integration/sitl_budget.yaml — the file the
+# nightly actually loads — was never exercised. The nightly runs the harness under `|| true`, so a
+# key renamed there fails loud into a job summary that gates nothing; this is the only gate that
+# catches it.
+#
+# It asserts the loaded VALUES against the file's own declared values, parsed independently, rather
+# than merely that load_budget() returns. A bare `msb.load_budget(msb.DEFAULT_BUDGET)` does NOT close
+# the gap: both quarantine keys are read through `.get(key, default)`, so renaming
+# `flake_rate_threshold` yields a Budget byte-identical to the correct one (both 0.2) and the call
+# passes green — while the harness silently enforces a HARDCODED 0.2/2.0 and the file on disk only
+# appears to be the source of truth. Only `per_scenario_budget_s` fails loud, because it alone is a
+# direct data[...] index. Indexing the independent parse means a rename of ANY key raises here.
+def test_the_shipped_budget_config_round_trips_through_load_budget():
+    declared = yaml.safe_load(msb.DEFAULT_BUDGET.read_text())
+    quarantine = declared["quarantine"]
+
+    budget = msb.load_budget(msb.DEFAULT_BUDGET)
+
+    assert budget.per_scenario_budget_s == pytest.approx(float(declared["per_scenario_budget_s"]))
+    assert budget.flake_rate_threshold == pytest.approx(float(quarantine["flake_rate_threshold"]))
+    assert budget.budget_overrun_factor == pytest.approx(float(quarantine["budget_overrun_factor"]))
+    assert budget.provisional is bool(declared["provisional"])
 
 
 # The nightly runs this harness under `|| true` (deliberately non-gating), so a SILENTLY broken
@@ -406,3 +463,61 @@ def test_main_does_not_call_an_all_corrupt_window_an_empty_one(
     assert rc == 0
     assert "no run reports supplied" not in out
     assert "SKIPPED 1 unreadable run report(s)" in out
+
+
+# --- the recommendation is over PASSING runs only (round-5 review, Medium #1) ---
+# `observed_max` was taken over ALL cases, so a scenario failing at its PATROL_TIMEOUT_S contributed
+# its timeout wall clock and the report told the reader to fold that number into sitl_budget.yaml —
+# a measurement of the timeout constant, not of the scenario. Unqualified, too: once the window
+# clears min_runs the sample-size caveat correctly stops firing, so nothing else on the page hedged
+# it. max_seconds itself is deliberately left alone (see ScenarioSummary): over_budget/quarantine are
+# capacity verdicts where a timeout genuinely does consume the wall clock.
+
+
+def _timeout_and_healthy_cases() -> list[Any]:
+    """The review's reproduction: a scenario that ALWAYS times out beside one that always passes."""
+    return [msb.CaseResult("times_out", 300.0, False) for _ in range(5)] + [
+        msb.CaseResult("healthy", 120.0, True) for _ in range(5)
+    ]
+
+
+def _report_for(cases: list[Any], budget_s: float = 500.0) -> Any:
+    """format_report over a hand-built case list — the one place these tests reach the report.
+
+    ``-> Any``, not ``-> str``: ``msb`` is loaded by path, so everything crossing that boundary is
+    Any to mypy and ``warn_return_any`` rejects a narrower declared type. Same convention as
+    :func:`_load`.
+    """
+    budget = _budget(budget_s)
+    return msb.format_report(msb.summarize(cases, budget), budget)
+
+
+def test_the_measured_budget_excludes_a_scenario_with_no_passing_run():
+    report = _report_for(_timeout_and_healthy_cases())
+
+    # the healthy scenario's figure, and the line names what it left out
+    assert "(1 scenario(s) had no passing run): 120.0s" in report
+    # ...while the table and its verdict still count the failures: 300s is real wall clock spent
+    assert "300.0" in report
+    assert "QUARANTINE" in report
+
+
+def test_no_measured_budget_is_offered_when_no_scenario_has_a_passing_run():
+    report = _report_for([msb.CaseResult("times_out", 300.0, False) for _ in range(5)])
+
+    assert "no measured per_scenario_budget_s: no scenario has a passing run" in report
+    assert "fold this into" not in report  # there is no number to recommend, so none is printed
+
+
+@pytest.mark.parametrize(
+    ("cases", "expected"),
+    [
+        pytest.param(_timeout_and_healthy_cases(), True, id="some-failures-note-fires"),
+        pytest.param([msb.CaseResult("healthy", 120.0, True)] * 5, False, id="all-green-no-note"),
+    ],
+)
+def test_the_failed_runs_caveat_fires_only_when_some_run_failed(cases: list[Any], expected: bool):
+    # max_s/mean_s stay all-runs while the recommendation is passing-only, so the two disagree BY
+    # DESIGN — a scenario timing out every night reads mean_s 300.0 for a run that never completed.
+    # Name the disagreement rather than leaving the reader to find it and distrust both numbers.
+    assert ("include FAILED runs" in _report_for(cases)) is expected

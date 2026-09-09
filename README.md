@@ -164,8 +164,10 @@ host that already has them.
 
 **Platform spine (steps 1–8): 8 ≤ 12.** **Total to a running patrol (steps 1–9): 9 ≤ 20.** Steps
 6–8 are verification/dev conveniences; the minimal setup-to-flying path is steps 1–5 + 9 = **6
-commands**. The host-shell variant (M3/M4 quickstarts) is the same launch without the
-`docker compose exec sim` wrapper, run from a sourced host workspace — identical command count.
+commands**. The host-shell variant (M3/M4 quickstarts) runs the same launch without the
+`docker compose exec sim` wrapper; it additionally needs the workspace overlay sourced in the shell,
+which the containerized steps inline into their own commands. The count above is the containerized
+one — the measured path.
 
 ## Stack at a glance
 

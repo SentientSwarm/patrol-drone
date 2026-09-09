@@ -13,6 +13,11 @@ Two sources feed this log:
    loop").
 2. **The PR #20 automated review** — findings not yet answered.
 
+**Line numbers in this log are as-of-the-finding — that is, pre-fix.** Links therefore carry no `#L`
+anchor: the prose quotes the code as it *was*, the files have since moved on, and a live anchor would
+point at whatever now occupies those lines (after the [F-02](#f-02) fix, `node.py#L389-L393` lands on
+a MAVLink command builder). The quoted snippet is the evidence; the line number is provenance.
+
 ---
 
 ## 1. Status board
@@ -181,8 +186,8 @@ covers both):
 
 | Node | `except` clause | `finally` | Why it exits 1 |
 |---|---|---|---|
-| [`patrol_mission/node.py:389-393`](../ros2_ws/src/patrol_mission/patrol_mission/node.py#L389-L393) | `KeyboardInterrupt` only | `rclpy.shutdown()` | Unguarded `shutdown()` on an already-shutdown context raises `RCLError`; the `ExternalShutdownException` is also uncaught |
-| [`patrol_perception/perception_node.py:230-234`](../ros2_ws/src/patrol_perception/patrol_perception/perception_node.py#L230-L234) | `KeyboardInterrupt` only | `rclpy.try_shutdown()` ✅ | Teardown is already safe — the exit 1 is purely the **uncaught `ExternalShutdownException`** propagating out of `main()` |
+| [`patrol_mission/node.py:389-393`](../ros2_ws/src/patrol_mission/patrol_mission/node.py) | `KeyboardInterrupt` only | `rclpy.shutdown()` | Unguarded `shutdown()` on an already-shutdown context raises `RCLError`; the `ExternalShutdownException` is also uncaught |
+| [`patrol_perception/perception_node.py:230-234`](../ros2_ws/src/patrol_perception/patrol_perception/perception_node.py) | `KeyboardInterrupt` only | `rclpy.try_shutdown()` ✅ | Teardown is already safe — the exit 1 is purely the **uncaught `ExternalShutdownException`** propagating out of `main()` |
 
 **Why it matters beyond cosmetics:** a launch that *always* exits non-zero on the happy path trains
 you to ignore its exit code, so a genuine node crash during teardown will look identical to a normal
@@ -384,7 +389,7 @@ tear down: kill -INT -- -0; kill -- -20223; kill 19994 19995 19996  21209
                         ^^
 ```
 
-[`scripts/run_patrol_world_sitl.sh:624`](../scripts/run_patrol_world_sitl.sh#L624):
+[`scripts/run_patrol_world_sitl.sh:624`](../scripts/run_patrol_world_sitl.sh):
 
 ```bash
 log "  tear down: kill -INT -- -${NODE_PID:-0}; kill -- -${PX4_PID}; kill ${AGENT_PID} ..."

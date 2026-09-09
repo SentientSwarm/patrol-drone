@@ -54,10 +54,15 @@ def test_fmu_bridge_surface_and_liveness() -> None:
         while time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.2)
 
-        # AC-2: the /fmu/out/* surface carries the topics the downstream docsets consume.
-        present = {name for name, _types in node.get_topic_names_and_types()}
-        missing = [t for t in _REQUIRED_FMU_TOPICS if t not in present]
-        assert not missing, f"/fmu/* bridge surface is missing required topics: {missing}"
+        # AC-2: the /fmu/out/* surface carries the topics the downstream docsets consume. Query the
+        # PUBLISHER side: get_topic_names_and_types() returns every topic with ANY endpoint, and a
+        # node sees its own — so this probe's own subscription above put VEHICLE_LOCAL_POSITION in
+        # the set whether or not PX4 published it, and that one presence claim was self-satisfying.
+        # Applied to all three, not just the self-satisfied one: the other two are correct today only
+        # by the accident of having no local endpoint, and a maintainer adding a VEHICLE_STATUS
+        # subscription to this probe would silently reintroduce the same weakness.
+        missing = [t for t in _REQUIRED_FMU_TOPICS if not node.get_publishers_info_by_topic(t)]
+        assert not missing, f"/fmu/* bridge surface has no PUBLISHER for: {missing}"
 
         # AC-3: vehicle_local_position streamed steadily over the window (liveness floor).
         assert len(received) >= _MIN_MESSAGES, (

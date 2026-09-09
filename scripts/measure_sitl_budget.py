@@ -53,6 +53,10 @@ class Budget:
     per_scenario_budget_s: float
     flake_rate_threshold: float
     budget_overrun_factor: float
+    # Appended with a default so the positional Budget(a, b, c) constructions in the Layer-A suite
+    # keep working. Defaults TRUE: a config that omits the key must not silently claim to be
+    # measured — the whole point of the flag is that unmeasured is the honest state.
+    provisional: bool = True
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,12 @@ class ScenarioSummary:
     flake_rate: float
     over_budget: bool
     quarantine: bool
+    # The max over PASSING runs only, or None when the scenario never once completed. Appended with a
+    # default so positional construction stays valid. max_seconds deliberately keeps counting
+    # failures — over_budget/quarantine are CAPACITY questions, where a scenario that burns 300s
+    # hitting PATROL_TIMEOUT_S genuinely consumed 300s of the lane. Only the fold-this-back
+    # RECOMMENDATION is restricted, because that number is a claim about how long the scenario takes.
+    max_passing_seconds: float | None = None
 
 
 def parse_junit_xml(xml_text: str) -> list[CaseResult]:
@@ -101,7 +111,15 @@ def _summarize_one(scenario: str, cases: list[CaseResult], budget: Budget) -> Sc
         or max_s > budget.per_scenario_budget_s * budget.budget_overrun_factor
     )
     return ScenarioSummary(
-        scenario, runs, failures, max_s, mean_s, flake_rate, over_budget, quarantine
+        scenario,
+        runs,
+        failures,
+        max_s,
+        mean_s,
+        flake_rate,
+        over_budget,
+        quarantine,
+        max((c.seconds for c in cases if c.passed), default=None),
     )
 
 
@@ -210,13 +228,72 @@ def _skipped_note(skipped: list[str] | None) -> list[str]:
     ]
 
 
+def _header_line(budget: Budget) -> str:
+    """The budget header, carrying the provisional flag the config documents as THE mechanism.
+
+    ``provisional:`` was read by nothing: flipping it changed no behaviour and no output, while five
+    places (this module's docstring, the config's own comments, 02's design.md) advertise the flip as
+    how a measured figure supersedes the provisional one. Worse, the only line that used the word at
+    all was the EMPTY-table line — so the status was disclosed exactly when there was no measurement
+    to confuse it with, and hidden the moment there was one. It belongs in the header, next to the
+    number it qualifies.
+    """
+    status = "PROVISIONAL — not yet measured" if budget.provisional else "measured"
+    return (
+        f"SITL budget: {budget.per_scenario_budget_s:.0f}s/scenario ({status}; "
+        f"quarantine: flake > {budget.flake_rate_threshold:.0%} "
+        f"or max > {budget.budget_overrun_factor:.0f}x budget)"
+    )
+
+
 def _no_measurements_line(skipped: list[str] | None) -> str:
     """The empty-table line, which must not call an all-corrupt window an empty one."""
     if skipped:
         return (
             "(no READABLE run reports — every supplied report was skipped above; no measurements)"
         )
-    return "(no run reports supplied — no measurements yet; provisional budget stands)"
+    # No longer says "provisional" itself: the header above is now the authoritative label and reads
+    # the config, so a second hardcoded claim here would be wrong the day provisional flips false.
+    return "(no run reports supplied — no measurements yet; the budget above stands)"
+
+
+def _failed_runs_note(summaries: list[ScenarioSummary]) -> list[str]:
+    """Say that max_s/mean_s include failed runs, where that could be misread.
+
+    A scenario timing out at ``PATROL_TIMEOUT_S`` every night reads ``mean_s 300.0`` for a run that
+    has never completed. The columns stay all-runs on purpose (see :class:`ScenarioSummary`), so they
+    and the passing-only recommendation disagree BY DESIGN — name the disagreement rather than
+    leaving the reader to discover it and distrust both numbers.
+    """
+    if not any(s.failures for s in summaries):
+        return []
+    return [
+        "",
+        "note: max_s/mean_s include FAILED runs (a timeout contributes its full wall clock); the "
+        "measured-budget recommendation, where one is offered, is over passing runs only.",
+    ]
+
+
+def _measured_budget_line(summaries: list[ScenarioSummary]) -> list[str]:
+    """The fold-this-back recommendation, over PASSING runs only.
+
+    Taken over all cases, a scenario failing at its 300s timeout recommended 300.0s as the measured
+    per-scenario budget — a measurement of the timeout constant, not of the scenario — and once the
+    window clears ``min_runs`` the sample-size caveat correctly stops firing, so nothing on the page
+    hedged it. The line now says what it excludes, and declines to print a number at all when there
+    is no passing run anywhere to derive one from.
+    """
+    measured = [s.max_passing_seconds for s in summaries if s.max_passing_seconds is not None]
+    if not measured:
+        return ["", "no measured per_scenario_budget_s: no scenario has a passing run to measure."]
+    no_pass = len(summaries) - len(measured)
+    excluded = f" ({no_pass} scenario(s) had no passing run)" if no_pass else ""
+    return [
+        "",
+        f"measured per_scenario_budget_s (observed max across PASSING runs only){excluded}: "
+        f"{max(measured):.1f}s — fold this into tests/integration/sitl_budget.yaml + flip "
+        f"provisional:false once stable.",
+    ]
 
 
 def format_report(
@@ -224,9 +301,7 @@ def format_report(
 ) -> str:
     """A human/Markdown-friendly table plus the measured-budget line to fold back into the config."""
     lines = [
-        f"SITL budget: {budget.per_scenario_budget_s:.0f}s/scenario "
-        f"(quarantine: flake > {budget.flake_rate_threshold:.0%} "
-        f"or max > {budget.budget_overrun_factor:.0f}x budget)",
+        _header_line(budget),
         *_skipped_note(skipped),
         "",
         f"{'scenario':<64} {'runs':>4} {'fails':>5} {'flake':>6} {'max_s':>7} {'mean_s':>7}  verdict",
@@ -241,12 +316,8 @@ def format_report(
             f"{s.max_seconds:>7.1f} {s.mean_seconds:>7.1f}  {verdict}"
         )
     lines += sample_size_note(summaries, budget)
-    observed_max = max(s.max_seconds for s in summaries)
-    lines += [
-        "",
-        f"measured per_scenario_budget_s (observed max across scenarios): {observed_max:.1f}s "
-        f"— fold this into tests/integration/sitl_budget.yaml + flip provisional:false once stable.",
-    ]
+    lines += _failed_runs_note(summaries)
+    lines += _measured_budget_line(summaries)
     return "\n".join(lines)
 
 
@@ -259,6 +330,7 @@ def load_budget(path: Path) -> Budget:
         per_scenario_budget_s=float(data["per_scenario_budget_s"]),
         flake_rate_threshold=float(q.get("flake_rate_threshold", 0.2)),
         budget_overrun_factor=float(q.get("budget_overrun_factor", 2.0)),
+        provisional=bool(data.get("provisional", True)),
     )
 
 

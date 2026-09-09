@@ -107,12 +107,25 @@ jobs:
           docker cp "$CID:/opt/sitl-junit.xml" "junit-rolling/run-${{ github.run_number }}.xml" || true
 
       # Retained well beyond the rolling window below so a longer look-back is possible by hand.
+      #
+      # overwrite: v4+ artifacts are IMMUTABLE and `run_number` is re-run-invariant, so on a re-run
+      # the name `sitl-junit-<run_number>` already exists from attempt 1 and the upload FAILS
+      # (overwrite defaults false) — the night is then retained not at all, and the nightly goes red
+      # for a reason unrelated to SITL. Latest attempt wins, which is also the right semantics: a
+      # re-run supersedes the attempt it replaces. This keeps exactly ONE file per night, so the
+      # run_number naming key stays valid at every one of its three call sites (the filename above,
+      # this artifact name, and the `this_run` marker below) with no rename. Note `run_id` would fix
+      # nothing — GitHub documents it as re-run-invariant too, identical to run_number; and a
+      # `run_attempt` SUFFIX would instead contribute two files for one night and double-count it in
+      # the flake denominator. The action deletes the existing artifact only AFTER its file search,
+      # so a re-run that produces no JUnit leaves attempt 1's artifact standing rather than wiping it.
       - name: Retain this run's JUnit report (rolling budget sample)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sitl-junit-${{ github.run_number }}
           path: junit-rolling/
+          overwrite: true
           retention-days: 90
           if-no-files-found: ignore
 
@@ -161,8 +174,18 @@ jobs:
       - name: Measure the SITL runtime/flakiness budget (non-gating; OQ-5/SWM-31)
         if: always()
         run: |
-          reports=$(find junit-rolling -name '*.xml' | sort | tr '\n' ' ')
-          [ -n "$reports" ] || { echo "no JUnit reports collected; nothing to measure"; exit 0; }
+          # A bash ARRAY, not a space-joined string. `tr '\n' ' '` destroyed the only delimiter that
+          # distinguished filenames, so EVERY consumer of $reports was already broken at the source —
+          # quoting the harness call alone would not have helped. Two consumers were affected: the
+          # header's `wc -w` over-reported the sample (a filename with one space counts as two run
+          # reports — an inflated sample count printed directly above the table whose sample size the
+          # harness exists to keep honest), and the harness argv split mid-path. -print0 / sort -z /
+          # `mapfile -d ''` keeps whitespace intact while preserving the deliberate sort order.
+          # Preferred over `find ... -print0 | xargs -0`, which may split a long list across SEVERAL
+          # harness invocations and emit several partial reports instead of one.
+          reports=()
+          mapfile -d '' -t reports < <(find junit-rolling -name '*.xml' -print0 | sort -z)
+          [ "${#reports[@]}" -gt 0 ] || { echo "no JUnit reports collected; nothing to measure"; exit 0; }
           # Run on the RUNNER, not via `docker exec`. The harness is pure stdlib + pyyaml and
           # tests/integration/sitl_budget.yaml is in the checkout, so it never needed the container —
           # and the old `[ -n "$CID" ] || exit 0` threw away the rolling sample just fetched exactly
@@ -174,10 +197,10 @@ jobs:
           python3 -c 'import yaml' 2>/dev/null \
             || pip install --quiet --disable-pip-version-check --break-system-packages pyyaml==6.0.3
           {
-            echo "### SITL runtime/flakiness budget (rolling: $(echo "$reports" | wc -w) run report(s))"
+            echo "### SITL runtime/flakiness budget (rolling: ${#reports[@]} run report(s))"
             echo '```'
-            # $reports is intentionally unquoted (word-split into argv) and already sorted — do not
-            # re-glob here, which would lose the deterministic order.
+            # The array is already sorted (sort -z above) — do not re-glob here, which would lose
+            # the deterministic order.
             # 2>&1: the whole block redirects STDOUT to $GITHUB_STEP_SUMMARY, so without this a
             # traceback from a broken harness goes only to the job log and the summary shows an
             # empty code fence — indistinguishable from a night with nothing to measure, which is
@@ -186,7 +209,7 @@ jobs:
             # pins both); a present-but-corrupt run report is instead SKIPPED and named in the report,
             # so one truncated artifact cannot discard the rest of the rolling window. This makes the
             # remaining fail-loud paths fail-VISIBLE too.
-            python3 scripts/measure_sitl_budget.py $reports 2>&1 || true
+            python3 scripts/measure_sitl_budget.py "${reports[@]}" 2>&1 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
